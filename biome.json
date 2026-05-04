@@ -13,6 +13,6 @@
 		"enabled": true
 	},
 	"files": {
-		"includes": ["packages/**/*.ts", "!**/node_modules"]
+		"includes": ["packages/**/*.ts", "shared/**/*.ts", "!**/node_modules"]
 	}
 }
