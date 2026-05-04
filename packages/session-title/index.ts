@@ -768,6 +768,16 @@ export default function (pi: ExtensionAPI) {
 	// header slot. Without this, applyTitle() would call
 	// setHeader(undefined) every run in the default "no header requested"
 	// case, clobbering any header another extension may have installed.
+	//
+	// Known limitation (tracked upstream): pi's `setHeader` is a single
+	// global slot with no disposer and no way to query the current
+	// renderer. If another extension installs a header *after* us and
+	// then we're asked to transition out of header-mode (e.g. user runs
+	// `/title-position terminal`), we'll still clear the slot thinking
+	// we own it and wipe their header. Narrow race window compared to
+	// the previous unconditional-clobber behavior, but not fully fixable
+	// at the extension layer. Needs a pi API change (multi-header-with-
+	// key, like setStatus, or a disposer returned from setHeader).
 	let weInstalledHeader = false;
 
 	function tearDownSticky(): void {
