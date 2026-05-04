@@ -17,23 +17,24 @@ function writeProjectSettings(cwd: string, body: unknown): void {
 }
 
 function withIsolatedAgentDir<T>(fn: () => T): T {
-	// Point PI_AGENT_DIR at an empty tmpdir so the test can't accidentally
-	// read the developer's real ~/.pi/agent/settings.json.
+	// Point PI_CODING_AGENT_DIR at an empty tmpdir so the test can't
+	// accidentally read the developer's real ~/.pi/agent/settings.json.
+	// This is the same env var pi itself honors via getAgentDir().
 	const dir = mkdtempSync(join(tmpdir(), "pi-ext-settings-test-agent-"));
-	const prev = process.env.PI_AGENT_DIR;
-	process.env.PI_AGENT_DIR = dir;
+	const prev = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = dir;
 	try {
 		return fn();
 	} finally {
-		if (prev === undefined) delete process.env.PI_AGENT_DIR;
-		else process.env.PI_AGENT_DIR = prev;
+		if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = prev;
 		rmSync(dir, { recursive: true, force: true });
 	}
 }
 
 function writeGlobalSettings(body: unknown): void {
-	const dir = process.env.PI_AGENT_DIR;
-	if (!dir) throw new Error("PI_AGENT_DIR must be set for this helper");
+	const dir = process.env.PI_CODING_AGENT_DIR;
+	if (!dir) throw new Error("PI_CODING_AGENT_DIR must be set for this helper");
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(join(dir, "settings.json"), JSON.stringify(body));
 }

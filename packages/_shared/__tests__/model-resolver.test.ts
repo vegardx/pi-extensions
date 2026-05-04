@@ -51,11 +51,11 @@ function writeProjectSettings(cwd: string, body: unknown): void {
 
 function withIsolatedAgentDir<T>(fn: () => T | Promise<T>): Promise<T> {
 	const dir = mkdtempSync(join(tmpdir(), "pi-ext-resolver-test-agent-"));
-	const prev = process.env.PI_AGENT_DIR;
-	process.env.PI_AGENT_DIR = dir;
+	const prev = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = dir;
 	return Promise.resolve(fn()).finally(() => {
-		if (prev === undefined) delete process.env.PI_AGENT_DIR;
-		else process.env.PI_AGENT_DIR = prev;
+		if (prev === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = prev;
 		rmSync(dir, { recursive: true, force: true });
 	});
 }

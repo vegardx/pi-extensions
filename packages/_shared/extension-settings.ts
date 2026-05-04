@@ -1,15 +1,20 @@
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { SettingsManager } from "@mariozechner/pi-coding-agent";
 
 /**
  * Shared settings reader for the extensions in this monorepo.
  *
- * pi exposes `getSettingsPath()` but does not give extensions a
- * pre-parsed view of user settings with project overrides applied. For
- * our own keys (`backgroundModels`, `extensionConfig`) we read the
- * files directly and merge them here — cheap, runs once per
- * session_start, no caching needed.
+ * We defer the *where* (global path, project path, env-var overrides,
+ * any future XDG / config-dir changes) to pi's `SettingsManager`, and
+ * keep the *how* (picking our keys out, merging project over global)
+ * local. That way pi remains the authority on config layout and any
+ * future change there — e.g. honoring `$XDG_CONFIG_HOME` or renaming
+ * the agent dir — lands here for free.
+ *
+ * pi's `Settings` type is closed (it doesn't declare
+ * `backgroundModels` or `extensionConfig`), but the underlying JSON
+ * is parsed untyped and unknown keys survive intact. We cast to
+ * `Record<string, unknown>` at the boundary and validate shapes
+ * ourselves.
  *
  * Shape we care about:
  *
@@ -44,31 +49,10 @@ export interface RelevantSettings {
 	extensionConfig?: Record<string, ExtensionConfig | undefined>;
 }
 
-function globalSettingsPath(): string {
-	// Matches pi's layout: `~/.pi/agent/settings.json`. `PI_AGENT_DIR`
-	// and `HOME` overrides match pi's own behavior (see pi's config.ts).
-	const base = process.env.PI_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-	return join(base, "settings.json");
-}
-
-function projectSettingsPath(cwd: string): string {
-	return join(cwd, ".pi", "settings.json");
-}
-
-function readJsonOrNull(path: string): unknown {
-	try {
-		return JSON.parse(readFileSync(path, "utf8"));
-	} catch {
-		// Missing file, unreadable file, or invalid JSON — treat as absent.
-		// We never want a malformed settings.json to crash an extension.
-		return null;
-	}
-}
-
 /**
  * Pull out only the keys we care about. Everything else in pi's
- * settings.json is ignored. This lets us tolerate future pi schema
- * changes without surfacing them here.
+ * settings.json is ignored. This lets us tolerate pi schema changes
+ * without surfacing them here.
  */
 function extractRelevant(raw: unknown): RelevantSettings {
 	if (!raw || typeof raw !== "object") return {};
@@ -104,10 +88,19 @@ function extractRelevant(raw: unknown): RelevantSettings {
  * this monorepo's extensions care about. Project values override
  * global values at the leaf level (per-tier, per-extension), matching
  * pi's documented precedence.
+ *
+ * `cwd` is passed to pi's SettingsManager which derives the project
+ * settings path from it. `agentDir` is an optional override; without
+ * it pi uses its own resolution (honoring `PI_CODING_AGENT_DIR`,
+ * falling back to `~/.pi/agent/`).
  */
-export function readRelevantSettings(cwd: string): RelevantSettings {
-	const global = extractRelevant(readJsonOrNull(globalSettingsPath()));
-	const project = extractRelevant(readJsonOrNull(projectSettingsPath(cwd)));
+export function readRelevantSettings(
+	cwd: string,
+	agentDir?: string,
+): RelevantSettings {
+	const manager = SettingsManager.create(cwd, agentDir);
+	const global = extractRelevant(manager.getGlobalSettings());
+	const project = extractRelevant(manager.getProjectSettings());
 
 	const merged: RelevantSettings = {};
 
