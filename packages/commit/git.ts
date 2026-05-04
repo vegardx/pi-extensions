@@ -133,6 +133,20 @@ export function isAncestor(cwd: string, ref: string): boolean {
 	}).ok;
 }
 
+/**
+ * `git rev-parse --verify --quiet <ref>` — exit 0 when ref resolves.
+ * Use this before drift detection to tell "first push" (no
+ * remote-tracking ref yet) apart from "remote moved"; the latter's
+ * merge-base / ancestor checks silently fail on a missing ref and we'd
+ * otherwise fall through to a scary-but-wrong "remote has commits we
+ * don't have" prompt.
+ */
+export function refExists(cwd: string, ref: string): boolean {
+	return runCommand("git", ["rev-parse", "--verify", "--quiet", ref], {
+		cwd,
+	}).ok;
+}
+
 /** `git merge-base <ref1> <ref2>` — shared ancestor SHA, or null. */
 export function mergeBase(
 	cwd: string,

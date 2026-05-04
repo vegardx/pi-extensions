@@ -20,6 +20,7 @@ import {
 	pushRefspec,
 	readTrackingIssue,
 	rebaseOnto,
+	refExists,
 	treesIdentical,
 	writeTrackingIssue,
 } from "./git.js";
@@ -616,6 +617,24 @@ export default function (pi: ExtensionAPI) {
 		target: PushTarget,
 	): Promise<boolean> {
 		const remoteRef = `${target.target}/${target.targetBranch}`;
+
+		// First push: no remote-tracking ref exists yet, so there is nothing
+		// to drift from. Just push. Without this guard the merge-base /
+		// is-ancestor probes below both silently fail on the unknown ref and
+		// we fall through to the "remote has commits we don't have" prompt.
+		if (!refExists(ctx.cwd, remoteRef)) {
+			const r = pushRefspec(
+				ctx.cwd,
+				target.target,
+				`HEAD:${target.targetBranch}`,
+				false,
+			);
+			if (!r.ok) {
+				notify(ctx, `git push failed: ${r.stderr.trim()}`, "error");
+				return false;
+			}
+			return true;
+		}
 
 		// Head-drift detection.
 		if (isAncestor(ctx.cwd, remoteRef)) {
