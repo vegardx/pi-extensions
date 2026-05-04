@@ -894,6 +894,7 @@ export default function (pi: ExtensionAPI) {
 			name: "session-title",
 			tier: "fast",
 			explicit: envOverride || undefined,
+			requireApiKey: true,
 		});
 		if (!resolved?.apiKey) return undefined;
 		return {

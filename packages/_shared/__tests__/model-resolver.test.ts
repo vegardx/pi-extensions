@@ -15,18 +15,26 @@ function fakeCtx(opts: {
 	model?: Model<Api>;
 	models?: Record<string, Model<Api>>; // "provider/id" -> model
 	authOk?: Record<string, boolean>; // "provider/id" -> true if has key
+	/** "provider/id" -> true means auth is ok but apiKey is undefined */
+	authHeadersOnly?: Record<string, boolean>;
 }): ExtensionContext {
 	const models = opts.models ?? {};
 	const authOk = opts.authOk ?? {};
+	const authHeadersOnly = opts.authHeadersOnly ?? {};
 	const registry = {
 		find(provider: string, modelId: string) {
 			return models[`${provider}/${modelId}`];
 		},
 		async getApiKeyAndHeaders(m: Model<Api>) {
 			const key = `${m.provider}/${m.id}`;
-			return authOk[key] !== false
-				? { ok: true as const, apiKey: "test-key" }
-				: { ok: false as const, error: "no key" };
+			if (authOk[key] === false) {
+				return { ok: false as const, error: "no key" };
+			}
+			if (authHeadersOnly[key]) {
+				// Headers-only auth: ok but no apiKey.
+				return { ok: true as const, headers: { "X-Token": "h" } };
+			}
+			return { ok: true as const, apiKey: "test-key" };
 		},
 	};
 	return {
@@ -266,6 +274,80 @@ describe("resolveModel", () => {
 					},
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				expect(r).toBeNull();
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("returns a headers-only auth result by default (requireApiKey=false)", async () => {
+		await withIsolatedAgentDir(async () => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					extensionConfig: { nitpick: { model: "a/b" } },
+				});
+				const ctx = fakeCtx({
+					cwd,
+					models: { "a/b": makeModel("a", "b") },
+					authHeadersOnly: { "a/b": true },
+				});
+				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				expect(r?.model.provider).toBe("a");
+				expect(r?.apiKey).toBeUndefined();
+				expect(r?.headers).toEqual({ "X-Token": "h" });
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("skips headers-only auth when requireApiKey is true and falls through", async () => {
+		await withIsolatedAgentDir(async () => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					extensionConfig: { nitpick: { model: "a/b" } },
+					backgroundModels: { fast: "c/d" },
+				});
+				const ctx = fakeCtx({
+					cwd,
+					models: {
+						"a/b": makeModel("a", "b"),
+						"c/d": makeModel("c", "d"),
+					},
+					authHeadersOnly: { "a/b": true }, // higher priority but no apiKey
+				});
+				const r = await resolveModel(ctx, {
+					name: "nitpick",
+					tier: "fast",
+					requireApiKey: true,
+				});
+				expect(r?.model.provider).toBe("c");
+				expect(r?.apiKey).toBe("test-key");
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("skips headers-only ctx.model when requireApiKey is true and returns null", async () => {
+		await withIsolatedAgentDir(async () => {
+			const cwd = mkTempCwd();
+			try {
+				const sessionModel = makeModel("session", "model");
+				const ctx = fakeCtx({
+					cwd,
+					model: sessionModel,
+					models: { "session/model": sessionModel },
+					authHeadersOnly: { "session/model": true },
+				});
+				const r = await resolveModel(ctx, {
+					name: "nitpick",
+					tier: "fast",
+					requireApiKey: true,
+				});
 				expect(r).toBeNull();
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });

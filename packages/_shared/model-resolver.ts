@@ -49,6 +49,24 @@ export interface ResolveOptions {
 	 * `"provider/id"` string.
 	 */
 	explicit?: string;
+	/**
+	 * If true, candidates whose auth is successful but without an
+	 * `apiKey` are treated as unusable — the resolver continues down
+	 * the chain instead of returning them.
+	 *
+	 * pi's `ResolvedRequestAuth` allows `{ ok: true, apiKey: undefined,
+	 * headers: undefined }` (e.g. providers that authenticate purely
+	 * via headers, or configs with missing credentials that still
+	 * report ok). Callers that directly pass `apiKey` to a completion
+	 * call — session-title's `completeSimple`, for example — cannot
+	 * use such a result. Callers that hand the model spec off to
+	 * something else that does its own auth (nitpick's `RpcClient`,
+	 * prompt-suggestion's `Predictor`) don't need this.
+	 *
+	 * Default: false. Preserves the headers-only auth path for callers
+	 * that don't care.
+	 */
+	requireApiKey?: boolean;
 }
 
 /**
@@ -92,6 +110,7 @@ export async function resolveModel(
 		if (!model) continue;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) continue;
+		if (opts.requireApiKey && !auth.apiKey) continue;
 		return { model, apiKey: auth.apiKey, headers: auth.headers };
 	}
 
@@ -102,7 +121,7 @@ export async function resolveModel(
 	// source.
 	if (ctx.model) {
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-		if (auth.ok) {
+		if (auth.ok && (!opts.requireApiKey || auth.apiKey)) {
 			return {
 				model: ctx.model,
 				apiKey: auth.apiKey,
