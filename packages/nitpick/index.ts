@@ -88,10 +88,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// ---- Model resolution --------------------------------------------------
-	async function resolveAndCacheModel(
-		ctx: ExtensionContext,
-		{ silent = false }: { silent?: boolean } = {},
-	): Promise<void> {
+	async function resolveAndCacheModel(ctx: ExtensionContext): Promise<void> {
 		const r = await resolveModel(ctx, {
 			name: EXT_ID,
 			tier: "normal",
@@ -99,7 +96,7 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (!r) {
 			resolvedModelSpec = undefined;
-			if (!silent && ctx.hasUI) {
+			if (ctx.hasUI) {
 				ctx.ui.notify(
 					"nitpick: no usable model (set backgroundModels.normal or extensionConfig.nitpick.model in settings.json, or run `/nitpick model <provider/id>`). Reviews are disabled for this session.",
 					"warning",
