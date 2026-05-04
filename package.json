@@ -1,0 +1,33 @@
+{
+  "name": "pi-ext-dev",
+  "private": true,
+  "type": "module",
+  "description": "Monorepo of pi.dev extensions",
+  "workspaces": ["packages/*"],
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["packages/*/index.ts"]
+  },
+  "scripts": {
+    "check": "biome check . && tsc --noEmit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest watch"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.12",
+    "@mariozechner/pi-ai": "^0.68.1",
+    "@mariozechner/pi-coding-agent": "^0.68.1",
+    "@mariozechner/pi-tui": "^0.68.1",
+    "@sinclair/typebox": "^0.34.49",
+    "@types/node": "^22",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
