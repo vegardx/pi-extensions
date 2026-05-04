@@ -45,8 +45,9 @@ not flag. When in doubt, read those.
   `settings.json → backgroundModels.<tier>`, and can override per
   extension via `settings.json → extensionConfig.<name>.model`. If
   resolution fails, the extension disables its side task for the
-  session with a single `notify()`. See the repo root `README.md`
-  “Background models” section for the full resolution chain.
+  session with a single `notify()`. See
+  [`docs/configuring-models.md`](../docs/configuring-models.md) for the
+  full resolution chain and examples.
 
 ## Per-package layout
 

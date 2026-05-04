@@ -148,6 +148,10 @@ skips and leaves the git-branch / cwd fallback in place.
 
 ### Model selection
 
+> For the monorepo-wide picture (how tiers work across extensions,
+> common configurations, troubleshooting), see
+> [`docs/configuring-models.md`](../../docs/configuring-models.md).
+
 Auto-title declares itself a **`fast`-tier** consumer. It runs at most
 once per session, emits 2–5 words, and reads a short prompt — there is
 no reason to spend anything more than the cheapest model the user has

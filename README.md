@@ -92,6 +92,10 @@ The two are complementary: Copilot catches the obvious stuff cheap, `/review` go
 
 ## Background models
 
+> For a more detailed reference with common configurations,
+> troubleshooting, and provider/gateway notes, see
+> [`docs/configuring-models.md`](./docs/configuring-models.md).
+
 Several extensions in this monorepo call an LLM on a side task —
 `prompt-suggestion` predicts the next message, `session-title` names
 the session, `nitpick` runs a subagent reviewer. None of them
