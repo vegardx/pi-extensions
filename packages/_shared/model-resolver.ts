@@ -14,13 +14,15 @@ import {
  *
  * ## Resolution order (high → low)
  *
- *   1. `settings.json → extensionConfig.<name>.model` — full
+ *   1. `opts.explicit` — caller-provided override (CLI flag,
+ *      in-session command, legacy env var, …). Optional.
+ *   2. `settings.json → extensionConfig.<name>.model` — full
  *      `"provider/id"` override, the total escape hatch.
- *   2. `settings.json → backgroundModels.<tier>` — the user's
+ *   3. `settings.json → backgroundModels.<tier>` — the user's
  *      "what does fast/normal/heavy mean for me" configuration.
- *   3. `ctx.model` — the active session model. Always has auth by
+ *   4. `ctx.model` — the active session model. Always has auth by
  *      definition, even if using it for background work is expensive.
- *   4. Nothing usable → return `null`; the caller disables the
+ *   5. Nothing usable → return `null`; the caller disables the
  *      feature for this session and `notify()`s once.
  *
  * No hard-coded provider/model IDs anywhere.
