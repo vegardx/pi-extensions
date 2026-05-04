@@ -80,3 +80,12 @@ See the [official pi extension docs](https://github.com/badlogic/pi-mono/blob/ma
 - **TypeScript** strict mode, no emit — pi loads `.ts` at runtime via jiti.
 - **Vitest** with `globals: true`.
 - `@mariozechner/pi-coding-agent`, `@mariozechner/pi-ai`, `@mariozechner/pi-tui`, and `@sinclair/typebox` are installed as root devDependencies purely for type resolution. Each package declares them as `peerDependencies: "*"` so published extensions don't bundle them — pi provides them host-side at runtime.
+
+## Code review
+
+Two options, pick whichever fits the PR:
+
+- **Local — `/review`**. The `packages/review/` extension fans out seven specialist reviewers (architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker) over a diff or the whole codebase. Runs against a real model, lands findings in-terminal. Depth > breadth. See `packages/review/README.md`.
+- **GitHub Copilot code review**. Faster, shallower, runs on every PR you assign it to. Reads repo-level instructions from [`.github/copilot-instructions.md`](.github/copilot-instructions.md) — keep that file in sync with `CLAUDE.md` and `packages/review/prompts/*.md` when conventions change. On each PR, sidebar → Reviewers → Copilot. Or set up a branch ruleset on `main` that requires Copilot as a reviewer to auto-request it. Requires a Copilot plan that includes code review (Business / Enterprise / Pro+).
+
+The two are complementary: Copilot catches the obvious stuff cheap, `/review` goes deep when you want a thorough pass before merge.
