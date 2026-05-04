@@ -33,7 +33,7 @@
  *     the title into `tmux rename-window`, which shows up in any tmux
  *     status-bar template that references `#W`.
  *
- * So this extension offers four surfaces you can combine:
+ * So this extension offers six surfaces you can combine:
  *
  *   terminal   — OS window/tab title.     Always-sticky. (setTitle)
  *   tmux       — tmux window name.         Always-sticky inside tmux.
@@ -672,7 +672,7 @@ export default function (pi: ExtensionAPI) {
 		type: "string",
 	});
 	pi.registerFlag("title-position", {
-		description: `Comma-separated list of surfaces: ${ALLOWED_SURFACES.join(",")}. Default depends on env (terminal,footer [+tmux if $TMUX]).`,
+		description: `Comma-separated list of surfaces: ${ALLOWED_SURFACES.join(",")}. Default: terminal,divider (+tmux if $TMUX).`,
 		type: "string",
 	});
 	pi.registerFlag("no-auto-title", {

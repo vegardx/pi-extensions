@@ -49,8 +49,10 @@ which is what you'll see if you try the `header` surface.
 The sticky-to-the-viewport zone in pi is the **bottom** of the frame
 (editor + footer), because pi positions its hardware cursor there every
 render. So the Claude trick — anchoring the title to the top of the
-input area — is exactly what you want. This extension implements it via
-`ctx.ui.setWidget(..., { placement: "aboveEditor" })`.
+input area — is exactly what you want. This extension implements it
+via `ctx.ui.setEditorComponent(...)`, subclassing pi's `CustomEditor`
+to patch line 0 of `render()` with the title-inlaid divider. See the
+Surfaces table below for the per-surface details.
 
 ## Surfaces
 
