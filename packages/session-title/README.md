@@ -153,7 +153,8 @@ once per session, emits 2–5 words, and reads a short prompt — there is
 no reason to spend anything more than the cheapest model the user has
 configured.
 
-Resolution order (high → low priority), via `shared/model-resolver.ts`:
+Resolution order (high → low priority), via
+`packages/_shared/model-resolver.ts`:
 
 1. `$PI_SESSION_AUTO_TITLE_MODEL` — legacy env override.
 2. `settings.json → extensionConfig.session-title.model` —

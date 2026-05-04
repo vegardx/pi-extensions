@@ -39,7 +39,7 @@ not flag. When in doubt, read those.
   `feat(nitpick): add reviewer subagent`. Subject ≤ 72 chars.
 - **Background models**: extensions that call an LLM for side tasks
   (ghost text, auto-title, subagent review) must not hard-code a
-  provider/model id. Use `shared/model-resolver.ts` — call
+  provider/model id. Use `packages/_shared/model-resolver.ts` — call
   `resolveModel(ctx, { name, tier })` with one of `"fast"` /
   `"normal"` / `"heavy"`. Users configure what each tier means via
   `settings.json → backgroundModels.<tier>`, and can override per

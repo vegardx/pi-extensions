@@ -132,4 +132,4 @@ Resolution order (high → low priority), same in every extension:
 5. Nothing resolves with working auth → the feature disables itself
    for the session with a single `notify()`.
 
-The shared implementation lives in `shared/model-resolver.ts`.
+The shared implementation lives in `packages/_shared/model-resolver.ts`.

@@ -5,7 +5,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { resolveModel } from "../../shared/model-resolver.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { GhostEditor } from "./ghost-editor.js";
 import { Predictor, parseModelSpec } from "./predictor.js";
 

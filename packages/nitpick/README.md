@@ -85,7 +85,8 @@ enough reasoning to read diffs and produce structured findings; a
 haiku-class model under-performs, an opus-class model is overkill for the
 volume.
 
-Resolution order (high → low priority), via `shared/model-resolver.ts`:
+Resolution order (high → low priority), via
+`packages/_shared/model-resolver.ts`:
 
 1. `/nitpick model <provider/id>` — in-session override, not persisted.
 2. `settings.json → extensionConfig.nitpick.model` — persistent

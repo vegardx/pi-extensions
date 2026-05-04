@@ -5,7 +5,7 @@ import {
 	isEditToolResult,
 	isWriteToolResult,
 } from "@mariozechner/pi-coding-agent";
-import { resolveModel } from "../../shared/model-resolver.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { ReviewerClient } from "./reviewer-client.js";
 import {
 	countChangedLines,

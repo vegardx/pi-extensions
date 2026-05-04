@@ -80,7 +80,7 @@ import type {
 import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import type { EditorTheme, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import { resolveModel } from "../../shared/model-resolver.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Config
