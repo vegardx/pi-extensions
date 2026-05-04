@@ -89,3 +89,47 @@ Two options, pick whichever fits the PR:
 - **GitHub Copilot code review**. Faster, shallower, runs on every PR you assign it to. Reads repo-level instructions from [`.github/copilot-instructions.md`](.github/copilot-instructions.md) — keep that file in sync with `CLAUDE.md` and `packages/review/prompts/*.md` when conventions change. On each PR, sidebar → Reviewers → Copilot. Or set up a branch ruleset on `main` that requires Copilot as a reviewer to auto-request it. Requires a Copilot plan that includes code review (Business / Enterprise / Pro+).
 
 The two are complementary: Copilot catches the obvious stuff cheap, `/review` goes deep when you want a thorough pass before merge.
+
+## Background models
+
+Several extensions in this monorepo call an LLM on a side task —
+`prompt-suggestion` predicts the next message, `session-title` names
+the session, `nitpick` runs a subagent reviewer. None of them
+hard-code a provider/model id; each declares a **tier** and the user
+decides what that tier means.
+
+Configure once in `settings.json`:
+
+```jsonc
+// ~/.pi/agent/settings.json or .pi/settings.json (project)
+{
+  "backgroundModels": {
+    "fast":   "anthropic/claude-haiku-4-5-20251001",
+    "normal": "anthropic/claude-sonnet-4-5-20250929",
+    "heavy":  "anthropic/claude-opus-4-5-20250929"
+  },
+  // Optional per-extension overrides win over the tier above.
+  "extensionConfig": {
+    "nitpick": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
+  }
+}
+```
+
+Current tier assignments:
+
+| Extension | Tier | Why |
+|---|---|---|
+| `prompt-suggestion` | `fast` | Ghost text on every turn; 40-token output. |
+| `session-title` (auto-title) | `fast` | Once per session; 2–5 word output. |
+| `nitpick` | `normal` | Continuous code review; needs real reasoning. |
+
+Resolution order (high → low priority), same in every extension:
+
+1. Extension-specific explicit override (CLI flag / in-session command).
+2. `settings.json → extensionConfig.<name>.model`.
+3. `settings.json → backgroundModels.<tier>`.
+4. `ctx.model` (the active session model).
+5. Nothing resolves with working auth → the feature disables itself
+   for the session with a single `notify()`.
+
+The shared implementation lives in `shared/model-resolver.ts`.

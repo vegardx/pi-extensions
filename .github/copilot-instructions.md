@@ -37,6 +37,16 @@ not flag. When in doubt, read those.
 - **Verification before PR**: `make check` (lint + typecheck + test).
 - **Commits**: conventional-commit style, scope = extension name, e.g.
   `feat(nitpick): add reviewer subagent`. Subject ≤ 72 chars.
+- **Background models**: extensions that call an LLM for side tasks
+  (ghost text, auto-title, subagent review) must not hard-code a
+  provider/model id. Use `shared/model-resolver.ts` — call
+  `resolveModel(ctx, { name, tier })` with one of `"fast"` /
+  `"normal"` / `"heavy"`. Users configure what each tier means via
+  `settings.json → backgroundModels.<tier>`, and can override per
+  extension via `settings.json → extensionConfig.<name>.model`. If
+  resolution fails, the extension disables its side task for the
+  session with a single `notify()`. See the repo root `README.md`
+  “Background models” section for the full resolution chain.
 
 ## Per-package layout
 
