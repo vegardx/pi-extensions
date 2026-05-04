@@ -23,10 +23,13 @@ not flag. When in doubt, read those.
 - **Tests**: vitest with `globals: true`. Do not import `describe`,
   `it`, or `expect` — they're globals. Tests live in
   `packages/<name>/__tests__/*.test.ts`.
-- **pi host deps** (`@mariozechner/pi-coding-agent`, `@mariozechner/pi-ai`,
-  `@mariozechner/pi-tui`, `@sinclair/typebox`): root devDependencies
-  for type resolution, declared per-package as
-  `peerDependencies: "*"`. **Never** add them as `dependencies` — pi
+- **pi host deps** — `@mariozechner/pi-coding-agent`,
+  `@mariozechner/pi-ai`, `@mariozechner/pi-tui`, `@sinclair/typebox` are
+  installed as **root devDependencies** so the whole workspace can
+  resolve their types. Each package declares **only the ones it
+  actually imports** as `peerDependencies: "*"` — e.g. a package that
+  only uses `pi-coding-agent` and `typebox` should list exactly those
+  two, not all four. **Never** add any of them as `dependencies` — pi
   provides them host-side at runtime.
 - **Adding an extension**: `make new-ext NAME=foo` scaffolds the right
   `package.json` (per-package `pi` manifest + peerDeps) and a minimal
@@ -37,16 +40,25 @@ not flag. When in doubt, read those.
 
 ## Per-package layout
 
+Typical extension package:
+
 ```
 packages/<name>/
-├── __tests__/          vitest tests (no vitest imports; globals: true)
+├── __tests__/          vitest tests (optional; no vitest imports — globals: true)
+├── skills/             optional: markdown skill files loaded via pi.skills
 ├── index.ts            default export receiving ExtensionAPI
 ├── package.json        per-package pi manifest + peerDeps
 └── README.md
 ```
 
-Helpers live alongside `index.ts` as sibling `.ts` files. Shared
-tooling (biome, tsconfig, vitest) is at the repo root.
+Common deviations this repo already has:
+
+- **Skills-only packages** (e.g. `packages/gh/`) have no `index.ts`;
+  their `package.json` `pi` manifest points at `skills/*.md` instead.
+- **`__tests__/` is optional** — small or UI-only extensions may not
+  carry tests. Don't flag its absence as a defect.
+- Helpers live alongside `index.ts` as sibling `.ts` files. Shared
+  tooling (biome, tsconfig, vitest) is at the repo root.
 
 ## What to flag in PR review
 
