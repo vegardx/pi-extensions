@@ -111,7 +111,12 @@ describe("scanForSecrets", () => {
 	it("flags slack tokens", () => {
 		// Use a pattern that matches the slack-token regex without being a
 		// literal token that trips GitHub push protection.
-		const fakeToken = ["xoxb", "1234567890", "ABCDEFGHIJKLMN", "abcdefghijklmnopqr"].join("-");
+		const fakeToken = [
+			"xoxb",
+			"1234567890",
+			"ABCDEFGHIJKLMN",
+			"abcdefghijklmnopqr",
+		].join("-");
 		expect(scanForSecrets(fakeToken).hasSecret).toBe(true);
 	});
 
