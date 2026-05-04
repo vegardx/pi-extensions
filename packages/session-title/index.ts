@@ -68,6 +68,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
+import { writeSync } from "node:fs";
 import path from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { completeSimple } from "@mariozechner/pi-ai";
@@ -498,10 +499,8 @@ function rawWrite(s: string): void {
 /** Synchronous stdout write for `process.on('exit', ...)` handlers. */
 function rawWriteSync(s: string): void {
 	try {
-		// `fs.writeSync(1, ...)` is the only reliable way to flush during exit.
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const fs = require("node:fs") as typeof import("node:fs");
-		fs.writeSync(1, s);
+		// `writeSync(1, ...)` is the only reliable way to flush during exit.
+		writeSync(1, s);
 	} catch {
 		/* fd 1 may be closed */
 	}
