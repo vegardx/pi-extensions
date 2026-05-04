@@ -34,8 +34,6 @@ export interface ResolvedBackgroundModel {
 	model: Model<Api>;
 	apiKey?: string;
 	headers?: Record<string, string>;
-	/** How the model was picked — useful for debug dumps. */
-	source: "override" | "tier" | "ctx-model";
 }
 
 export interface ResolveOptions {
@@ -80,25 +78,19 @@ export async function resolveModel(
 ): Promise<ResolvedBackgroundModel | null> {
 	const settings = readRelevantSettings(ctx.cwd);
 
-	const candidates: Array<{
-		spec: string | undefined;
-		source: ResolvedBackgroundModel["source"];
-	}> = [
-		{ spec: opts.explicit, source: "override" },
-		{
-			spec: getExtensionModelOverride(settings, opts.name),
-			source: "override",
-		},
-		{ spec: getTierModel(settings, opts.tier), source: "tier" },
+	const candidates: Array<string | undefined> = [
+		opts.explicit,
+		getExtensionModelOverride(settings, opts.name),
+		getTierModel(settings, opts.tier),
 	];
 
-	for (const { spec, source } of candidates) {
+	for (const spec of candidates) {
 		if (!spec) continue;
 		const model = lookup(ctx, spec);
 		if (!model) continue;
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok) continue;
-		return { model, apiKey: auth.apiKey, headers: auth.headers, source };
+		return { model, apiKey: auth.apiKey, headers: auth.headers };
 	}
 
 	// Fall back to the active session model. We don't need to call
@@ -113,7 +105,6 @@ export async function resolveModel(
 				model: ctx.model,
 				apiKey: auth.apiKey,
 				headers: auth.headers,
-				source: "ctx-model",
 			};
 		}
 	}

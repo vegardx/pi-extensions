@@ -110,7 +110,6 @@ describe("resolveModel", () => {
 					explicit: "e/f",
 				});
 				expect(r?.model).toBe(explicit);
-				expect(r?.source).toBe("override");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
@@ -135,7 +134,6 @@ describe("resolveModel", () => {
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
 				expect(r?.model.provider).toBe("a");
-				expect(r?.source).toBe("override");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
@@ -159,7 +157,6 @@ describe("resolveModel", () => {
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
-				expect(r?.source).toBe("tier");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
@@ -178,7 +175,6 @@ describe("resolveModel", () => {
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
 				expect(r?.model).toBe(sessionModel);
-				expect(r?.source).toBe("ctx-model");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
@@ -215,7 +211,6 @@ describe("resolveModel", () => {
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
-				expect(r?.source).toBe("tier");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
@@ -241,7 +236,6 @@ describe("resolveModel", () => {
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
-				expect(r?.source).toBe("tier");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
