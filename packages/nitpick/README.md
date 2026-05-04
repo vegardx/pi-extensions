@@ -61,32 +61,64 @@ or from inside pi:
 /nitpick off
 ```
 
-State (enabled flag, model) persists for the session via `pi.appendEntry`,
-so `/reload` is safe. Per-turn findings are ephemeral.
+State (enabled flag) persists for the session via `pi.appendEntry`, so
+`/reload` is safe. Per-turn findings are ephemeral. The resolved model is
+re-computed at each `session_start` so edits to `settings.json` are
+picked up without needing to reconfigure in-session.
 
 ## Commands
 
 | Command | Effect |
 |---|---|
-| `/nitpick` or `/nitpick status` | Show enabled state, model, whether the reviewer process is warm, active review count, and the last error (if any). |
+| `/nitpick` or `/nitpick status` | Show enabled state, resolved model, current in-session override (if any), whether the reviewer process is warm, active review count, and the last error (if any). |
 | `/nitpick on` | Enable. |
 | `/nitpick off` | Disable, stop the reviewer process, drop any pending findings. |
-| `/nitpick model <id>` | Change reviewer model (default `claude-haiku-4-5`). Tears down the current reviewer process so the next edit spawns a new one with the new model. |
+| `/nitpick model <provider/id>` | Set an in-session model override. Tears down the current reviewer process so the next edit spawns a new one with the new model. Not persisted — for persistent overrides, edit `settings.json`. |
+| `/nitpick model clear` | Drop the in-session override; resolution falls back to `settings.json` and then `ctx.model`. |
 | `/nitpick show` | Print the reviewer's current findings (or the last error if the reviewer failed). |
 | `/nitpick clear` | Drop findings and reset the reviewer's conversation (keeps the process warm). |
 
 ## Model selection
 
-The default (`claude-haiku-4-5`) resolves against the **Anthropic** provider.
-If you use pi through a gateway (e.g. OAuth against `radicalai`, Vercel AI
-Gateway, OpenRouter), the bare id won't find your credentials and the
-reviewer will fail to start with "No API key found". Use the `provider/id`
-form of whatever haiku-class model your gateway exposes:
+Nitpick declares itself a **`normal`-tier** consumer — code review needs
+enough reasoning to read diffs and produce structured findings; a
+haiku-class model under-performs, an opus-class model is overkill for the
+volume.
 
+Resolution order (high → low priority), via `shared/model-resolver.ts`:
+
+1. `/nitpick model <provider/id>` — in-session override, not persisted.
+2. `settings.json → extensionConfig.nitpick.model` — persistent
+   per-extension override.
+3. `settings.json → backgroundModels.normal` — the "what does
+   `normal` tier mean to me" setting, shared with any future
+   `normal`-tier consumer.
+4. `ctx.model` — the active session model. Always has auth but may be
+   more expensive than necessary.
+5. Nothing usable → notify once, reviews disabled for the session.
+
+There are **no hard-coded model IDs**. If you use pi through a gateway
+(e.g. `radicalai`, Vercel AI Gateway, OpenRouter), point the resolver
+at whatever model your gateway exposes under whatever provider id you
+authenticate with:
+
+```jsonc
+// ~/.pi/agent/settings.json or .pi/settings.json (project)
+{
+  "backgroundModels": {
+    "normal": "radicalai/claude-haiku-4-5-20251001"
+  }
+}
 ```
-/nitpick model radicalai/claude-haiku-4-5-20251001
-/nitpick model radicalai/eu-haiku-4-5
-/nitpick model openrouter/anthropic/claude-haiku-4.5
+
+Or override per-extension:
+
+```jsonc
+{
+  "extensionConfig": {
+    "nitpick": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
+  }
+}
 ```
 
 Start failures surface as TUI warnings and are also visible via
