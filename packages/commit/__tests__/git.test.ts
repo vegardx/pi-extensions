@@ -4,18 +4,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { refExists } from "../git.js";
 
-function git(cwd: string, ...args: string[]): void {
+/**
+ * Run `git` in `cwd` with a hermetic environment:
+ * - `GIT_CONFIG_NOSYSTEM=1` suppresses the system config (portable).
+ * - `GIT_CONFIG_GLOBAL` points at the caller-supplied empty file so we
+ *   don't inherit the developer's `~/.gitconfig`. We pass it through
+ *   `env` on the child process only — never touch `process.env` — so
+ *   later tests in the same vitest worker can't pick up a dangling
+ *   path after our `finally` deletes the temp dir.
+ */
+function runGit(cwd: string, configGlobal: string, ...args: string[]): void {
 	const r = spawnSync("git", args, {
 		cwd,
 		encoding: "utf8",
 		env: {
 			...process.env,
-			// Keep the test hermetic: don't honor the user's git config /
-			// hooks / templates / signing keys when seeding the repo.
-			// GIT_CONFIG_NOSYSTEM suppresses system config portably (POSIX +
-			// Windows). For GIT_CONFIG_GLOBAL we can't use /dev/null (not
-			// portable) so the caller passes in a path to an empty temp file.
 			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_CONFIG_GLOBAL: configGlobal,
 			GIT_AUTHOR_NAME: "test",
 			GIT_AUTHOR_EMAIL: "test@example.com",
 			GIT_COMMITTER_NAME: "test",
@@ -31,53 +36,66 @@ function git(cwd: string, ...args: string[]): void {
 	}
 }
 
-function mkRepo(): string {
+interface Repo {
+	dir: string;
+	/** git invoked inside this repo with its own scoped global-config. */
+	git: (...args: string[]) => void;
+}
+
+function mkRepo(init: { bare?: boolean; seed?: boolean } = {}): Repo {
 	const dir = mkdtempSync(join(tmpdir(), "pi-ext-commit-gittest-"));
-	// Empty global-config file so `git` doesn't read the user's ~/.gitconfig
-	// (portable alternative to GIT_CONFIG_GLOBAL=/dev/null).
-	const emptyConfig = join(dir, ".empty-gitconfig");
-	writeFileSync(emptyConfig, "");
-	process.env.GIT_CONFIG_GLOBAL = emptyConfig;
-	git(dir, "init", "--quiet", "--initial-branch=main");
-	writeFileSync(join(dir, "seed"), "");
-	git(dir, "add", "seed");
-	git(dir, "commit", "--quiet", "-m", "seed");
-	return dir;
+	// Per-repo empty global-config file. Kept inside `dir` so the `rmSync`
+	// cleanup removes it and nothing leaks between tests.
+	const configGlobal = join(dir, ".empty-gitconfig");
+	writeFileSync(configGlobal, "");
+	const gitInRepo = (...args: string[]) => runGit(dir, configGlobal, ...args);
+	if (init.bare) {
+		gitInRepo("init", "--quiet", "--bare");
+	} else {
+		gitInRepo("init", "--quiet", "--initial-branch=main");
+	}
+	if (init.seed) {
+		writeFileSync(join(dir, "seed"), "");
+		gitInRepo("add", "seed");
+		gitInRepo("commit", "--quiet", "-m", "seed");
+	}
+	return { dir, git: gitInRepo };
 }
 
 describe("refExists", () => {
 	it("returns false for an unknown ref", () => {
-		const repo = mkRepo();
+		const repo = mkRepo({ seed: true });
 		try {
-			expect(refExists(repo, "origin/does-not-exist")).toBe(false);
-			expect(refExists(repo, "refs/remotes/origin/does-not-exist")).toBe(false);
+			expect(refExists(repo.dir, "origin/does-not-exist")).toBe(false);
+			expect(refExists(repo.dir, "refs/remotes/origin/does-not-exist")).toBe(
+				false,
+			);
 		} finally {
-			rmSync(repo, { recursive: true, force: true });
+			rmSync(repo.dir, { recursive: true, force: true });
 		}
 	});
 
 	it("returns true for HEAD in an initialised repo", () => {
-		const repo = mkRepo();
+		const repo = mkRepo({ seed: true });
 		try {
-			expect(refExists(repo, "HEAD")).toBe(true);
+			expect(refExists(repo.dir, "HEAD")).toBe(true);
 		} finally {
-			rmSync(repo, { recursive: true, force: true });
+			rmSync(repo.dir, { recursive: true, force: true });
 		}
 	});
 
 	it("returns true for a remote-tracking ref after a push", () => {
-		const bare = mkdtempSync(join(tmpdir(), "pi-ext-commit-gittest-bare-"));
-		const repo = mkRepo();
+		const bare = mkRepo({ bare: true });
+		const repo = mkRepo({ seed: true });
 		try {
-			git(bare, "init", "--quiet", "--bare");
-			git(repo, "remote", "add", "origin", bare);
-			git(repo, "push", "--quiet", "-u", "origin", "main");
-			expect(refExists(repo, "origin/main")).toBe(true);
+			repo.git("remote", "add", "origin", bare.dir);
+			repo.git("push", "--quiet", "-u", "origin", "main");
+			expect(refExists(repo.dir, "origin/main")).toBe(true);
 			// Still false for branches that only exist locally or not at all.
-			expect(refExists(repo, "origin/other")).toBe(false);
+			expect(refExists(repo.dir, "origin/other")).toBe(false);
 		} finally {
-			rmSync(repo, { recursive: true, force: true });
-			rmSync(bare, { recursive: true, force: true });
+			rmSync(repo.dir, { recursive: true, force: true });
+			rmSync(bare.dir, { recursive: true, force: true });
 		}
 	});
 });
