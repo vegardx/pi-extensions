@@ -175,7 +175,7 @@ export default (pi) => {
 Then in pi:
 
 ```
-/nitpick model qwen3-coder
+/nitpick model local-openai/qwen3-coder
 ```
 
 ## Test

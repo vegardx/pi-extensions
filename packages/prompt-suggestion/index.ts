@@ -238,7 +238,8 @@ export default function (pi: ExtensionAPI): void {
 
 	// Only predict after a real user turn. Session-resume fires a synthetic
 	// agent_end on load; without this flag we'd immediately ship the restored
-	// conversation to Haiku and guess a message the user already answered.
+	// conversation to the suggestion model and guess a message the user
+	// already answered.
 	pi.on("turn_start", () => {
 		if (predictor) predictor.sawTurnInThisSession = true;
 	});
@@ -292,9 +293,9 @@ export default function (pi: ExtensionAPI): void {
 
 		const suggestion = await predictor.predict(event.messages);
 		if (!suggestion) return;
-		// Post-await: if the user started typing during the Haiku call, don't paint
-		// over their in-progress input. isIdle() is skipped here for the same
-		// racy-flag reason as the pre-check above.
+		// Post-await: if the user started typing during the predictor call,
+		// don't paint over their in-progress input. isIdle() is skipped here
+		// for the same racy-flag reason as the pre-check above.
 		if (ctx.ui.getEditorText() !== "") {
 			predictor.lastStatus = "post: buffer-not-empty";
 			return;

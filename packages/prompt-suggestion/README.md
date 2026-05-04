@@ -2,10 +2,11 @@
 
 Claude-Code-style inline ghost-text prompt suggestions for [pi](https://pi.dev).
 
-After pi finishes responding, a secondary model (Haiku 4.5 by default)
-predicts your next message and renders it as dim ghost text inside the input.
-Press Tab to accept the suggestion into the buffer, then Enter to submit.
-Any other key dismisses the suggestion.
+After pi finishes responding, a secondary model (configured via
+`settings.json` — see [Model selection](#model-selection) below)
+predicts your next message and renders it as dim ghost text inside
+the input. Press Tab to accept the suggestion into the buffer, then
+Enter to submit. Any other key dismisses the suggestion.
 
 ## Try it
 
