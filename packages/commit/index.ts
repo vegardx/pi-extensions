@@ -618,37 +618,23 @@ export default function (pi: ExtensionAPI) {
 	): Promise<boolean> {
 		const remoteRef = `${target.target}/${target.targetBranch}`;
 
+		// All non-force push paths in this function are structurally identical
+		// — same pushRefspec call, same error notification, same return
+		// shape. Keep them collapsed here so future changes can't drift.
+		const doStandardPush = () =>
+			tryPush(ctx, target, { errorLabel: "git push failed" });
+
 		// First push: no remote-tracking ref exists yet, so there is nothing
 		// to drift from. Just push. Without this guard the merge-base /
 		// is-ancestor probes below both silently fail on the unknown ref and
 		// we fall through to the "remote has commits we don't have" prompt.
 		if (!refExists(ctx.cwd, remoteRef)) {
-			const r = pushRefspec(
-				ctx.cwd,
-				target.target,
-				`HEAD:${target.targetBranch}`,
-				false,
-			);
-			if (!r.ok) {
-				notify(ctx, `git push failed: ${r.stderr.trim()}`, "error");
-				return false;
-			}
-			return true;
+			return doStandardPush();
 		}
 
 		// Head-drift detection.
 		if (isAncestor(ctx.cwd, remoteRef)) {
-			const r = pushRefspec(
-				ctx.cwd,
-				target.target,
-				`HEAD:${target.targetBranch}`,
-				false,
-			);
-			if (!r.ok) {
-				notify(ctx, `git push failed: ${r.stderr.trim()}`, "error");
-				return false;
-			}
-			return true;
+			return doStandardPush();
 		}
 
 		// Remote moved. Compare trees to distinguish "author amended/rebased
@@ -662,17 +648,7 @@ export default function (pi: ExtensionAPI) {
 				return false;
 			}
 			notify(ctx, "rebased onto remote (trees matched)", "info");
-			const r = pushRefspec(
-				ctx.cwd,
-				target.target,
-				`HEAD:${target.targetBranch}`,
-				false,
-			);
-			if (!r.ok) {
-				notify(ctx, `git push failed: ${r.stderr.trim()}`, "error");
-				return false;
-			}
-			return true;
+			return doStandardPush();
 		}
 
 		// Real divergence — ask the user.
@@ -698,21 +674,9 @@ export default function (pi: ExtensionAPI) {
 				);
 				return false;
 			}
-			const p = pushRefspec(
-				ctx.cwd,
-				target.target,
-				`HEAD:${target.targetBranch}`,
-				false,
-			);
-			if (!p.ok) {
-				notify(
-					ctx,
-					`git push after rebase failed: ${p.stderr.trim()}`,
-					"error",
-				);
-				return false;
-			}
-			return true;
+			return tryPush(ctx, target, {
+				errorLabel: "git push after rebase failed",
+			});
 		}
 		// Force push — explicit consent collected above.
 		const confirm = await ctx.ui.confirm(
@@ -723,14 +687,25 @@ export default function (pi: ExtensionAPI) {
 			notify(ctx, "aborted", "info");
 			return false;
 		}
+		return tryPush(ctx, target, {
+			force: true,
+			errorLabel: "force-push failed",
+		});
+	}
+
+	function tryPush(
+		ctx: ExtensionCommandContext,
+		target: PushTarget,
+		opts: { force?: boolean; errorLabel: string },
+	): boolean {
 		const r = pushRefspec(
 			ctx.cwd,
 			target.target,
 			`HEAD:${target.targetBranch}`,
-			true,
+			opts.force ?? false,
 		);
 		if (!r.ok) {
-			notify(ctx, `force-push failed: ${r.stderr.trim()}`, "error");
+			notify(ctx, `${opts.errorLabel}: ${r.stderr.trim()}`, "error");
 			return false;
 		}
 		return true;
