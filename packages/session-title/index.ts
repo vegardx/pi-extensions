@@ -764,6 +764,12 @@ export default function (pi: ExtensionAPI) {
 	// session_shutdown or when `sticky` leaves the active surface set.
 	let stickyBar: StickyBar | undefined;
 
+	// Track whether this extension currently owns pi's (single global)
+	// header slot. Without this, applyTitle() would call
+	// setHeader(undefined) every run in the default "no header requested"
+	// case, clobbering any header another extension may have installed.
+	let weInstalledHeader = false;
+
 	function tearDownSticky(): void {
 		if (stickyBar) {
 			stickyBar.stop();
@@ -820,7 +826,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// ---- pi header bar (NOT sticky; cosmetic) ----
-		if (surfaces.has("header")) {
+		// Only touch pi's single global header slot when we're actually
+		// going to use it. Otherwise another extension (or pi itself) may
+		// have installed something and we would clobber it on every
+		// applyTitle() run.
+		const wantHeader = surfaces.has("header");
+		// The blank spacer only exists to keep pi from fighting us for row
+		// 1 when sticky is active. Inside tmux, sticky is refused below, so
+		// installing the blank spacer here would just hide another
+		// extension's header for nothing — skip it.
+		const wantStickySpacer = surfaces.has("sticky") && !process.env.TMUX;
+		if (wantHeader) {
 			ctx.ui.setHeader((_tui, theme) => ({
 				render(width: number): string[] {
 					if (width <= 0) return [""];
@@ -831,7 +847,8 @@ export default function (pi: ExtensionAPI) {
 				},
 				invalidate() {},
 			}));
-		} else if (surfaces.has("sticky")) {
+			weInstalledHeader = true;
+		} else if (wantStickySpacer) {
 			// Sticky mode reserves row 1 for itself and needs pi to render a
 			// 1-line blank at the top of its frame so pi doesn't fight us for
 			// row 1. We install a no-op header for this.
@@ -841,8 +858,13 @@ export default function (pi: ExtensionAPI) {
 				},
 				invalidate() {},
 			}));
-		} else {
+			weInstalledHeader = true;
+		} else if (weInstalledHeader) {
+			// We previously installed a header; we're not installing one
+			// now, so give the slot back. Don't touch it if we never owned
+			// it.
 			ctx.ui.setHeader(undefined);
+			weInstalledHeader = false;
 		}
 
 		// ---- sticky top bar via DECSTBM (experimental, terminal-dependent) --
@@ -1075,6 +1097,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setEditorComponent(undefined);
 			titledEditorInstalled = false;
 			editorTui = undefined;
+		}
+		if (weInstalledHeader && ctx?.hasUI) {
+			ctx.ui.setHeader(undefined);
+			weInstalledHeader = false;
 		}
 		// Reset auto-title state so a `reload` (which keeps the same
 		// extension runtime per session_shutdown docs) starts fresh.
