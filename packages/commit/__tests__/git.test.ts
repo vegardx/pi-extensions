@@ -1,5 +1,5 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { refExists } from "../git.js";
@@ -12,8 +12,10 @@ function git(cwd: string, ...args: string[]): void {
 			...process.env,
 			// Keep the test hermetic: don't honor the user's git config /
 			// hooks / templates / signing keys when seeding the repo.
-			GIT_CONFIG_GLOBAL: "/dev/null",
-			GIT_CONFIG_SYSTEM: "/dev/null",
+			// GIT_CONFIG_NOSYSTEM suppresses system config portably (POSIX +
+			// Windows). For GIT_CONFIG_GLOBAL we can't use /dev/null (not
+			// portable) so the caller passes in a path to an empty temp file.
+			GIT_CONFIG_NOSYSTEM: "1",
 			GIT_AUTHOR_NAME: "test",
 			GIT_AUTHOR_EMAIL: "test@example.com",
 			GIT_COMMITTER_NAME: "test",
@@ -21,14 +23,23 @@ function git(cwd: string, ...args: string[]): void {
 		},
 	});
 	if (r.status !== 0) {
-		throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+		// spawnSync sets status=null when the binary itself failed to run;
+		// r.error carries the real reason in that case. Surface both so a
+		// missing `git` on PATH is diagnosable.
+		const reason = r.error ? r.error.message : r.stderr || "unknown";
+		throw new Error(`git ${args.join(" ")} failed: ${reason}`);
 	}
 }
 
 function mkRepo(): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-ext-commit-gittest-"));
+	// Empty global-config file so `git` doesn't read the user's ~/.gitconfig
+	// (portable alternative to GIT_CONFIG_GLOBAL=/dev/null).
+	const emptyConfig = join(dir, ".empty-gitconfig");
+	writeFileSync(emptyConfig, "");
+	process.env.GIT_CONFIG_GLOBAL = emptyConfig;
 	git(dir, "init", "--quiet", "--initial-branch=main");
-	execFileSync("touch", [join(dir, "seed")]);
+	writeFileSync(join(dir, "seed"), "");
 	git(dir, "add", "seed");
 	git(dir, "commit", "--quiet", "-m", "seed");
 	return dir;
