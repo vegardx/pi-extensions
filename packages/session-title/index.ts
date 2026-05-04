@@ -33,7 +33,7 @@
  *     the title into `tmux rename-window`, which shows up in any tmux
  *     status-bar template that references `#W`.
  *
- * So this extension offers four surfaces you can combine:
+ * So this extension offers six surfaces you can combine:
  *
  *   terminal   — OS window/tab title.     Always-sticky. (setTitle)
  *   tmux       — tmux window name.         Always-sticky inside tmux.
@@ -68,6 +68,7 @@
  */
 
 import { execFileSync, spawn } from "node:child_process";
+import { writeSync } from "node:fs";
 import path from "node:path";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { completeSimple } from "@mariozechner/pi-ai";
@@ -498,10 +499,8 @@ function rawWrite(s: string): void {
 /** Synchronous stdout write for `process.on('exit', ...)` handlers. */
 function rawWriteSync(s: string): void {
 	try {
-		// `fs.writeSync(1, ...)` is the only reliable way to flush during exit.
-		// eslint-disable-next-line @typescript-eslint/no-require-imports
-		const fs = require("node:fs") as typeof import("node:fs");
-		fs.writeSync(1, s);
+		// `writeSync(1, ...)` is the only reliable way to flush during exit.
+		writeSync(1, s);
 	} catch {
 		/* fd 1 may be closed */
 	}
@@ -672,7 +671,7 @@ export default function (pi: ExtensionAPI) {
 		type: "string",
 	});
 	pi.registerFlag("title-position", {
-		description: `Comma-separated list of surfaces: ${ALLOWED_SURFACES.join(",")}. Default depends on env (terminal,footer [+tmux if $TMUX]).`,
+		description: `Comma-separated list of surfaces: ${ALLOWED_SURFACES.join(",")}. Default: terminal,divider (+tmux if $TMUX).`,
 		type: "string",
 	});
 	pi.registerFlag("no-auto-title", {
@@ -765,6 +764,22 @@ export default function (pi: ExtensionAPI) {
 	// session_shutdown or when `sticky` leaves the active surface set.
 	let stickyBar: StickyBar | undefined;
 
+	// Track whether this extension currently owns pi's (single global)
+	// header slot. Without this, applyTitle() would call
+	// setHeader(undefined) every run in the default "no header requested"
+	// case, clobbering any header another extension may have installed.
+	//
+	// Known limitation (tracked upstream): pi's `setHeader` is a single
+	// global slot with no disposer and no way to query the current
+	// renderer. If another extension installs a header *after* us and
+	// then we're asked to transition out of header-mode (e.g. user runs
+	// `/title-position terminal`), we'll still clear the slot thinking
+	// we own it and wipe their header. Narrow race window compared to
+	// the previous unconditional-clobber behavior, but not fully fixable
+	// at the extension layer. Needs a pi API change (multi-header-with-
+	// key, like setStatus, or a disposer returned from setHeader).
+	let weInstalledHeader = false;
+
 	function tearDownSticky(): void {
 		if (stickyBar) {
 			stickyBar.stop();
@@ -821,7 +836,17 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		// ---- pi header bar (NOT sticky; cosmetic) ----
-		if (surfaces.has("header")) {
+		// Only touch pi's single global header slot when we're actually
+		// going to use it. Otherwise another extension (or pi itself) may
+		// have installed something and we would clobber it on every
+		// applyTitle() run.
+		const wantHeader = surfaces.has("header");
+		// The blank spacer only exists to keep pi from fighting us for row
+		// 1 when sticky is active. Inside tmux, sticky is refused below, so
+		// installing the blank spacer here would just hide another
+		// extension's header for nothing — skip it.
+		const wantStickySpacer = surfaces.has("sticky") && !process.env.TMUX;
+		if (wantHeader) {
 			ctx.ui.setHeader((_tui, theme) => ({
 				render(width: number): string[] {
 					if (width <= 0) return [""];
@@ -832,7 +857,8 @@ export default function (pi: ExtensionAPI) {
 				},
 				invalidate() {},
 			}));
-		} else if (surfaces.has("sticky")) {
+			weInstalledHeader = true;
+		} else if (wantStickySpacer) {
 			// Sticky mode reserves row 1 for itself and needs pi to render a
 			// 1-line blank at the top of its frame so pi doesn't fight us for
 			// row 1. We install a no-op header for this.
@@ -842,8 +868,13 @@ export default function (pi: ExtensionAPI) {
 				},
 				invalidate() {},
 			}));
-		} else {
+			weInstalledHeader = true;
+		} else if (weInstalledHeader) {
+			// We previously installed a header; we're not installing one
+			// now, so give the slot back. Don't touch it if we never owned
+			// it.
 			ctx.ui.setHeader(undefined);
+			weInstalledHeader = false;
 		}
 
 		// ---- sticky top bar via DECSTBM (experimental, terminal-dependent) --
@@ -1076,6 +1107,10 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setEditorComponent(undefined);
 			titledEditorInstalled = false;
 			editorTui = undefined;
+		}
+		if (weInstalledHeader && ctx?.hasUI) {
+			ctx.ui.setHeader(undefined);
+			weInstalledHeader = false;
 		}
 		// Reset auto-title state so a `reload` (which keeps the same
 		// extension runtime per session_shutdown docs) starts fresh.
