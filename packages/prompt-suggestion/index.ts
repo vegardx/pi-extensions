@@ -1,11 +1,14 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@mariozechner/pi-coding-agent";
+import { resolveModel } from "../../shared/model-resolver.js";
 import { GhostEditor } from "./ghost-editor.js";
 import { Predictor, parseModelSpec } from "./predictor.js";
 
-const DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001";
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "prompt-suggestion.json");
 
 interface PersistedConfig {
@@ -34,6 +37,35 @@ function savePersistedConfig(config: PersistedConfig): void {
 	}
 }
 
+/**
+ * Resolve the initial model spec for prompt-suggestion.
+ *
+ * Precedence (high → low):
+ *   1. Persisted pick from `/suggest` in `~/.pi/agent/prompt-suggestion.json`.
+ *   2. `--suggest-model=<spec>` CLI flag (session override).
+ *   3. Shared resolver — extensionConfig.prompt-suggestion.model →
+ *      backgroundModels.fast → ctx.model. Returns null if nothing
+ *      usable, in which case we disable the feature silently (the
+ *      predictor's own auth-probe surfaces a one-time notify if the
+ *      chosen model later fails auth).
+ */
+async function resolveInitialModelSpec(
+	ctx: ExtensionContext,
+	persisted: PersistedConfig,
+	flagSpec: string | undefined,
+): Promise<string | null> {
+	if (persisted.modelSpec && typeof persisted.modelSpec === "string") {
+		return persisted.modelSpec;
+	}
+	if (flagSpec) return flagSpec;
+	const resolved = await resolveModel(ctx, {
+		name: "prompt-suggestion",
+		tier: "fast",
+	});
+	if (!resolved) return null;
+	return `${resolved.model.provider}/${resolved.model.id}`;
+}
+
 export default function (pi: ExtensionAPI): void {
 	pi.registerFlag("suggest", {
 		type: "boolean",
@@ -42,8 +74,8 @@ export default function (pi: ExtensionAPI): void {
 	});
 	pi.registerFlag("suggest-model", {
 		type: "string",
-		default: DEFAULT_MODEL,
-		description: "provider/modelId used for prompt suggestions",
+		description:
+			"provider/modelId for prompt suggestions (session override). Without this, uses the `/suggest` pick, then settings.json extensionConfig.prompt-suggestion.model, then backgroundModels.fast, then the active session model.",
 	});
 
 	let editor: GhostEditor | undefined;
@@ -162,7 +194,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		const persisted = loadPersistedConfig();
 
 		// Enabled precedence: persisted > flag > default(true).
@@ -175,14 +207,25 @@ export default function (pi: ExtensionAPI): void {
 			enabled = flagEnabled !== false;
 		}
 
-		// Model precedence: persisted > flag > DEFAULT_MODEL.
 		const flagModel = pi.getFlag("suggest-model");
-		const modelSpec =
-			persisted.modelSpec && typeof persisted.modelSpec === "string"
-				? persisted.modelSpec
-				: typeof flagModel === "string" && flagModel
-					? flagModel
-					: DEFAULT_MODEL;
+		const flagSpec =
+			typeof flagModel === "string" && flagModel ? flagModel : undefined;
+		const modelSpec = await resolveInitialModelSpec(ctx, persisted, flagSpec);
+
+		if (!modelSpec) {
+			// No configured model anywhere and no active session model. Feature
+			// stays disabled for the session; surfaced once at startup so the
+			// user knows why ghost text isn't showing.
+			if (enabled && ctx.hasUI) {
+				ctx.ui.notify(
+					"prompt-suggestion: no model configured (set backgroundModels.fast or extensionConfig.prompt-suggestion.model in settings.json, or run /suggest). Ghost text disabled.",
+					"info",
+				);
+			}
+			predictor = undefined;
+			editor = undefined;
+			return;
+		}
 
 		predictor = new Predictor(modelSpec, ctx);
 		editor = undefined;
