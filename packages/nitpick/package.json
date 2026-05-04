@@ -1,0 +1,15 @@
+{
+  "name": "pi-ext-nitpick",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": { "optional": true },
+    "@sinclair/typebox": { "optional": true }
+  }
+}
