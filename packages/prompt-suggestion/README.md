@@ -79,6 +79,10 @@ not a command-safety filter.
 
 ## Model selection
 
+> For the monorepo-wide picture (how tiers work across extensions,
+> common configurations, troubleshooting), see
+> [`docs/configuring-models.md`](../../docs/configuring-models.md).
+
 Prompt-suggestion declares itself a **`fast`-tier** consumer — ghost
 text runs on every `agent_end` and wants a cheap, fast model.
 
