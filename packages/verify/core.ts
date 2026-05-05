@@ -34,6 +34,37 @@ const DEVELOP_STATE_ENTRY = "develop-state";
 export const VERIFY_REQUEST_ENTRY = "develop-verify-request";
 export const VERIFY_RESULT_ENTRY = "develop-verify-result";
 
+// ---- Subagent timeout heuristic ---------------------------------------
+//
+// PR #27 collapsed `/verify`'s per-step fan-out into a single
+// subagent that walks the whole plan in one shot. That trades N × 60s
+// of parallel budget for a single 60s window, which large plans (≥10
+// steps + sizable embedded diff) can blow through against fast-tier
+// models. We give the subagent a budget that grows linearly with the
+// step count, capped so a runaway never wedges /develop's auto-verify
+// loop indefinitely.
+//
+// `BASE_VERIFY_TIMEOUT_MS` matches `RpcClient`'s historical 60s
+// default — small plans see no behavior change. `PER_STEP_TIMEOUT_MS`
+// adds headroom proportional to the work the subagent has to do.
+// `MAX_VERIFY_TIMEOUT_MS` keeps the worst case bounded; in practice a
+// plan that needs more than 5 minutes to verify is a sign the model
+// or the plan size is wrong, not that we should wait longer.
+export const BASE_VERIFY_TIMEOUT_MS = 60_000;
+export const PER_STEP_TIMEOUT_MS = 15_000;
+export const MAX_VERIFY_TIMEOUT_MS = 300_000;
+
+/**
+ * Pure helper: budget for the verify subagent's `waitForIdle`, in ms.
+ * `60s + 15s × steps`, capped at 5 minutes. Exported so unit tests
+ * can pin the heuristic without booting the extension.
+ */
+export function verifyTimeoutMs(stepCount: number): number {
+	const safe = Number.isFinite(stepCount) && stepCount > 0 ? stepCount : 0;
+	const scaled = BASE_VERIFY_TIMEOUT_MS + PER_STEP_TIMEOUT_MS * safe;
+	return Math.min(MAX_VERIFY_TIMEOUT_MS, scaled);
+}
+
 interface DevelopStateLike {
 	planText?: string;
 	branch?: string;
@@ -490,8 +521,9 @@ export async function runVerify(
 	const resolvedModelSpec = `${resolved.model.provider}/${resolved.model.id}`;
 
 	if (ctx.hasUI) {
+		const timeoutSec = Math.round(verifyTimeoutMs(steps.length) / 1000);
 		ctx.ui.notify(
-			`verify: running ${steps.length}-step batch (model ${resolvedModelSpec}${
+			`verify: running ${steps.length}-step batch (model ${resolvedModelSpec}, ${timeoutSec}s budget${
 				autoMode ? `, auto-mode iter ${iteration ?? "?"}` : ""
 			})`,
 			"info",
@@ -526,6 +558,7 @@ export async function runVerify(
 		model: resolved.model.id,
 		cwd: ctx.cwd,
 		signal: ctx.signal,
+		timeoutMs: verifyTimeoutMs(steps.length),
 	});
 
 	const verdictsMap = new Map<number, VerifierVerdict>();
