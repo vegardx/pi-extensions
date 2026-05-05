@@ -168,6 +168,48 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.hasUI) ctx.ui.notify(`develop: ${msg}`, level);
 	}
 
+	/**
+	 * After plan-complete, offer to dispatch a natural follow-up
+	 * command. Each option is gated on the target being installed via
+	 * `pi.getCommands()` — missing extensions don't appear in the picker.
+	 * Picking a command sends `"/<cmd>"` as a follow-up user message,
+	 * which queues a fresh turn after this handler returns.
+	 */
+	async function offerHandoff(ctx: ExtensionContext): Promise<void> {
+		// Gate options on the extension commands being installed. The
+		// /skill:<name> standalone path is a different UX (manually
+		// invoked) and we don't want to dispatch to it from here — the
+		// auto-handoff is meant for extension-extension integration.
+		const commandNames = new Set(pi.getCommands().map((c) => c.name));
+		const hasReview = commandNames.has("review");
+		const hasCommit = commandNames.has("commit");
+		const hasVerify = commandNames.has("verify");
+
+		const options: string[] = [];
+		if (hasVerify) options.push("Run /verify");
+		if (hasReview) options.push("Run /review");
+		if (hasCommit) options.push("Run /commit");
+		options.push("Stay here — I'll handle it");
+
+		// If nothing's installed except "Stay here" there's no real choice;
+		// don't bother showing a picker.
+		if (options.length === 1) return;
+
+		const choice = await ctx.ui.select("Plan complete. Now what?", options);
+		if (!choice || choice.startsWith("Stay")) return;
+
+		// Map picker labels to slash commands. The labels above are the
+		// only things `select` could have returned, so this is exhaustive.
+		let command: string | undefined;
+		if (choice.startsWith("Run /verify")) command = "/verify";
+		else if (choice.startsWith("Run /review")) command = "/review";
+		else if (choice.startsWith("Run /commit")) command = "/commit";
+		if (!command) return;
+
+		pi.sendUserMessage(command, { deliverAs: "followUp" });
+		notify(ctx, `dispatched ${command}`);
+	}
+
 	function updateWidget(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		if (!state) {
@@ -782,6 +824,13 @@ export default function (pi: ExtensionAPI) {
 				state.phase = "consumed";
 				persist();
 				updateWidget(ctx);
+
+				// Offer to dispatch the natural follow-up command. Each
+				// option is gated on the target being installed; missing
+				// extensions just don't appear in the picker.
+				if (ctx.hasUI) {
+					await offerHandoff(ctx);
+				}
 			}
 			return;
 		}

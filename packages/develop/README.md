@@ -58,6 +58,7 @@ own `examples/extensions/plan-mode/`.
                     widget: "📋 N-step plan"    widget: "⚙ 0/N (<branch>)"
                                                 [DONE:n] parsed live
                                                 on all-done: "Plan complete"
+                                                + handoff picker
 ```
 
 - **awaiting-plan** — agent is writing the plan; tools locked down.
@@ -134,8 +135,15 @@ On every `turn_end`, the extension reads the assistant text, runs
 `markCompletedSteps(text, todos)`, updates the widget, and persists.
 
 When `todos.every(t => t.completed)`, the extension emits a "Plan
-complete on `<branch>`!" message, flips phase to `consumed`, and
-clears the widget. Review / test / commit is then up to you.
+complete on `<branch>`!" message, flips phase to `consumed`, clears
+the widget, and pops a picker offering to dispatch a follow-up
+command. The picker lists `Run /verify`, `Run /review`, and
+`Run /commit` (only those that `pi.getCommands()` shows as
+installed), plus a "Stay here" option. Picking one calls
+`pi.sendUserMessage("/<cmd>", { deliverAs: "followUp" })`, queuing
+the command as a fresh user-message turn after the current one
+returns. Picking Stay leaves you in control — review, test, and
+commit by hand.
 
 ## Session resume
 

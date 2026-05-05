@@ -293,11 +293,32 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (reviewChoice.startsWith("Run")) {
-				notify(
-					ctx,
-					`type /review, walk the findings, then re-invoke /commit${guidance ? ` ${guidance}` : ""}`,
-					"info",
-				);
+				// Dispatch /review for the user instead of describing it. The
+				// command appears as a typed user message and triggers a fresh
+				// turn after this picker returns; same flow as the user typing
+				// it themselves, just one fewer keystroke. Gate only on the
+				// extension command — the standalone /skill:review path is a
+				// different UX (manual invocation) and dispatching to it from
+				// here would be surprising.
+				const hasReview = pi.getCommands().some((c) => c.name === "review");
+				if (hasReview) {
+					pi.sendUserMessage("/review", { deliverAs: "followUp" });
+					notify(
+						ctx,
+						`running /review — re-invoke /commit when you're done walking findings${
+							guidance ? ` ${guidance}` : ""
+						}`,
+						"info",
+					);
+				} else {
+					notify(
+						ctx,
+						`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; re-invoke /commit when you're ready to commit${
+							guidance ? ` ${guidance}` : ""
+						}`,
+						"info",
+					);
+				}
 				return;
 			}
 

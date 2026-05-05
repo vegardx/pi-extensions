@@ -47,9 +47,11 @@ commit message hardens around them. Offer it, but let the user skip.
 
 Standalone wording: "Run `/review` first, or commit now?"
 
-If running with the extension, the picker handles this; if the user
-picks Review, print "type /review, walk findings, re-invoke /commit"
-and stop — we don't nest skills here because `/review` is state-heavy.
+If running with the extension, the picker handles this; when the user
+picks Review, the extension dispatches `/review` for them via
+`pi.sendUserMessage` and prints a short re-invoke note. Standalone
+(this skill alone), suggest `/review` to the user and stop — you
+can't dispatch slash commands from skill context.
 
 ## Step 3: Propose a commit plan
 
