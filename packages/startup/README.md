@@ -5,13 +5,27 @@ First-party "what did pi just load?" extension for this monorepo.
 ## What it does
 
 On `session_start` (and on `/reload`), the extension surveys the
-running pi instance and prints a short summary toast:
+running pi instance and prints a one-shot info notification with
+the full breakdown — a one-line headline followed by the same
+report `/extensions` produces on demand:
 
 ```
 pi-ext-startup: 7 extensions · 3 overrides · /extensions for details
+
+Active model: anthropic/claude-…
+Background primary: fast=…, normal=…, heavy=…
+Background secondary: (not configured)
+Declared extensions (7):
+  …
 ```
 
-Run `/extensions` to dump the full breakdown:
+The report is emitted as a single multi-line `ctx.ui.notify(…, "info")`
+call on purpose: pi's interactive `info` notifications replace the
+previous one in place, so a per-line loop would collapse to whichever
+line happened to be last. One multi-line notify renders as a single
+Text block.
+
+Run `/extensions` to print the same breakdown again on demand:
 
 - **Active session model** — `provider/id` of the model pi is
   currently routing turns through (`ctx.model`).
@@ -49,9 +63,9 @@ pi -e ./packages/startup
 
 Inside pi:
 
-- The `session_start` toast shows the count summary.
-- `/extensions` prints the full report as a sequence of info
-  notifications.
+- The `session_start` notification shows the full breakdown
+  (headline + per-extension report) as a single multi-line block.
+- `/extensions` prints the same breakdown again on demand.
 
 ## How it discovers extensions
 
@@ -120,8 +134,9 @@ otherwise — each extension declares itself exactly once per process.
 
 - `index.ts` — factory: `summarize(pi, ctx)` (joins the metadata
   registry, command/tool grouping, and layered settings into a
-  structured summary), `renderLines(summary)` (pure, summary →
-  string[]), and the `session_start` + `/extensions` wiring.
+  structured summary), `renderHeadline(summary)` / `renderLines(summary)`
+  (pure, summary → string / string[]), and the `session_start` +
+  `/extensions` wiring (one multi-line `notify` per emit).
 - `__tests__/grouping.test.ts` — covers the pure helpers:
   `groupBySource` (command/tool dedup + builtin/sdk filtering),
   `resolveBackgroundTier` (set/tier lookup with secondary→primary

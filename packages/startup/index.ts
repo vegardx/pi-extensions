@@ -368,19 +368,28 @@ export default function (pi: ExtensionAPI) {
 		doc: "Reports loaded extensions, their declared config knobs, and effective values.",
 	});
 
-	pi.on("session_start", (_event, ctx) => {
+	// One multi-line notify, not many. pi's interactive-mode `showStatus`
+	// (where `info` notifications land) replaces the *previous* status text
+	// in place when consecutive info notifies arrive — so a per-line loop
+	// collapses to whichever line happened to be last. A single notify with
+	// embedded newlines renders as one Text block instead.
+	const emitReport = (ctx: ExtensionContext) => {
 		const summary = summarize(pi, ctx);
-		ctx.ui.notify(renderHeadline(summary), "info");
+		const body = [renderHeadline(summary), "", ...renderLines(summary)].join(
+			"\n",
+		);
+		ctx.ui.notify(body, "info");
+	};
+
+	pi.on("session_start", (_event, ctx) => {
+		emitReport(ctx);
 	});
 
 	pi.registerCommand("extensions", {
 		description:
 			"Show what pi loaded from this monorepo: declared extensions, config schemas, effective values, and active model.",
 		handler: async (_args, ctx) => {
-			const summary = summarize(pi, ctx);
-			for (const line of renderLines(summary)) {
-				ctx.ui.notify(line, "info");
-			}
+			emitReport(ctx);
 		},
 	});
 }
