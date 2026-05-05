@@ -1,8 +1,10 @@
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
 	countBySeverity,
 	dedupeFindings,
@@ -57,6 +59,14 @@ interface ReviewContext {
 }
 
 export default function (pi: ExtensionAPI) {
+	declareExtension({
+		name: EXT_ID,
+		path: fileURLToPath(import.meta.url),
+		doc: "Run seven specialist reviewer subagents over a diff or codebase.",
+		// Uses `ctx.model` directly — no per-extension model override or
+		// background-tier resolution today.
+	});
+
 	function notify(
 		ctx: ExtensionContext,
 		msg: string,

@@ -55,6 +55,13 @@ export interface BackgroundModels {
 
 export interface ExtensionConfig {
 	model?: string;
+	/**
+	 * Per-extension knobs beyond `model`. Validated only at the boundary
+	 * (the value must be an object); individual keys are not type-checked
+	 * here — each extension casts to its own shape via `declareExtension`
+	 * and a schema-aware reader.
+	 */
+	[key: string]: unknown;
 }
 
 export interface RelevantSettings {
@@ -100,9 +107,20 @@ function extractRelevant(raw: unknown): RelevantSettings {
 		const ec = obj.extensionConfig as Record<string, unknown>;
 		const pick: Record<string, ExtensionConfig | undefined> = {};
 		for (const [name, value] of Object.entries(ec)) {
-			if (value && typeof value === "object") {
-				const v = value as Record<string, unknown>;
-				if (typeof v.model === "string") pick[name] = { model: v.model };
+			if (value && typeof value === "object" && !Array.isArray(value)) {
+				// Preserve all keys under each extension entry verbatim. The
+				// `model` field is special-cased only by the resolver — every
+				// other key is consumed by the owning extension via its own
+				// schema. We still narrow `model` to a string to match its
+				// declared type.
+				const src = value as Record<string, unknown>;
+				const entry: ExtensionConfig = { ...src };
+				if (typeof src.model === "string") {
+					entry.model = src.model;
+				} else {
+					delete entry.model;
+				}
+				pick[name] = entry;
 			}
 		}
 		if (Object.keys(pick).length > 0) out.extensionConfig = pick;
@@ -112,20 +130,32 @@ function extractRelevant(raw: unknown): RelevantSettings {
 }
 
 /**
- * Read and merge global + project settings, returning only the keys
- * this monorepo's extensions care about. Project values override
- * global values at the leaf level (per-tier, per-extension), matching
- * pi's documented precedence.
+ * Layered view of merged settings: the same data `readRelevantSettings`
+ * returns, plus the un-merged `global` and `project` slices so callers
+ * can attribute each effective value back to its source layer.
  *
- * `cwd` is passed to pi's SettingsManager which derives the project
- * settings path from it. `agentDir` is an optional override; without
- * it pi uses its own resolution (honoring `PI_CODING_AGENT_DIR`,
- * falling back to `~/.pi/agent/`).
+ * `merged` is computed exactly the way `readRelevantSettings` does it
+ * (project overrides global at the leaf level), so existing call sites
+ * keep working unchanged.
  */
-export function readRelevantSettings(
+export interface LayeredRelevantSettings {
+	global: RelevantSettings;
+	project: RelevantSettings;
+	merged: RelevantSettings;
+}
+
+/**
+ * Read global and project settings separately, plus the merged view.
+ * Used by `/extensions` (in `pi-ext-startup`) to label each effective
+ * value as coming from `global`, `project`, or the extension's default.
+ *
+ * Project values override global values at the leaf level (per-tier,
+ * per-extension), matching pi's documented precedence.
+ */
+export function readRelevantSettingsLayered(
 	cwd: string,
 	agentDir?: string,
-): RelevantSettings {
+): LayeredRelevantSettings {
 	const manager = SettingsManager.create(cwd, agentDir);
 	const global = extractRelevant(manager.getGlobalSettings());
 	const project = extractRelevant(manager.getProjectSettings());
@@ -165,7 +195,25 @@ export function readRelevantSettings(
 		}
 	}
 
-	return merged;
+	return { global, project, merged };
+}
+
+/**
+ * Read and merge global + project settings, returning only the keys
+ * this monorepo's extensions care about. Project values override
+ * global values at the leaf level (per-tier, per-extension), matching
+ * pi's documented precedence.
+ *
+ * `cwd` is passed to pi's SettingsManager which derives the project
+ * settings path from it. `agentDir` is an optional override; without
+ * it pi uses its own resolution (honoring `PI_CODING_AGENT_DIR`,
+ * falling back to `~/.pi/agent/`).
+ */
+export function readRelevantSettings(
+	cwd: string,
+	agentDir?: string,
+): RelevantSettings {
+	return readRelevantSettingsLayered(cwd, agentDir).merged;
 }
 
 /**
