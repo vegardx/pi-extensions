@@ -4,8 +4,8 @@ Several extensions in this monorepo call an LLM on a side task:
 
 - `prompt-suggestion` predicts the next message after every turn.
 - `session-title` names the session for your terminal tab / tmux window.
-- `verify` (after PR C lands) fans out parallel read-only subagents
-  to check whether each step of a plan is actually done.
+- `verify` fans out parallel read-only subagents to check whether each
+  step of a plan is actually done.
 
 None of them hard-code a provider/model id. Each one declares a **tier**
 (`fast` / `normal` / `heavy`) and a **set** (`primary` / `secondary`),
