@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -6,6 +6,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import {
 	runSubagentsParallel,
@@ -141,10 +142,23 @@ async function resolvePlan(
 		const asPath = resolve(ctx.cwd, trimmed);
 		if (existsSync(asPath)) {
 			try {
-				return readFileSync(asPath, "utf8");
+				if (statSync(asPath).isFile()) {
+					return readFileSync(asPath, "utf8");
+				}
+				// Path exists but isn't a regular file (e.g. directory).
+				// Don't silently fall through and treat the path string as
+				// inline plan text — that produces nonsense. Stop and tell
+				// the user.
+				if (ctx.hasUI) {
+					ctx.ui.notify(
+						`verify: "${trimmed}" exists but isn't a regular file; provide a file path or inline plan text`,
+						"warning",
+					);
+				}
+				return null;
 			} catch {
-				// Fall through to inline interpretation if the file is
-				// unreadable for some reason.
+				// stat or read failed (permission etc.) — fall through to
+				// inline interpretation as a last resort.
 			}
 		}
 		return trimmed;
@@ -270,14 +284,12 @@ interface VerifySettings {
 	maxParallel?: number;
 }
 
-function readVerifySettings(_ctx: ExtensionContext): VerifySettings {
+function readVerifySettings(ctx: ExtensionContext): VerifySettings {
 	// `extensionConfig.verify` may include knobs beyond `model`. The
 	// shared resolver consumes `model` directly via `extensionConfig`;
 	// here we read the same key for verify-specific extras.
 	try {
-		const { readRelevantSettings } =
-			require("@vegardx/pi-extensions-shared/extension-settings.js") as typeof import("@vegardx/pi-extensions-shared/extension-settings.js");
-		const settings = readRelevantSettings(_ctx.cwd);
+		const settings = readRelevantSettings(ctx.cwd);
 		const ec = settings.extensionConfig?.[EXT_ID] as
 			| (VerifySettings & { model?: string })
 			| undefined;
@@ -285,7 +297,7 @@ function readVerifySettings(_ctx: ExtensionContext): VerifySettings {
 			return { maxParallel: ec.maxParallel };
 		}
 	} catch {
-		// settings unreadable / shared lib missing — caller falls back to defaults.
+		// settings unreadable — caller falls back to defaults.
 	}
 	return {};
 }
@@ -356,14 +368,25 @@ export default function (pi: ExtensionAPI) {
 					continue;
 				}
 				const parsed = parseVerdict(o.rawText);
-				if (parsed) {
-					verdicts.set(o.tag, parsed);
-				} else {
+				if (!parsed) {
 					errors.set(
 						o.tag,
 						`output was not valid JSON: ${o.rawText.slice(0, 200)}`,
 					);
+					continue;
 				}
+				// Cross-check the verdict's `step` against the task tag we
+				// sent in. If they disagree the subagent verified the wrong
+				// step; trust our tag and surface the mismatch as an error
+				// so the misattribution doesn't silently corrupt the report.
+				if (parsed.step !== o.tag) {
+					errors.set(
+						o.tag,
+						`subagent returned step=${parsed.step} but was asked about step=${o.tag}; verdict ignored`,
+					);
+					continue;
+				}
+				verdicts.set(o.tag, parsed);
 			}
 
 			const report = renderReport(steps, verdicts, errors, resolvedModelSpec);

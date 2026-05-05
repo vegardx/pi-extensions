@@ -8,15 +8,11 @@
     "extensions": ["./index.ts"]
   },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*",
     "@vegardx/pi-extensions-shared": "*"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-ai": { "optional": true },
     "@mariozechner/pi-coding-agent": { "optional": true },
-    "@sinclair/typebox": { "optional": true },
     "@vegardx/pi-extensions-shared": { "optional": true }
   }
 }
