@@ -43,6 +43,17 @@ export interface SubagentTask<Tag = string> {
 	cwd: string;
 	/** Abort signal wired to the active agent turn, if any. */
 	signal?: AbortSignal;
+	/**
+	 * `waitForIdle` timeout in milliseconds. When unset, the
+	 * underlying `RpcClient` falls back to its 60s default.
+	 *
+	 * Callers that batch a lot of work into one subagent (e.g.
+	 * `/verify`'s single-subagent fan-in over a long plan) should
+	 * scale this with payload size: 60s is plenty for a 1-step
+	 * verify, but a 13-step plan with a large embedded diff
+	 * routinely needs 4–5 minutes against a fast-tier model.
+	 */
+	timeoutMs?: number;
 }
 
 export interface SubagentOutcome<Tag = string> {
@@ -115,7 +126,7 @@ export async function runSubagent<Tag>(
 
 	try {
 		await Promise.race([client.prompt(input.task), aborted]);
-		await Promise.race([client.waitForIdle(), aborted]);
+		await awaitIdleOrAbort(client, input.timeoutMs, aborted);
 		const raw = (await client.getLastAssistantText()) ?? "";
 		return { tag: input.tag, rawText: raw };
 	} catch (err) {
@@ -171,4 +182,35 @@ async function tryStop(client: RpcClient): Promise<void> {
 	} catch {
 		/* best-effort shutdown */
 	}
+}
+
+// ---- Idle-await helper ------------------------------------------------
+//
+// Extracted so callers can unit-test that `runSubagent` actually
+// forwards their `timeoutMs` into `RpcClient.waitForIdle`. A typo or
+// refactor accident that dropped the argument here would silently
+// re-introduce the post-PR-#27 60s timeout regression on `/verify`.
+//
+// Loose on the input shape — takes a minimal `{ waitForIdle }`
+// surface so tests can pass a spy without constructing a real
+// `RpcClient`. Public `runSubagent` callers continue to pass the
+// real client; the type narrows at the call site via structural
+// typing.
+
+/** Minimum surface `awaitIdleOrAbort` needs from its client argument. */
+export interface IdleWaitable {
+	waitForIdle(timeoutMs?: number): Promise<void>;
+}
+
+/**
+ * Race `client.waitForIdle(timeoutMs)` against the abort promise.
+ * Forwards `timeoutMs` verbatim — when `undefined`, `RpcClient`'s
+ * own default (60s today) applies.
+ */
+export function awaitIdleOrAbort(
+	client: IdleWaitable,
+	timeoutMs: number | undefined,
+	aborted: Promise<never>,
+): Promise<void> {
+	return Promise.race([client.waitForIdle(timeoutMs), aborted]);
 }

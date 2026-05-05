@@ -34,6 +34,79 @@ const DEVELOP_STATE_ENTRY = "develop-state";
 export const VERIFY_REQUEST_ENTRY = "develop-verify-request";
 export const VERIFY_RESULT_ENTRY = "develop-verify-result";
 
+// ---- Subagent timeout heuristic ---------------------------------------
+//
+// PR #27 collapsed `/verify`'s per-step fan-out into a single
+// subagent that walks the whole plan in one shot. That trades N × 60s
+// of parallel budget for a single 60s window, which large plans (≥10
+// steps + sizable embedded diff) can blow through against fast-tier
+// models. We give the subagent a budget that grows linearly with the
+// step count, capped so a runaway never wedges /develop's auto-verify
+// loop indefinitely.
+//
+// `BASE_VERIFY_TIMEOUT_MS` matches `RpcClient`'s historical 60s
+// default — the budget never goes BELOW 60s, but every step adds
+// `PER_STEP_TIMEOUT_MS` of headroom on top, so even a 1-step verify
+// runs with a 75s budget now. The intent is "never less than before,
+// always proportional to the work". `MAX_VERIFY_TIMEOUT_MS` keeps the
+// worst case bounded; in practice a plan that needs more than 5
+// minutes to verify is a sign the model or the plan size is wrong,
+// not that we should wait longer.
+export const BASE_VERIFY_TIMEOUT_MS = 60_000;
+export const PER_STEP_TIMEOUT_MS = 15_000;
+export const MAX_VERIFY_TIMEOUT_MS = 300_000;
+
+/**
+ * Pure helper: budget for the verify subagent's `waitForIdle`, in ms.
+ * `60s + 15s × steps`, capped at 5 minutes. Exported so unit tests
+ * can pin the heuristic without booting the extension.
+ */
+export function verifyTimeoutMs(stepCount: number): number {
+	const safe = Number.isFinite(stepCount) && stepCount > 0 ? stepCount : 0;
+	const scaled = BASE_VERIFY_TIMEOUT_MS + PER_STEP_TIMEOUT_MS * safe;
+	return Math.min(MAX_VERIFY_TIMEOUT_MS, scaled);
+}
+
+/**
+ * Pure helper: assemble the `SubagentTask` payload `/verify` hands
+ * to `runSubagent`. Extracted so a unit test can confirm the
+ * timeout heuristic is wired into the call site — a typo that
+ * dropped `timeoutMs` (or passed it in seconds instead of ms) would
+ * silently re-introduce the post-#27 60s timeout regression.
+ *
+ * Stays loose on the input shape so it doesn't pull pi types into
+ * its test boundary; callers pass strings + the resolved abort
+ * signal, the function returns the exact object passed to
+ * `runSubagent`.
+ */
+export function buildVerifySubagentInput(opts: {
+	steps: readonly PlanStep[];
+	provider: string;
+	modelId: string;
+	cwd: string;
+	signal?: AbortSignal;
+}): {
+	tag: number;
+	task: string;
+	systemPromptPath: string;
+	provider: string;
+	model: string;
+	cwd: string;
+	signal?: AbortSignal;
+	timeoutMs: number;
+} {
+	return {
+		tag: 0,
+		task: buildPlanTask(opts.steps),
+		systemPromptPath: PROMPT_PATH,
+		provider: opts.provider,
+		model: opts.modelId,
+		cwd: opts.cwd,
+		signal: opts.signal,
+		timeoutMs: verifyTimeoutMs(opts.steps.length),
+	};
+}
+
 interface DevelopStateLike {
 	planText?: string;
 	branch?: string;
@@ -490,8 +563,9 @@ export async function runVerify(
 	const resolvedModelSpec = `${resolved.model.provider}/${resolved.model.id}`;
 
 	if (ctx.hasUI) {
+		const timeoutSec = Math.round(verifyTimeoutMs(steps.length) / 1000);
 		ctx.ui.notify(
-			`verify: running ${steps.length}-step batch (model ${resolvedModelSpec}${
+			`verify: running ${steps.length}-step batch (model ${resolvedModelSpec}, ${timeoutSec}s budget${
 				autoMode ? `, auto-mode iter ${iteration ?? "?"}` : ""
 			})`,
 			"info",
@@ -518,15 +592,15 @@ export async function runVerify(
 	// extras are ignored. The host pi process stays out of the verify
 	// model context (the subagent runs against its own RpcClient with
 	// `--no-session`), so verify never pollutes the active session.
-	const outcome = await runSubagent({
-		tag: 0,
-		task: buildPlanTask(steps),
-		systemPromptPath: PROMPT_PATH,
-		provider: resolved.model.provider,
-		model: resolved.model.id,
-		cwd: ctx.cwd,
-		signal: ctx.signal,
-	});
+	const outcome = await runSubagent(
+		buildVerifySubagentInput({
+			steps,
+			provider: resolved.model.provider,
+			modelId: resolved.model.id,
+			cwd: ctx.cwd,
+			signal: ctx.signal,
+		}),
+	);
 
 	const verdictsMap = new Map<number, VerifierVerdict>();
 	const errorsMap = new Map<number, string>();

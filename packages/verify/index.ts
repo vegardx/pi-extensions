@@ -12,13 +12,18 @@ export type {
 // Re-exports for tests + downstream consumers (e.g. /develop) that don't
 // want to touch the `./core` subpath import directly.
 export {
+	BASE_VERIFY_TIMEOUT_MS,
+	buildVerifySubagentInput,
 	extractPlanSteps,
 	findAutoModeIteration,
+	MAX_VERIFY_TIMEOUT_MS,
+	PER_STEP_TIMEOUT_MS,
 	parseVerdict,
 	parseVerdictArray,
 	runVerify,
 	VERIFY_REQUEST_ENTRY,
 	VERIFY_RESULT_ENTRY,
+	verifyTimeoutMs,
 } from "./core.js";
 
 export default function (pi: ExtensionAPI) {
