@@ -126,9 +126,10 @@ Configure once in `settings.json`:
 ```
 
 There's also a `secondary` set under `backgroundModels` that peer
-consumers (today: `verify`) read from for cross-model checks.
-Configure both sets to use one to verify the other; configure only
-`primary` and `secondary` consumers fall back to it.
+consumers can read from for cross-model checks. The `secondary` set is
+reserved for future multi-model fan-out consumers (planned: `/review`).
+Consumers that request a tier from `secondary` and don't find it fall
+back to `primary`.
 
 Current tier assignments:
 
@@ -136,7 +137,7 @@ Current tier assignments:
 |---|---|---|
 | `prompt-suggestion` | `fast` | Ghost text on every turn; 40-token output. |
 | `session-title` (auto-title) | `fast` | Once per session; 2–5 word output. |
-| `verify` | `normal` (set: `secondary`) | Per-step plan verifier; reads `secondary` for cross-checking. |
+| `verify` | `fast` | Per-step plan verifier; bounded JSON output, runs up to 5× per `/develop` plan via the auto-loop. |
 
 Resolution order (high → low priority), same in every extension:
 

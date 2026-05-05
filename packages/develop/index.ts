@@ -33,10 +33,15 @@ import {
 	slugifyWithModel,
 } from "./helpers.js";
 import {
+	aggregateConcerns,
+	buildPostLoopPickerOptions,
+	decideLoopAction,
 	extractTodoItems,
 	isSafeCommand,
 	markCompletedSteps,
 	type TodoItem,
+	toVerdictSnapshot,
+	type VerifyVerdictLike,
 } from "./plan-utils.js";
 
 const EXT_ID = "develop";
@@ -50,6 +55,16 @@ const CUSTOM_PLAN_CONTEXT = "develop-plan-context";
 const CUSTOM_EXEC_CONTEXT = "develop-exec-context";
 const CUSTOM_EXECUTE_MARKER = "develop-execute-marker";
 const CUSTOM_COMPLETE_MESSAGE = "develop-complete";
+const CUSTOM_FIX_CONTEXT = "develop-fix-context";
+
+// Coordination breadcrumbs between /develop and /verify. Both extensions
+// read/write these via `ctx.sessionManager.getEntries()` + `pi.appendEntry`,
+// so neither needs to import from the other.
+const VERIFY_REQUEST_ENTRY = "develop-verify-request";
+const VERIFY_RESULT_ENTRY = "develop-verify-result";
+
+/** Hard cap on auto-verify iterations before bailing with current findings. */
+const VERIFY_LOOP_CAP = 5;
 
 /** The two toolsets `/develop` can impose. Plan phase excludes edit/write. */
 const PLAN_PHASE_TOOLS = ["read", "bash", "grep", "find", "ls"] as const;
@@ -61,6 +76,56 @@ const PLAN_PHASE_TOOLS = ["read", "bash", "grep", "find", "ls"] as const;
  */
 const INTAKE_TOOL_NAME = "develop_ready";
 const INTAKE_PHASE_TOOLS = [...PLAN_PHASE_TOOLS, INTAKE_TOOL_NAME] as const;
+
+/**
+ * One verdict snapshot per step from a `/verify` run. Stored on
+ * `DevelopState.verifyLoop.previousVerdicts` so we can detect
+ * no-progress (same step stays partial/missing across iterations).
+ *
+ * Mirrors the public `VerifierVerdict` shape from `/verify` but kept
+ * loose / locally-defined so we don't cross-import from the verify
+ * package. Verify writes the canonical shape into the
+ * `develop-verify-result` session entry; we read the bits we need.
+ */
+interface StepVerdictSnapshot {
+	step: number;
+	status: "done" | "partial" | "missing" | "unverifiable";
+}
+
+/**
+ * Auto-verify loop bookkeeping. Lives on `DevelopState` for the
+ * `verifying` / `awaiting-fix` / `loop-bailed` / `loop-complete`
+ * phases. Reset to `undefined` on next /develop dispatch.
+ */
+interface VerifyLoopState {
+	/** 1-based count of /verify runs started so far. Cap is `VERIFY_LOOP_CAP`. */
+	iteration: number;
+	/**
+	 * `iteration` of the latest result entry already consumed by the
+	 * loop driver. Lets us distinguish a fresh result from a stale
+	 * replay on session resume.
+	 */
+	lastSeenIteration: number;
+	/**
+	 * Verdicts from the previous /verify run — one entry per step that
+	 * came back partial/missing. Used for no-progress detection.
+	 * `undefined` before the first run.
+	 */
+	previousVerdicts?: StepVerdictSnapshot[];
+	/**
+	 * Set when the loop bails. Surfaces in the widget and the
+	 * post-loop picker so the user knows whether they're committing
+	 * verified-clean work or not.
+	 */
+	bailReason?: "cap" | "no-progress" | "signal";
+	/**
+	 * Last result summary kept around for the post-loop picker text
+	 * and widget annotations. Counts only — full verdict text lives
+	 * in the verify-result session entry.
+	 */
+	lastConcernCount?: number;
+	lastErrorCount?: number;
+}
 
 /**
  * Persisted state for one /develop dispatch. One at a time per session —
@@ -86,15 +151,27 @@ interface DevelopState {
 	 *   awaiting-plan  — plan-phase tools active; agent producing the plan
 	 *   awaiting-choice — plan done, picker is armed on next agent_end
 	 *   executing      — exec-phase tools, [DONE:n] tracking live
+	 *   verifying      — auto-verify loop running (a /verify is in
+	 *                    flight or its result is being consumed)
+	 *   awaiting-fix   — verify reported concerns; host agent is
+	 *                    addressing them; next agent_end re-verifies
+	 *   loop-complete  — all verdicts done/unverifiable; post-loop
+	 *                    picker armed on next agent_end
+	 *   loop-bailed    — cap or no-progress hit; post-loop picker
+	 *                    armed, annotated with concern counts
 	 *   dormant        — "Continue discussing" chosen; no tool restrictions,
 	 *                    /implement and /park still work
-	 *   consumed       — Implement finished or Park fired; terminal
+	 *   consumed       — terminal: post-loop picker resolved, or /park fired
 	 */
 	phase:
 		| "awaiting-intake"
 		| "awaiting-plan"
 		| "awaiting-choice"
 		| "executing"
+		| "verifying"
+		| "awaiting-fix"
+		| "loop-complete"
+		| "loop-bailed"
 		| "dormant"
 		| "consumed";
 	startedAt: number;
@@ -105,6 +182,8 @@ interface DevelopState {
 	planText?: string;
 	/** The toolset that was active at /develop time; restored on exit. */
 	priorTools?: string[];
+	/** Auto-verify loop bookkeeping. Present in verify/fix/bailed/complete phases. */
+	verifyLoop?: VerifyLoopState;
 }
 
 const PLAN_SKILL_PATH = "skills/develop/SKILL.md";
@@ -204,69 +283,48 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
-	 * After plan-complete, offer to dispatch a natural follow-up
-	 * command. Each option is gated on the target being installed via
-	 * `pi.getCommands()` — missing extensions don't appear in the picker.
+	 * Dispatch a registered slash command via the plain `prompt` path.
 	 *
-	 * Picking a command sends `"/<cmd>"` as a user message, which pi's
-	 * slash-command parser then routes to the registered extension
-	 * command handler. The branching on `ctx.isIdle()` is required:
-	 * pi's RPC contract (see pi-coding-agent docs/rpc.md §§ steer /
-	 * follow-up) explicitly disallows extension commands in the
-	 * `steer` and `followUp` delivery modes — only the plain `prompt`
-	 * path expands `/cmd` into a registered handler. So when the
-	 * agent is idle we use the plain path; when it's still streaming
-	 * we degrade to `steer`, which delivers the literal text and the
-	 * model handles it as a regular user turn (better than dropping
-	 * the dispatch on the floor).
+	 * Per pi-coding-agent docs/rpc.md (§§ steer / follow-up): only the
+	 * plain delivery (no `deliverAs`) expands `/<cmd>` into the
+	 * registered extension handler. `steer` and `followUp` deliver the
+	 * literal text and never dispatch — that's the trap the previous
+	 * `offerHandoff` fell into. We always use plain dispatch, but the
+	 * caller MUST guarantee pi has flipped idle, otherwise plain mode
+	 * throws ("streaming without deliverAs"). The standard pattern is
+	 * to call this from inside `runDetached` so the agent_end handler
+	 * returns first.
 	 */
-	async function offerHandoff(ctx: ExtensionContext): Promise<void> {
-		// Gate options on the extension commands being installed. The
-		// /skill:<name> standalone path is a different UX (manually
-		// invoked) and we don't want to dispatch to it from here — the
-		// auto-handoff is meant for extension-extension integration.
-		const commandNames = new Set(pi.getCommands().map((c) => c.name));
-		const hasReview = commandNames.has("review");
-		const hasCommit = commandNames.has("commit");
-		const hasVerify = commandNames.has("verify");
+	function dispatchSlashCommand(command: string): void {
+		pi.sendUserMessage(command);
+	}
 
-		const options: string[] = [];
-		if (hasVerify) options.push("Run /verify");
-		if (hasReview) options.push("Run /review");
-		if (hasCommit) options.push("Run /commit");
-		options.push("Stay here — I'll handle it");
-
-		// If nothing's installed except "Stay here" there's no real choice;
-		// don't bother showing a picker.
-		if (options.length === 1) return;
-
-		const choice = await ctx.ui.select("Plan complete. Now what?", options);
-		if (!choice || choice.startsWith("Stay")) return;
-
-		// Map picker labels to slash commands. The labels above are the
-		// only things `select` could have returned, so this is exhaustive.
-		let command: string | undefined;
-		if (choice.startsWith("Run /verify")) command = "/verify";
-		else if (choice.startsWith("Run /review")) command = "/review";
-		else if (choice.startsWith("Run /commit")) command = "/commit";
-		if (!command) return;
-
-		if (ctx.isIdle()) {
-			// Plain prompt path: pi parses `/<cmd>` and invokes the
-			// registered handler. This is the normal case — by the time
-			// `ctx.ui.select` resolves the plan turn is over.
-			pi.sendUserMessage(command);
-		} else {
-			// Streaming fallback: `followUp`/`steer` do NOT expand
-			// extension commands per docs/rpc.md, so the slash command
-			// would be delivered as literal text and never dispatched.
-			// Use `steer` (delivered after the current tool burst) and
-			// accept that the model receives `/verify` as user text —
-			// it'll typically respond by manually invoking the workflow,
-			// which is degraded but better than the message vanishing.
-			pi.sendUserMessage(command, { deliverAs: "steer" });
-		}
-		notify(ctx, `dispatched ${command}`);
+	/**
+	 * Run an orchestration block detached from the current event
+	 * handler's awaited promise. Pi waits for handlers to resolve
+	 * before flipping the session to idle; if we await `ctx.ui.select`
+	 * or any long task inside agent_end, `ctx.isIdle()` stays false
+	 * and `dispatchSlashCommand` would throw.
+	 *
+	 * Detaching via `Promise.resolve().then` schedules `fn` as a
+	 * microtask after the current synchronous frame. The handler can
+	 * then return immediately, pi flips idle, and by the time `fn`
+	 * actually awaits something (or calls dispatch) the agent is idle.
+	 *
+	 * Errors are surfaced as toasts so detached work doesn't fail
+	 * silently — the previous design swallowed them entirely.
+	 */
+	function runDetached(
+		label: string,
+		ctx: ExtensionContext,
+		fn: () => Promise<void>,
+	): void {
+		void Promise.resolve()
+			.then(fn)
+			.catch((err: unknown) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(ctx, `${label} failed: ${msg}`, "error");
+			});
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
@@ -318,6 +376,61 @@ export default function (pi: ExtensionAPI) {
 					"develop-todos",
 					todos.map((t) => (t.completed ? `☑ ${t.text}` : `☐ ${t.text}`)),
 				);
+				return;
+			}
+			case "verifying": {
+				const iter = state.verifyLoop?.iteration ?? 1;
+				ctx.ui.setStatus(
+					EXT_ID,
+					`🔍 verify ${iter}/${VERIFY_LOOP_CAP} (${state.branch})`,
+				);
+				const todos = state.todos ?? [];
+				if (todos.length > 0) {
+					ctx.ui.setWidget(
+						"develop-todos",
+						todos.map((t) => (t.completed ? `☑ ${t.text}` : `☐ ${t.text}`)),
+					);
+				} else {
+					ctx.ui.setWidget("develop-todos", undefined);
+				}
+				return;
+			}
+			case "awaiting-fix": {
+				const iter = state.verifyLoop?.iteration ?? 1;
+				const concerns = state.verifyLoop?.lastConcernCount ?? 0;
+				ctx.ui.setStatus(
+					EXT_ID,
+					`🔧 fix ${iter}/${VERIFY_LOOP_CAP} — ${concerns} concern(s)`,
+				);
+				const todos = state.todos ?? [];
+				if (todos.length > 0) {
+					ctx.ui.setWidget(
+						"develop-todos",
+						todos.map((t) => (t.completed ? `☑ ${t.text}` : `☐ ${t.text}`)),
+					);
+				} else {
+					ctx.ui.setWidget("develop-todos", undefined);
+				}
+				return;
+			}
+			case "loop-complete": {
+				const iter = state.verifyLoop?.iteration ?? 1;
+				ctx.ui.setStatus(
+					EXT_ID,
+					`✅ verified clean (${iter} iter, ${state.branch})`,
+				);
+				ctx.ui.setWidget("develop-todos", undefined);
+				return;
+			}
+			case "loop-bailed": {
+				const iter = state.verifyLoop?.iteration ?? 1;
+				const reason = state.verifyLoop?.bailReason ?? "";
+				const concerns = state.verifyLoop?.lastConcernCount ?? 0;
+				ctx.ui.setStatus(
+					EXT_ID,
+					`⚠ bailed (${reason}, ${iter} iter, ${concerns} concern(s))`,
+				);
+				ctx.ui.setWidget("develop-todos", undefined);
 				return;
 			}
 			case "dormant":
@@ -474,6 +587,310 @@ export default function (pi: ExtensionAPI) {
 				"info",
 			);
 		}
+	}
+
+	// ---- Auto-verify loop ----------------------------------------------
+	//
+	// State-machine flow once execution finishes:
+	//
+	//   executing
+	//     ↓ (all [DONE:n])
+	//   verifying ——→ ["/verify" runs, writes result entry, dispatches
+	//                 /develop-verify-resume]
+	//     ↓                                          ↑
+	//   decideLoopAction(...)                          |
+	//     ├ exit-clean        → loop-complete → picker |
+	//     ├ bail-cap | bail-no-progress → loop-bailed → picker
+	//     └ retry             → awaiting-fix → host fixes → agent_end →
+	//                            verifying (iter+1) ────────────────┘
+	//
+	// Coordination with /verify happens via two session-state breadcrumb
+	// entries:
+	//   - VERIFY_REQUEST_ENTRY  (written by /develop) — tells /verify to
+	//     run in auto mode (suppress its own findings picker), carries
+	//     iteration counter and the plan text snapshot.
+	//   - VERIFY_RESULT_ENTRY   (written by /verify)  — carries the
+	//     structured verdicts and any errors. /develop reads the latest
+	//     entry whose iteration matches its outstanding request.
+
+	/** Shape we read from `develop-verify-result`. Loose to survive verify
+	 *  evolving; missing fields default to safe values. */
+	interface VerifyResultEntry {
+		iteration?: number;
+		verdicts?: VerifyVerdictLike[];
+		errorCount?: number;
+		model?: string;
+	}
+
+	/** Find the most recent develop-verify-result entry (any iteration). */
+	function getLatestVerifyResult(
+		ctx: ExtensionContext,
+	): VerifyResultEntry | null {
+		let latest: VerifyResultEntry | null = null;
+		for (const entry of ctx.sessionManager.getEntries()) {
+			if (entry.type === "custom" && entry.customType === VERIFY_RESULT_ENTRY) {
+				latest = entry.data as VerifyResultEntry;
+			}
+		}
+		return latest;
+	}
+
+	/**
+	 * Begin (or continue) the auto-verify loop: write a request entry
+	 * carrying the current iteration + plan, transition phase to
+	 * `verifying`, and dispatch `/verify` from a detached microtask so
+	 * pi can flip idle before plain dispatch fires.
+	 *
+	 * Caller is responsible for setting `state.verifyLoop.iteration`
+	 * before invoking us.
+	 */
+	function startVerifyIteration(ctx: ExtensionContext): void {
+		if (!state?.verifyLoop) return;
+		const iteration = state.verifyLoop.iteration;
+		const planText = state.planText ?? "";
+		const branch = state.branch;
+
+		pi.appendEntry(VERIFY_REQUEST_ENTRY, {
+			iteration,
+			planText,
+			branch,
+			requestedAt: Date.now(),
+		});
+		state.phase = "verifying";
+		persist();
+		updateWidget(ctx);
+
+		if (!pi.getCommands().some((c) => c.name === "verify")) {
+			// /verify isn't installed — skip the loop entirely and pop the
+			// post-loop picker so the user still gets the review/commit
+			// affordances. State machine treats this as a clean exit since
+			// there's nothing to flag.
+			notify(
+				ctx,
+				"verify extension not installed — skipping auto-verify loop",
+				"info",
+			);
+			state.phase = "loop-complete";
+			persist();
+			updateWidget(ctx);
+			runDetached("post-loop picker", ctx, () => runPostLoopPicker(ctx));
+			return;
+		}
+
+		notify(
+			ctx,
+			`auto-verify iteration ${iteration}/${VERIFY_LOOP_CAP} — dispatching /verify…`,
+			"info",
+		);
+		runDetached("verify dispatch", ctx, async () => {
+			dispatchSlashCommand("/verify");
+		});
+	}
+
+	/**
+	 * Consume the latest develop-verify-result entry and act on it.
+	 * Idempotent against stale entries via `lastSeenIteration`.
+	 * Called from the `/develop-verify-resume` command handler that
+	 * /verify dispatches when it finishes an auto-mode run.
+	 */
+	async function consumeVerifyResult(
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
+		if (!state || !state.verifyLoop) return;
+		if (state.phase !== "verifying") return;
+
+		const result = getLatestVerifyResult(ctx);
+		if (!result) {
+			notify(ctx, "verify-resume: no result entry found", "warning");
+			return;
+		}
+		const resultIter = result.iteration ?? 0;
+		if (resultIter <= state.verifyLoop.lastSeenIteration) {
+			// Stale entry from a previous /develop dispatch — ignore.
+			return;
+		}
+		state.verifyLoop.lastSeenIteration = resultIter;
+
+		const verdicts = result.verdicts ?? [];
+		const errorCount = result.errorCount ?? 0;
+		const decision = decideLoopAction({
+			iteration: state.verifyLoop.iteration,
+			cap: VERIFY_LOOP_CAP,
+			prevVerdicts: state.verifyLoop.previousVerdicts,
+			currVerdicts: verdicts,
+			errorCount,
+		});
+
+		const { concernSteps } = aggregateConcerns(verdicts);
+		state.verifyLoop.lastConcernCount = concernSteps.length;
+		state.verifyLoop.lastErrorCount = errorCount;
+		state.verifyLoop.previousVerdicts = toVerdictSnapshot(verdicts);
+
+		if (decision.kind === "exit-clean") {
+			state.phase = "loop-complete";
+			state.verifyLoop.bailReason = undefined;
+			persist();
+			updateWidget(ctx);
+			notify(
+				ctx,
+				`auto-verify clean after ${state.verifyLoop.iteration} iteration(s)`,
+				"info",
+			);
+			await runPostLoopPicker(ctx);
+			return;
+		}
+
+		if (decision.kind === "bail-cap" || decision.kind === "bail-no-progress") {
+			state.phase = "loop-bailed";
+			state.verifyLoop.bailReason =
+				decision.kind === "bail-cap" ? "cap" : "no-progress";
+			persist();
+			updateWidget(ctx);
+			const reason =
+				decision.kind === "bail-cap"
+					? `cap (${VERIFY_LOOP_CAP}) reached`
+					: "no progress between iterations";
+			notify(
+				ctx,
+				`auto-verify bailed: ${reason} — ${decision.concernCount} concern(s) outstanding`,
+				"warning",
+			);
+			await runPostLoopPicker(ctx);
+			return;
+		}
+
+		// retry: send findings back to host, switch to awaiting-fix.
+		await requestHostFix(ctx, verdicts, errorCount);
+	}
+
+	/**
+	 * Send a structured "please address these" prompt back to the host
+	 * agent and transition to `awaiting-fix`. The next agent_end picks
+	 * the loop back up by bumping `verifyLoop.iteration` and dispatching
+	 * `/verify` again.
+	 */
+	async function requestHostFix(
+		ctx: ExtensionContext,
+		verdicts: readonly VerifyVerdictLike[],
+		errorCount: number,
+	): Promise<void> {
+		if (!state || !state.verifyLoop) return;
+		state.phase = "awaiting-fix";
+		persist();
+		updateWidget(ctx);
+
+		const result = getLatestVerifyResult(ctx);
+		const fullVerdicts = (result?.verdicts ?? verdicts) as Array<
+			VerifyVerdictLike & { reason?: string; suggestion?: string }
+		>;
+		const concernLines: string[] = [];
+		for (const v of fullVerdicts) {
+			if (v.status !== "partial" && v.status !== "missing") continue;
+			const glyph = v.status === "partial" ? "⚠" : "✗";
+			const reason = v.reason ? ` — ${v.reason}` : "";
+			concernLines.push(`${glyph} step ${v.step} (${v.status})${reason}`);
+			if (v.suggestion) concernLines.push(`    suggestion: ${v.suggestion}`);
+		}
+
+		const iter = state.verifyLoop.iteration;
+		const remaining = VERIFY_LOOP_CAP - iter;
+		const body = [
+			`[/develop auto-verify — iteration ${iter}/${VERIFY_LOOP_CAP}]`,
+			"",
+			"The verifier flagged the following concerns. Please address each",
+			"directly and emit `[DONE:n]` markers for any plan steps you",
+			"complete or re-complete:",
+			"",
+			...concernLines,
+			...(errorCount > 0
+				? [
+						"",
+						`(${errorCount} verifier error(s) also occurred — if a step is`,
+						" actually done, say so and move on; the next iteration will",
+						" re-check.)",
+					]
+				: []),
+			"",
+			`After your fix turn ends, /develop will automatically re-run /verify`,
+			`(${remaining} iteration(s) remaining before bail). If you believe`,
+			"the verifier is wrong about a step, address it in prose and the",
+			"next /verify run will reflect that.",
+		].join("\n");
+
+		pi.sendMessage(
+			{
+				customType: CUSTOM_FIX_CONTEXT,
+				content: body,
+				display: true,
+				details: {
+					iteration: iter,
+					concernCount: aggregateConcerns(verdicts).concernSteps.length,
+					errorCount,
+				},
+			},
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
+		notify(
+			ctx,
+			`auto-verify: ${aggregateConcerns(verdicts).concernSteps.length} concern(s) sent back to host (iteration ${iter})`,
+			"info",
+		);
+	}
+
+	/**
+	 * Run after `loop-complete` or `loop-bailed` to offer the natural
+	 * follow-up commands. Each option is gated on the target being
+	 * installed; `Stay here` is always present. Annotates `Run /commit`
+	 * with the unresolved-concern count when bailing so the user doesn't
+	 * blindly commit half-done work.
+	 */
+	async function runPostLoopPicker(ctx: ExtensionContext): Promise<void> {
+		if (!state) return;
+		if (state.phase !== "loop-complete" && state.phase !== "loop-bailed") {
+			return;
+		}
+		if (!ctx.hasUI) {
+			state.phase = "consumed";
+			persist();
+			updateWidget(ctx);
+			return;
+		}
+
+		const installed = new Set(pi.getCommands().map((c) => c.name));
+		const loopBailed = state.phase === "loop-bailed";
+		const unresolved = state.verifyLoop?.lastConcernCount ?? 0;
+		const options = buildPostLoopPickerOptions({
+			installedCommands: installed,
+			loopBailed,
+			unresolvedConcerns: unresolved,
+		});
+
+		// Single option = no real choice; just mark consumed.
+		if (options.length === 1) {
+			state.phase = "consumed";
+			persist();
+			updateWidget(ctx);
+			return;
+		}
+
+		const title = loopBailed
+			? `Loop bailed (${state.verifyLoop?.bailReason ?? ""}). Now what?`
+			: "Plan verified clean. Now what?";
+		const choice = await ctx.ui.select(title, options);
+
+		state.phase = "consumed";
+		persist();
+		updateWidget(ctx);
+
+		if (!choice || choice.startsWith("Stay")) return;
+
+		let command: string | undefined;
+		if (choice.startsWith("Run /review")) command = "/review";
+		else if (choice.startsWith("Run /commit")) command = "/commit";
+		if (!command) return;
+
+		dispatchSlashCommand(command);
+		notify(ctx, `dispatched ${command}`, "info");
 	}
 
 	// ---- Implement path -------------------------------------------------
@@ -891,14 +1308,16 @@ export default function (pi: ExtensionAPI) {
 
 	// Filter our stale custom context messages out of the LLM context once
 	// the dispatch is no longer active. Keeps old "[DEVELOP — PLAN PHASE]"
-	// blurbs from bleeding into later conversations.
+	// blurbs and per-iteration fix prompts from bleeding into later conversations.
 	pi.on("context", async (event) => {
 		const active =
 			state &&
 			(state.phase === "awaiting-intake" ||
 				state.phase === "awaiting-plan" ||
 				state.phase === "awaiting-choice" ||
-				state.phase === "executing");
+				state.phase === "executing" ||
+				state.phase === "verifying" ||
+				state.phase === "awaiting-fix");
 		if (active) return;
 		return {
 			messages: event.messages.filter((m) => {
@@ -906,7 +1325,8 @@ export default function (pi: ExtensionAPI) {
 				return (
 					ct !== CUSTOM_INTAKE_CONTEXT &&
 					ct !== CUSTOM_PLAN_CONTEXT &&
-					ct !== CUSTOM_EXEC_CONTEXT
+					ct !== CUSTOM_EXEC_CONTEXT &&
+					ct !== CUSTOM_FIX_CONTEXT
 				);
 			}),
 		};
@@ -915,7 +1335,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", async (_event, ctx) => {
 		if (!state) return;
 
-		// Execution-phase completion detection.
+		// Execution-phase completion → kick off the auto-verify loop.
 		if (state.phase === "executing" && state.todos?.length) {
 			if (state.todos.every((t) => t.completed)) {
 				const completedList = state.todos
@@ -926,7 +1346,7 @@ export default function (pi: ExtensionAPI) {
 						customType: CUSTOM_COMPLETE_MESSAGE,
 						content:
 							`**Plan complete on \`${state.branch}\`!** ✓\n\n${completedList}\n\n` +
-							"Review, test, and commit when ready.",
+							`Auto-verify loop kicking off (cap ${VERIFY_LOOP_CAP} iterations).`,
 						display: true,
 						details: {
 							branch: state.branch,
@@ -935,17 +1355,27 @@ export default function (pi: ExtensionAPI) {
 					},
 					{ triggerTurn: false },
 				);
-				state.phase = "consumed";
+				// Initialize loop bookkeeping and start iteration 1. We must
+				// detach: pi awaits agent_end handlers before flipping idle, and
+				// `dispatchSlashCommand` requires idle to dispatch via the plain
+				// path that expands `/verify` into the registered handler
+				// (steer/followUp don't — see docs/rpc.md).
+				state.verifyLoop = {
+					iteration: 1,
+					lastSeenIteration: 0,
+				};
 				persist();
-				updateWidget(ctx);
-
-				// Offer to dispatch the natural follow-up command. Each
-				// option is gated on the target being installed; missing
-				// extensions just don't appear in the picker.
-				if (ctx.hasUI) {
-					await offerHandoff(ctx);
-				}
+				startVerifyIteration(ctx);
 			}
+			return;
+		}
+
+		// awaiting-fix → host has just finished its fix turn. Bump iteration
+		// and re-dispatch /verify to compare against the previous snapshot.
+		if (state.phase === "awaiting-fix" && state.verifyLoop) {
+			state.verifyLoop.iteration += 1;
+			persist();
+			startVerifyIteration(ctx);
 			return;
 		}
 
@@ -984,7 +1414,13 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 		}
-		await runPicker(ctx as ExtensionCommandContext);
+		// Detach the picker so pi can finish flipping idle. Awaiting
+		// `ctx.ui.select` inside agent_end was the bug that made the
+		// post-implementation /verify dispatch land as plain text instead
+		// of expanding the slash command.
+		runDetached("plan picker", ctx, () =>
+			runPicker(ctx as ExtensionCommandContext),
+		);
 	});
 
 	pi.on("session_shutdown", () => {
@@ -1244,6 +1680,16 @@ export default function (pi: ExtensionAPI) {
 				.join("\n");
 			notify(ctx, `plan (${state.phase}):\n${list}`, "info");
 		},
+	});
+
+	// Internal command: /verify dispatches this after writing a result
+	// entry in auto mode, handing control back to /develop's loop driver.
+	// Hidden in name (verbose) so users don't trip over it. Safe to call
+	// manually — idempotent against stale result entries.
+	pi.registerCommand("develop-verify-resume", {
+		description:
+			"Internal: /verify uses this to hand a result back to /develop's auto-loop. Not meant for direct use.",
+		handler: async (_args, ctx) => consumeVerifyResult(ctx),
 	});
 }
 

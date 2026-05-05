@@ -303,6 +303,82 @@ function readVerifySettings(ctx: ExtensionContext): VerifySettings {
 	return {};
 }
 
+// ---- /develop coordination ---------------------------------------------
+//
+// /develop drives an auto-verify loop by writing a `develop-verify-request`
+// entry before dispatching `/verify`, and reading our `develop-verify-result`
+// entry afterwards. When we detect a request entry whose iteration we
+// haven't yet answered, we run in "auto mode":
+//
+//   - skip the post-result findings picker (the user shouldn't be asked
+//     anything; /develop is driving)
+//   - write a structured result entry with `{ iteration, verdicts,
+//     errorCount, model }` so /develop's loop driver can decide retry
+//     vs. bail vs. clean-exit
+//   - dispatch `/develop-verify-resume` so /develop's command handler
+//     consumes the result and continues the loop
+//
+// Standalone /verify (no request entry, or last-answered iteration matches)
+// keeps its current UX: report + send/save/dismiss picker.
+
+const VERIFY_REQUEST_ENTRY = "develop-verify-request";
+const VERIFY_RESULT_ENTRY = "develop-verify-result";
+
+interface DevelopVerifyRequest {
+	iteration?: number;
+	planText?: string;
+	branch?: string;
+}
+
+interface DevelopVerifyResultPrior {
+	iteration?: number;
+}
+
+/**
+ * Pure helper: given an ordered list of session entries, decide
+ * whether /verify should run in auto mode and at what iteration.
+ *
+ * Returns the request iteration when there's an unanswered
+ * `develop-verify-request` (latest request iteration > latest result
+ * iteration), else `null`. Exported so tests don't have to mock the
+ * full ExtensionContext.
+ */
+export function findAutoModeIteration(
+	entries: readonly { type: string; customType?: string; data?: unknown }[],
+): number | null {
+	let latestRequest: DevelopVerifyRequest | undefined;
+	let latestResult: DevelopVerifyResultPrior | undefined;
+	for (const entry of entries) {
+		if (entry.type !== "custom") continue;
+		if (entry.customType === VERIFY_REQUEST_ENTRY) {
+			latestRequest = entry.data as DevelopVerifyRequest;
+		} else if (entry.customType === VERIFY_RESULT_ENTRY) {
+			latestResult = entry.data as DevelopVerifyResultPrior;
+		}
+	}
+	const reqIter = latestRequest?.iteration;
+	if (typeof reqIter !== "number") return null;
+	const resIter = latestResult?.iteration ?? 0;
+	if (reqIter > resIter) return reqIter;
+	return null;
+}
+
+/**
+ * Returns the request iteration number when /verify should run in
+ * auto mode (i.e. there's an unanswered develop-verify-request), else
+ * `null`. Thin wrapper around `findAutoModeIteration` that pulls
+ * entries from `ExtensionContext`.
+ */
+function autoModeIteration(ctx: ExtensionContext): number | null {
+	return findAutoModeIteration(
+		ctx.sessionManager.getEntries() as readonly {
+			type: string;
+			customType?: string;
+			data?: unknown;
+		}[],
+	);
+}
+
 // ---- Extension factory --------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
@@ -315,7 +391,7 @@ export default function (pi: ExtensionAPI) {
 				key: "model",
 				type: "string",
 				fallbackChain:
-					"extensionConfig.verify.model → backgroundModels.secondary.normal → backgroundModels.primary.normal → ctx.model",
+					"extensionConfig.verify.model → backgroundModels.primary.fast → ctx.model",
 				doc: "provider/id override for the verifier model.",
 			},
 			{
@@ -326,10 +402,10 @@ export default function (pi: ExtensionAPI) {
 			},
 		],
 		backgroundModelUse: {
-			tier: "normal",
-			set: "secondary",
+			tier: "fast",
+			set: "primary",
 			explanation:
-				"Each plan step spawns one read-only subagent against this model.",
+				"Each plan step spawns one read-only subagent against this model. Bounded structured-output task; fast tier is plenty.",
 		},
 	});
 
@@ -337,6 +413,12 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Verify each step of a plan against the working tree using parallel read-only subagents.",
 		handler: async (args, ctx) => {
+			// Detect /develop's auto-verify mode. When set, we suppress the
+			// findings picker and dispatch /develop-verify-resume so /develop's
+			// loop driver picks up where we left off.
+			const autoIteration = autoModeIteration(ctx);
+			const inAutoMode = autoIteration !== null;
+
 			const planText = await resolvePlan(ctx, args ?? "");
 			if (!planText) {
 				ctx.ui.notify("verify: no plan to verify", "info");
@@ -352,17 +434,18 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// Resolve the verifier model. `secondary` set, `normal` tier,
-			// no apiKey requirement (the subagent does its own auth via
-			// the spawned RPC pi instance).
+			// Resolve the verifier model. `primary` set, `fast` tier —
+			// bounded structured-output task; the auto-loop runs verify
+			// many times so cost matters. No apiKey requirement (the
+			// subagent does its own auth via the spawned RPC pi instance).
 			const resolved = await resolveModel(ctx, {
 				name: EXT_ID,
-				tier: "normal",
-				set: "secondary",
+				tier: "fast",
+				set: "primary",
 			});
 			if (!resolved) {
 				ctx.ui.notify(
-					"verify: no usable model (set backgroundModels.secondary.normal or extensionConfig.verify.model in settings.json)",
+					"verify: no usable model (set backgroundModels.primary.fast or extensionConfig.verify.model in settings.json)",
 					"warning",
 				);
 				return;
@@ -373,7 +456,7 @@ export default function (pi: ExtensionAPI) {
 			const maxParallel = settings.maxParallel ?? DEFAULT_MAX_PARALLEL;
 
 			ctx.ui.notify(
-				`verify: dispatching ${steps.length} subagent(s) (model ${resolvedModelSpec}, max ${maxParallel} parallel)`,
+				`verify: dispatching ${steps.length} subagent(s) (model ${resolvedModelSpec}, max ${maxParallel} parallel${inAutoMode ? `, auto-mode iter ${autoIteration}` : ""})`,
 				"info",
 			);
 
@@ -436,11 +519,41 @@ export default function (pi: ExtensionAPI) {
 				{ triggerTurn: false },
 			);
 
-			// Post-result picker.
-			if (!ctx.hasUI) return;
 			const concerns = Array.from(verdicts.values()).filter(
 				(v) => v.status === "partial" || v.status === "missing",
 			);
+
+			// Auto mode: write a structured result entry for /develop's loop
+			// driver and dispatch the resume command. We do NOT run the
+			// findings picker — /develop owns the conversation now.
+			if (inAutoMode && autoIteration !== null) {
+				pi.appendEntry(VERIFY_RESULT_ENTRY, {
+					iteration: autoIteration,
+					verdicts: Array.from(verdicts.values()),
+					errorCount: errors.size,
+					model: resolvedModelSpec,
+					completedAt: Date.now(),
+				});
+				const hasResume = pi
+					.getCommands()
+					.some((c) => c.name === "develop-verify-resume");
+				if (hasResume) {
+					// Plain dispatch — the /verify command handler is now
+					// finishing, so by the time pi processes the queued user
+					// message we'll be idle and the slash command will expand
+					// into /develop's registered handler.
+					pi.sendUserMessage("/develop-verify-resume");
+				} else {
+					ctx.ui.notify(
+						"verify: auto-mode result written but /develop-verify-resume not registered — loop won't continue",
+						"warning",
+					);
+				}
+				return;
+			}
+
+			// Standalone mode: post-result picker.
+			if (!ctx.hasUI) return;
 			const totalConcerns = concerns.length + errors.size;
 			if (totalConcerns === 0) {
 				ctx.ui.notify("verify: all steps look done", "info");

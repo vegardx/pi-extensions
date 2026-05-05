@@ -56,19 +56,13 @@ own `examples/extensions/plan-mode/`.
                                        │
                                        │  agent calls develop_ready({description})
                                        ↓
-/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  consumed
-                         │                   │                 │
-                         │                   └─ Park ─────────→ consumed
-                         │                   └─ Continue ─────→ dormant
+/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  verifying ⇄ awaiting-fix →  loop-complete | loop-bailed  →  consumed
+                         │                   │                                       │
+                         │                   ├─ Park ──────────────────────────────────────→ consumed
+                         │                   └─ Continue ────────────────────────────────→ dormant
                          │
                          └─ tools: read/grep/find/ls + safe bash
                             widget: "📋 planning <branch>"
-                                          │
-                         tools unchanged ──┤         tools: restored (edit/write back)
-                         widget: "📋 N-step plan"    widget: "⚙ 0/N (<branch>)"
-                                                     [DONE:n] parsed live
-                                                     on all-done: "Plan complete"
-                                                     + handoff picker
 ```
 
 - **awaiting-intake** — agent is asking clarifying questions; tools
@@ -76,10 +70,20 @@ own `examples/extensions/plan-mode/`.
 - **awaiting-plan** — agent is writing the plan; tools locked down.
 - **awaiting-choice** — plan done, todos extracted, picker armed.
 - **executing** — branch created, full tools, `[DONE:n]` parsing live.
+- **verifying** — auto-verify loop iteration in flight; `/verify` is
+  scanning the working tree against the plan.
+- **awaiting-fix** — verifier flagged concerns; the host agent has
+  been handed a structured "please address these" prompt and is
+  fixing. Next `agent_end` bumps iteration and re-runs `/verify`.
+- **loop-complete** — every step came back `done` or `unverifiable`.
+  Post-loop picker (`/review`, `/commit`, `Stay here`) is armed.
+- **loop-bailed** — hit cap=5 or no-progress (same step stuck two
+  iterations running). Same picker, with `/commit` annotated to show
+  the unresolved-concern count.
 - **dormant** — user chose "Continue discussing"; lockdown lifted but
   `/implement` / `/park` still work.
-- **consumed** — Implement finished (all steps marked done) or Park
-  fired. Terminal state. `/develop <desc>` will clear it.
+- **consumed** — post-loop picker resolved (or Park fired). Terminal
+  state. `/develop <desc>` will clear it.
 
 ## Intake phase
 
@@ -167,19 +171,85 @@ On every `turn_end`, the extension reads the assistant text, runs
 `markCompletedSteps(text, todos)`, updates the widget, and persists.
 
 When `todos.every(t => t.completed)`, the extension emits a "Plan
-complete on `<branch>`!" message, flips phase to `consumed`, clears
-the widget, and pops a picker offering to dispatch a follow-up
-command. The picker lists `Run /verify`, `Run /review`, and
-`Run /commit` (only those that `pi.getCommands()` shows as
-installed), plus a "Stay here" option. Picking one calls
-`pi.sendUserMessage("/<cmd>")` (when the agent is idle, which is the
-normal case after `ctx.ui.select` resolves) so pi's slash-command
-parser routes the dispatch to the registered handler. If the agent
-is still streaming, the dispatch falls back to `deliverAs: "steer"`,
-which pi's RPC contract does not expand into a command — so the
-model receives the literal text and handles it as a regular user
-turn. Picking Stay leaves you in control — review, test, and
-commit by hand.
+complete" message and **automatically kicks off the auto-verify loop**
+(see below) instead of asking the user what to do next.
+
+## Auto-verify loop (ralph-style)
+
+Once execution finishes, `/develop` runs an automated verify loop
+backed by `/verify`. The user is not prompted; the loop is
+self-driving.
+
+```
+  executing
+    ↓ (all [DONE:n])
+  verifying ——→ [/verify runs, writes result entry, dispatches
+                /develop-verify-resume]
+    ↓                                          ↑
+  decideLoopAction(…)                          │
+    ├ exit-clean         → loop-complete ───────→ picker (review | commit | stay)
+    ├ bail-cap | no-progress → loop-bailed ──→ picker (annotated /commit)
+    └ retry              → awaiting-fix → host fixes → agent_end →
+                            verifying (iter+1) ────────────────┘
+```
+
+### Bail conditions
+
+Both fire whichever trips first:
+
+- **`cap`** — hard cap of 5 iterations. After the 5th run, if any
+  concerns remain, the loop bails.
+- **`no-progress`** — at least one step that was `partial`/`missing`
+  in the previous iteration is still `partial`/`missing` in the
+  current one. Other shifts (one heals, another newly breaks) count
+  as progress; the cap covers eternal regressions.
+
+When the loop bails, the post-loop picker still fires — you can
+still `/review`, `/commit`, or stay. `Run /commit` is annotated with
+the unresolved-concern count so you don't blindly commit half-done
+work.
+
+### Coordination with `/verify`
+
+Two session-state breadcrumb entries form a contract that doesn't
+require either extension to import the other:
+
+| Entry | Writer | Reader | Payload |
+|---|---|---|---|
+| `develop-verify-request` | `/develop` | `/verify` | `{ iteration, planText, branch, requestedAt }` |
+| `develop-verify-result`  | `/verify`  | `/develop` | `{ iteration, verdicts, errorCount, model, completedAt }` |
+
+`/verify` runs in **auto mode** when the latest request iteration is
+greater than the latest result iteration. In auto mode it suppresses
+its own findings picker, writes a structured result entry, and
+dispatches `/develop-verify-resume` so `/develop`'s loop driver
+picks up the result and decides what to do next. Standalone
+`/verify` (no request entry, or all answered) keeps its current UX:
+report plus send/save/dismiss picker.
+
+### Dispatch correctness
+
+The initial dispatch path used to break in a subtle way: pi waits for
+an `agent_end` handler's promise to resolve before flipping the
+session to idle, and `pi.sendUserMessage("/cmd")` requires idle to
+expand the slash command into a registered handler
+(`steer`/`followUp` deliver the literal text instead, per
+`docs/rpc.md`). The fix is two-part:
+
+1. **Always plain dispatch.** `dispatchSlashCommand` calls
+   `pi.sendUserMessage(command)` with no `deliverAs` and never falls
+   back to steer/followUp.
+2. **Detached orchestration.** `runDetached(label, ctx, fn)` schedules
+   `fn` via `Promise.resolve().then(...)` so the surrounding
+   `agent_end` handler returns immediately and pi can finish flipping
+   idle. Errors surface as toasts; the previous design swallowed them.
+
+## Configuration
+
+The loop cap is currently a constant (`VERIFY_LOOP_CAP = 5`); make it
+a settings knob if you start hitting it routinely. The verifier model
+is selected entirely by `/verify`'s configuration (see
+`packages/verify/README.md`).
 
 ## Session resume
 
