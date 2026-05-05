@@ -147,10 +147,14 @@ Rules:
 - If you discover the plan was wrong mid-execution, say so in prose
   and propose a revised plan. Don't silently deviate and emit `[DONE:n]`
   for something the user didn't agree to.
-- When every step is marked done, the extension shows a "Plan complete"
-  message and clears its widget. At that point: wrap up (run full
-  tests, `git status`, etc.) and stop. Do not rebase, merge, or push —
-  that is the user's call.
+- When every step is marked done, the extension shows a "Plan
+  complete" message, clears its widget, and pops a picker offering
+  to dispatch a follow-up command (`/review`, `/commit`, `/verify`
+  — whichever are installed). Picking one queues the command as a
+  fresh user-message turn after this one returns. Picking "Stay
+  here" leaves you in control. At that point: wrap up (run full
+  tests, `git status`, etc.) and stop. Do not rebase, merge, or push
+  — that is the user's call.
 
 ## Branch naming (for reference / standalone use)
 

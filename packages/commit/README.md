@@ -45,7 +45,9 @@ generation stay on the main agent via `pi.sendMessage` +
    asks whether to continue (you usually want to branch first via
    `/develop <desc>`).
 2. **Offer `/review`** — picker: run review first, or commit now. If
-   review, the extension prints the follow-up instruction and stops.
+   review, the extension dispatches `/review` for the user via
+   `pi.sendUserMessage` and prints a short re-invoke note (falls
+   back to a self-help message if `/review` isn't installed).
 3. **Plan** — `pi.sendMessage(..., deliverAs: "followUp", triggerTurn:
    true)` with a prompt asking the agent to analyze the diff and
    propose a conventional-commit plan. `ctx.waitForIdle()` blocks the
