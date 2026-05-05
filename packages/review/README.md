@@ -166,6 +166,54 @@ Then in pi:
 /review packages/startup/index.ts
 ```
 
+## Auto-review pass (used by `/develop`)
+
+In addition to the interactive `/review` command, this package exports
+`runAutoReview(...)` from `pi-ext-review/auto-review`. It is consumed
+by `/develop` between the auto-verify loop and the post-loop picker.
+
+Differences from the interactive `/review` command:
+
+- **Two lanes only**: `code-reviewer` and `code-simplifier`. The other
+  five (architect, scope, security, docs, deps) are out of scope — the
+  auto-apply path means we trade breadth for high-confidence mechanical
+  fixes only.
+- **Two models, side by side**: every lane runs once against
+  `backgroundModels.primary.heavy` and once against
+  `backgroundModels.secondary.heavy` (resolved via
+  `@vegardx/pi-extensions-shared/model-resolver`). Four subagents fan
+  out in parallel.
+- **Cross-model consensus**: `dedupeFindings` records `flaggedByTier`
+  on every merged finding; `crossModelConsensus(findings)` filters
+  down to those flagged by both `primary` and `secondary`. Only
+  consensus findings with a concrete `suggestedAction` get queued for
+  the host agent.
+- **No interactive walk**: there is no Accept / Skip / Explain picker.
+  The fix prompt is sent directly via
+  `pi.sendMessage(..., { triggerTurn: true })`; the host agent applies
+  the fixes and `/develop`'s `agent_end` handler picks the post-loop
+  picker back up afterwards.
+
+Settings:
+
+```jsonc
+{
+  "backgroundModels": {
+    "primary":   { "heavy": "anthropic/claude-opus-4" },
+    "secondary": { "heavy": "openai/gpt-4-turbo" }
+  },
+  "extensionConfig": {
+    "develop": { "autoReview": false }   // disable the pass entirely
+  }
+}
+```
+
+If either tier is unresolvable, the pass is skipped (fail-open: the
+user still gets the post-loop picker). If both tiers point at the
+same model, every finding becomes "consensus" trivially — the
+cross-check is only meaningful when the two model families are
+actually different.
+
 ## Known limitations
 
 - **Node-only transport.** `RpcClient` in `@mariozechner/pi-coding-agent`

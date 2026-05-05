@@ -10,6 +10,10 @@ import type {
 import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
+	getExtensionConfigBoolean,
+	readRelevantSettings,
+} from "@vegardx/pi-extensions-shared/extension-settings.js";
+import {
 	checkoutBranch,
 	createBranch,
 	currentBranch,
@@ -35,10 +39,12 @@ import {
 import {
 	aggregateConcerns,
 	buildPostLoopPickerOptions,
+	decideAutoReviewNextAction,
 	decideLoopAction,
 	extractTodoItems,
 	isSafeCommand,
 	markCompletedSteps,
+	restoreLoopPhaseFromAutoReview,
 	type TodoItem,
 	toVerdictSnapshot,
 	type VerifyVerdictLike,
@@ -159,6 +165,16 @@ interface DevelopState {
 	 *                    picker armed on next agent_end
 	 *   loop-bailed    — cap or no-progress hit; post-loop picker
 	 *                    armed, annotated with concern counts
+	 *   auto-reviewing — auto-verify settled; running cross-model
+	 *                    code-reviewer / code-simplifier subagents
+	 *                    against primary.heavy + secondary.heavy.
+	 *                    No user prompt; transitions to either
+	 *                    awaiting-auto-review-fix (when consensus
+	 *                    findings were queued) or directly into the
+	 *                    post-loop picker.
+	 *   awaiting-auto-review-fix — host agent is applying the
+	 *                    auto-review consensus fixes. Next agent_end
+	 *                    transitions into the post-loop picker.
 	 *   dormant        — "Continue discussing" chosen; no tool restrictions,
 	 *                    /implement and /park still work
 	 *   consumed       — terminal: post-loop picker resolved, or /park fired
@@ -172,6 +188,8 @@ interface DevelopState {
 		| "awaiting-fix"
 		| "loop-complete"
 		| "loop-bailed"
+		| "auto-reviewing"
+		| "awaiting-auto-review-fix"
 		| "dormant"
 		| "consumed";
 	startedAt: number;
@@ -184,6 +202,34 @@ interface DevelopState {
 	priorTools?: string[];
 	/** Auto-verify loop bookkeeping. Present in verify/fix/bailed/complete phases. */
 	verifyLoop?: VerifyLoopState;
+	/** Auto-review pass bookkeeping. Present in auto-reviewing /
+	 *  awaiting-auto-review-fix phases; cleared after the post-loop
+	 *  picker fires. */
+	autoReview?: AutoReviewState;
+}
+
+/**
+ * Persisted state for the auto-review pass. Lives on `DevelopState`
+ * for the `auto-reviewing` and `awaiting-auto-review-fix` phases. We
+ * keep it minimal: counts for the widget, and the bail flag from the
+ * verify loop so the post-loop picker can still annotate /commit
+ * correctly when the loop bailed and an auto-review pass ran on top.
+ */
+interface AutoReviewState {
+	/** Whether the auto-verify loop bailed before this pass started.
+	 *  Carried forward so `runPostLoopPicker` annotates /commit
+	 *  correctly even after the auto-review intermission. */
+	loopBailed: boolean;
+	/** Unresolved verifier concerns at the moment the auto-review
+	 *  started. Same use as `loopBailed`. */
+	unresolvedConcerns: number;
+	/** Auto-eligible findings handed to the host agent. The host fix
+	 *  turn ends with a normal `agent_end`, at which point /develop
+	 *  transitions to the post-loop picker. */
+	appliedCount: number;
+	/** Models actually used — surfaced in the widget for transparency. */
+	primaryModel?: string;
+	secondaryModel?: string;
 }
 
 const PLAN_SKILL_PATH = "skills/develop/SKILL.md";
@@ -412,6 +458,22 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.setStatus(
 					EXT_ID,
 					`⚠ bailed (${reason}, ${iter} iter, ${concerns} concern(s))`,
+				);
+				ctx.ui.setWidget("develop-todos", undefined);
+				return;
+			}
+			case "auto-reviewing": {
+				const primary = state.autoReview?.primaryModel ?? "primary.heavy";
+				const secondary = state.autoReview?.secondaryModel ?? "secondary.heavy";
+				ctx.ui.setStatus(EXT_ID, `🤖 auto-review (${primary} × ${secondary})`);
+				ctx.ui.setWidget("develop-todos", undefined);
+				return;
+			}
+			case "awaiting-auto-review-fix": {
+				const applied = state.autoReview?.appliedCount ?? 0;
+				ctx.ui.setStatus(
+					EXT_ID,
+					`🔧 auto-review fix — ${applied} consensus finding(s)`,
 				);
 				ctx.ui.setWidget("develop-todos", undefined);
 				return;
@@ -648,7 +710,9 @@ export default function (pi: ExtensionAPI) {
 			state.phase = "loop-complete";
 			persist();
 			updateWidget(ctx);
-			runDetached("post-loop picker", ctx, () => runPostLoopPicker(ctx));
+			runDetached("post-loop picker", ctx, () =>
+				enterAutoReviewOrPostLoopPicker(ctx),
+			);
 			return;
 		}
 
@@ -667,7 +731,7 @@ export default function (pi: ExtensionAPI) {
 				state.phase = "loop-complete";
 				persist();
 				updateWidget(ctx);
-				await runPostLoopPicker(ctx);
+				await enterAutoReviewOrPostLoopPicker(ctx);
 			};
 
 			let mod: typeof import("pi-ext-verify/core");
@@ -752,7 +816,7 @@ export default function (pi: ExtensionAPI) {
 				`auto-verify clean after ${state.verifyLoop.iteration} iteration(s)`,
 				"info",
 			);
-			await runPostLoopPicker(ctx);
+			await enterAutoReviewOrPostLoopPicker(ctx);
 			return;
 		}
 
@@ -771,7 +835,7 @@ export default function (pi: ExtensionAPI) {
 				`auto-verify bailed: ${reason} — ${decision.concernCount} concern(s) outstanding`,
 				"warning",
 			);
-			await runPostLoopPicker(ctx);
+			await enterAutoReviewOrPostLoopPicker(ctx);
 			return;
 		}
 
@@ -927,6 +991,145 @@ export default function (pi: ExtensionAPI) {
 				notify(ctx, `commit failed: ${msg}`, "error");
 			}
 		}
+	}
+
+	// ---- Auto-review pass --------------------------------------------
+	//
+	// After the auto-verify loop settles (clean or bailed), but before
+	// the post-loop picker fires, run a focused cross-model review.
+	// Only the `code-reviewer` and `code-simplifier` lanes participate;
+	// each runs twice (primary.heavy + secondary.heavy). Findings the
+	// two tiers agree on are queued for the host agent automatically.
+	//
+	// State flow:
+	//
+	//   loop-complete | loop-bailed
+	//        ↓
+	//   auto-reviewing  — runAutoReview() in flight
+	//        ↓
+	//   awaiting-auto-review-fix  (when consensus findings queued)
+	//        ↓  next agent_end
+	//   runPostLoopPicker
+	//
+	//   … or directly runPostLoopPicker when no consensus findings or
+	//   the auto-review pass is skipped (review extension missing,
+	//   opt-out flag, model resolution failure, etc.).
+
+	/**
+	 * Branch on whether to run the auto-review pass before the
+	 * post-loop picker. Caller has already set `state.phase` to
+	 * `loop-complete` or `loop-bailed`. We capture the bail context on
+	 * `state.autoReview` so the eventual picker can still annotate
+	 * /commit correctly even after the auto-review intermission.
+	 */
+	async function enterAutoReviewOrPostLoopPicker(
+		ctx: ExtensionContext,
+	): Promise<void> {
+		if (!state) return;
+		const loopBailed = state.phase === "loop-bailed";
+		const unresolvedConcerns = state.verifyLoop?.lastConcernCount ?? 0;
+
+		const settings = readRelevantSettings(ctx.cwd);
+		const enabled = getExtensionConfigBoolean(
+			settings,
+			EXT_ID,
+			"autoReview",
+			true,
+		);
+		if (!enabled) {
+			notify(ctx, "auto-review disabled in settings — skipping", "info");
+			await runPostLoopPicker(ctx);
+			return;
+		}
+		if (!pi.getCommands().some((c) => c.name === "review")) {
+			notify(
+				ctx,
+				"review extension not installed — skipping auto-review",
+				"info",
+			);
+			await runPostLoopPicker(ctx);
+			return;
+		}
+
+		let mod: typeof import("pi-ext-review/auto-review");
+		try {
+			mod = await import("pi-ext-review/auto-review");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			notify(
+				ctx,
+				`review/auto-review module failed to load (${msg}); skipping auto-review`,
+				"warning",
+			);
+			await runPostLoopPicker(ctx);
+			return;
+		}
+
+		state.phase = "auto-reviewing";
+		state.autoReview = {
+			loopBailed,
+			unresolvedConcerns,
+			appliedCount: 0,
+		};
+		persist();
+		updateWidget(ctx);
+
+		let result: Awaited<ReturnType<typeof mod.runAutoReview>>;
+		try {
+			result = await mod.runAutoReview({ ctx, pi, extensionName: EXT_ID });
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			notify(ctx, `auto-review failed: ${msg} — skipping`, "warning");
+			await restoreLoopPhaseAfterAutoReview();
+			await runPostLoopPicker(ctx);
+			return;
+		}
+
+		if (state.autoReview) {
+			state.autoReview.primaryModel = result.primaryModel;
+			state.autoReview.secondaryModel = result.secondaryModel;
+			state.autoReview.appliedCount = result.autoApplied?.length ?? 0;
+		}
+		persist();
+
+		const applied = result.autoApplied?.length ?? 0;
+		const nextAction = decideAutoReviewNextAction({
+			ran: result.ran,
+			appliedCount: applied,
+		});
+		if (nextAction === "skip-to-picker") {
+			// No consensus findings (or the pass aborted before fan-out).
+			// Roll back to the loop-complete/bailed phase so the post-loop
+			// picker still annotates /commit correctly when the verify
+			// loop bailed.
+			await restoreLoopPhaseAfterAutoReview();
+			await runPostLoopPicker(ctx);
+			return;
+		}
+
+		state.phase = "awaiting-auto-review-fix";
+		persist();
+		updateWidget(ctx);
+		notify(
+			ctx,
+			`auto-review queued ${applied} consensus fix(es) — waiting for the host agent`,
+			"info",
+		);
+	}
+
+	/**
+	 * Restore `state.phase` to `loop-complete` or `loop-bailed` based
+	 * on `autoReview.loopBailed`, then clear `autoReview` so the picker
+	 * picks up the right annotations. Used both when auto-review
+	 * surfaces no consensus findings and when it errors out.
+	 */
+	async function restoreLoopPhaseAfterAutoReview(): Promise<void> {
+		if (!state) return;
+		state.phase = restoreLoopPhaseFromAutoReview({
+			loopBailed: state.autoReview?.loopBailed === true,
+		});
+		state.autoReview = undefined;
+		persist();
 	}
 
 	// ---- Implement path -------------------------------------------------
@@ -1353,7 +1556,9 @@ export default function (pi: ExtensionAPI) {
 				state.phase === "awaiting-choice" ||
 				state.phase === "executing" ||
 				state.phase === "verifying" ||
-				state.phase === "awaiting-fix");
+				state.phase === "awaiting-fix" ||
+				state.phase === "auto-reviewing" ||
+				state.phase === "awaiting-auto-review-fix");
 		if (active) return;
 		return {
 			messages: event.messages.filter((m) => {
@@ -1362,7 +1567,8 @@ export default function (pi: ExtensionAPI) {
 					ct !== CUSTOM_INTAKE_CONTEXT &&
 					ct !== CUSTOM_PLAN_CONTEXT &&
 					ct !== CUSTOM_EXEC_CONTEXT &&
-					ct !== CUSTOM_FIX_CONTEXT
+					ct !== CUSTOM_FIX_CONTEXT &&
+					ct !== "auto-review-followup"
 				);
 			}),
 		};
@@ -1412,6 +1618,18 @@ export default function (pi: ExtensionAPI) {
 			state.verifyLoop.iteration += 1;
 			persist();
 			startVerifyIteration(ctx);
+			return;
+		}
+
+		// awaiting-auto-review-fix → host has just finished applying the
+		// cross-model consensus fixes. Restore the loop phase (so the
+		// picker still annotates /commit correctly when the verify loop
+		// bailed) and run the post-loop picker. Detached so pi can flip
+		// idle before `ctx.ui.select` opens.
+		if (state.phase === "awaiting-auto-review-fix") {
+			await restoreLoopPhaseAfterAutoReview();
+			updateWidget(ctx);
+			runDetached("post-auto-review picker", ctx, () => runPostLoopPicker(ctx));
 			return;
 		}
 

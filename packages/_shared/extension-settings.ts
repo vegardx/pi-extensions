@@ -228,6 +228,26 @@ export function getExtensionModelOverride(
 }
 
 /**
+ * Get a typed boolean flag under `extensionConfig.<name>.<key>`. Used
+ * by extensions that expose simple opt-out / feature toggles in
+ * `settings.json` without wanting to write their own settings reader.
+ *
+ * `defaultValue` is returned both when the key is unset and when the
+ * value is not a JSON boolean — we deliberately do NOT coerce strings
+ * like `"true"` so a typo in settings.json fails closed (back to the
+ * extension's default) instead of silently flipping behavior.
+ */
+export function getExtensionConfigBoolean(
+	settings: RelevantSettings,
+	extensionName: string,
+	key: string,
+	defaultValue: boolean,
+): boolean {
+	const raw = settings.extensionConfig?.[extensionName]?.[key];
+	return typeof raw === "boolean" ? raw : defaultValue;
+}
+
+/**
  * Get the configured model for a background tier under the requested
  * set. If the tier isn't set under `secondary`, falls back to the same
  * tier under `primary` — the resolver's "secondary uses primary as a

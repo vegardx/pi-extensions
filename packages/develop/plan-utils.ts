@@ -401,3 +401,44 @@ export function buildPostLoopPickerOptions(opts: {
 	options.push("Stay here — I'll handle it");
 	return options;
 }
+
+// ---- Auto-review state transitions ------------------------------------
+//
+// `/develop` runs a focused cross-model review (only `code-reviewer`
+// and `code-simplifier`, against `primary.heavy` + `secondary.heavy`)
+// after the auto-verify loop settles, before the post-loop picker.
+// Two pure helpers below cover the state-machine decisions; the
+// extension owns the side effects.
+
+/**
+ * Decide what /develop should do once `runAutoReview` returns. Two
+ * outcomes:
+ *   - `apply-fixes` — at least one cross-model consensus finding was
+ *     queued for the host agent. Transition to
+ *     `awaiting-auto-review-fix` and wait for the next `agent_end`
+ *     to fire the post-loop picker.
+ *   - `skip-to-picker` — no consensus findings (or the pass aborted
+ *     before fan-out). Restore the loop phase and run the picker
+ *     directly.
+ */
+export type AutoReviewNextAction = "apply-fixes" | "skip-to-picker";
+export function decideAutoReviewNextAction(opts: {
+	ran: boolean;
+	appliedCount: number;
+}): AutoReviewNextAction {
+	if (!opts.ran) return "skip-to-picker";
+	if (opts.appliedCount <= 0) return "skip-to-picker";
+	return "apply-fixes";
+}
+
+/**
+ * Pure helper: given whether the auto-verify loop bailed, decide which
+ * phase to restore when the auto-review pass exits without queueing
+ * fixes (or errors out). Returning `loop-bailed` keeps the post-loop
+ * picker's `/commit` annotation honest.
+ */
+export function restoreLoopPhaseFromAutoReview(opts: {
+	loopBailed: boolean;
+}): "loop-bailed" | "loop-complete" {
+	return opts.loopBailed ? "loop-bailed" : "loop-complete";
+}

@@ -1,5 +1,6 @@
 import {
 	countBySeverity,
+	crossModelConsensus,
 	dedupeFindings,
 	parseReviewerOutput,
 	recommendationFor,
@@ -247,6 +248,218 @@ describe("dedupeFindings", () => {
 			"crit alone",
 			"note alone",
 		]);
+	});
+});
+
+describe("dedupeFindings — tier-tagged bundles", () => {
+	it("records flaggedByTier and crossModelConsensus when tiers are provided", () => {
+		const findings = dedupeFindings([
+			{
+				role: "code-reviewer",
+				tier: "primary",
+				findings: [
+					{
+						severity: "IMPORTANT",
+						file: "a.ts",
+						line: 4,
+						title: "null deref",
+						description: "primary reviewer take",
+					},
+				],
+			},
+			{
+				role: "code-reviewer",
+				tier: "secondary",
+				findings: [
+					{
+						severity: "IMPORTANT",
+						file: "a.ts",
+						line: 4,
+						title: "null deref",
+						description: "secondary reviewer take, with more detail",
+					},
+				],
+			},
+		]);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.flaggedByTier).toEqual(["primary", "secondary"]);
+		expect(findings[0]?.crossModelConsensus).toBe(true);
+	});
+
+	it("sets crossModelConsensus=false when only one tier flags", () => {
+		const findings = dedupeFindings([
+			{
+				role: "code-reviewer",
+				tier: "primary",
+				findings: [
+					{
+						severity: "NOTE",
+						file: "a.ts",
+						line: 1,
+						title: "only primary saw this",
+						description: "",
+					},
+				],
+			},
+			{
+				role: "code-reviewer",
+				tier: "secondary",
+				findings: [],
+			},
+		]);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.flaggedByTier).toEqual(["primary"]);
+		expect(findings[0]?.crossModelConsensus).toBe(false);
+	});
+
+	it("matches across roles within the same tier-pair (cross-role agreement)", () => {
+		// primary code-reviewer + secondary code-simplifier flag the same
+		// dedupe key. Different roles, but both tiers contributed at least
+		// one bundle — still counts as cross-model consensus.
+		const findings = dedupeFindings([
+			{
+				role: "code-reviewer",
+				tier: "primary",
+				findings: [
+					{
+						severity: "IMPORTANT",
+						file: "a.ts",
+						line: 9,
+						title: "redundant null check",
+						description: "",
+					},
+				],
+			},
+			{
+				role: "code-simplifier",
+				tier: "secondary",
+				findings: [
+					{
+						severity: "NOTE",
+						file: "a.ts",
+						line: 9,
+						title: "redundant null check",
+						description: "",
+					},
+				],
+			},
+		]);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.flaggedByTier?.sort()).toEqual([
+			"primary",
+			"secondary",
+		]);
+		expect(findings[0]?.crossModelConsensus).toBe(true);
+	});
+
+	it("leaves tier fields unset when no bundle carries a tier", () => {
+		const findings = dedupeFindings([
+			{
+				role: "code-reviewer",
+				findings: [
+					{
+						severity: "NOTE",
+						file: "a.ts",
+						line: 1,
+						title: "t",
+						description: "",
+					},
+				],
+			},
+		]);
+		expect(findings).toHaveLength(1);
+		expect(findings[0]?.flaggedByTier).toBeUndefined();
+		expect(findings[0]?.crossModelConsensus).toBeUndefined();
+	});
+});
+
+describe("crossModelConsensus", () => {
+	it("returns only findings with crossModelConsensus === true", () => {
+		const findings = dedupeFindings([
+			{
+				role: "code-reviewer",
+				tier: "primary",
+				findings: [
+					{
+						severity: "IMPORTANT",
+						file: "agreed.ts",
+						line: 1,
+						title: "both agree",
+						description: "",
+						suggestedAction: "do the thing",
+					},
+					{
+						severity: "IMPORTANT",
+						file: "primary-only.ts",
+						line: 1,
+						title: "only primary saw this",
+						description: "",
+					},
+				],
+			},
+			{
+				role: "code-reviewer",
+				tier: "secondary",
+				findings: [
+					{
+						severity: "IMPORTANT",
+						file: "agreed.ts",
+						line: 1,
+						title: "both agree",
+						description: "",
+						suggestedAction: "do the thing",
+					},
+					{
+						severity: "IMPORTANT",
+						file: "secondary-only.ts",
+						line: 1,
+						title: "only secondary saw this",
+						description: "",
+					},
+				],
+			},
+		]);
+		const agreed = crossModelConsensus(findings);
+		expect(agreed.map((f) => f.file)).toEqual(["agreed.ts"]);
+	});
+
+	it("returns [] when no bundle was tier-tagged (consensus undefined)", () => {
+		const findings = dedupeFindings([
+			{
+				role: "code-reviewer",
+				findings: [
+					{
+						severity: "NOTE",
+						file: "a.ts",
+						line: 1,
+						title: "t",
+						description: "",
+					},
+				],
+			},
+			{
+				role: "architect",
+				findings: [
+					{
+						severity: "NOTE",
+						file: "a.ts",
+						line: 1,
+						title: "t",
+						description: "",
+					},
+				],
+			},
+		]);
+		// Two reviewers agree on `consensus` but neither bundle carried
+		// tier metadata, so cross-model consensus is undefined and the
+		// filter must drop these.
+		expect(findings[0]?.consensus).toBe(true);
+		expect(findings[0]?.crossModelConsensus).toBeUndefined();
+		expect(crossModelConsensus(findings)).toEqual([]);
+	});
+
+	it("returns [] on empty input", () => {
+		expect(crossModelConsensus([])).toEqual([]);
 	});
 });
 

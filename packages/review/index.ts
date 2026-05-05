@@ -3,6 +3,12 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { EXT_ID, runReview } from "./core.js";
 
+export type {
+	AutoReviewAbortReason,
+	RunAutoReviewOptions,
+	RunAutoReviewResult,
+} from "./auto-review.js";
+export { AUTO_REVIEW_ROLES, runAutoReview } from "./auto-review.js";
 // Re-exports for tests + downstream consumers (e.g. /develop). `runReview`
 // piggybacks on the binding imported above; the others aren't needed at
 // runtime in this module so we re-export them straight from their sources.

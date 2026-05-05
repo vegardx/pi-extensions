@@ -56,7 +56,7 @@ own `examples/extensions/plan-mode/`.
                                        │
                                        │  agent calls develop_ready({description})
                                        ↓
-/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  verifying ⇄ awaiting-fix →  loop-complete | loop-bailed  →  consumed
+/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  verifying ⇄ awaiting-fix →  loop-complete | loop-bailed  →  auto-reviewing  →  awaiting-auto-review-fix  →  consumed
                          │                   │                                       │
                          │                   ├─ Park ──────────────────────────────────────→ consumed
                          │                   └─ Continue ────────────────────────────────→ dormant
@@ -80,6 +80,13 @@ own `examples/extensions/plan-mode/`.
 - **loop-bailed** — hit cap=5 or no-progress (same step stuck two
   iterations running). Same picker, with `/commit` annotated to show
   the unresolved-concern count.
+- **auto-reviewing** — cross-model code-reviewer + code-simplifier
+  pass running against `primary.heavy` + `secondary.heavy`. No user
+  prompt; transitions to `awaiting-auto-review-fix` (when consensus
+  findings were queued) or directly to the post-loop picker (no
+  consensus, or pass skipped).
+- **awaiting-auto-review-fix** — host agent is applying the auto-review
+  consensus fixes. Next `agent_end` fires the post-loop picker.
 - **dormant** — user chose "Continue discussing"; lockdown lifted but
   `/implement` / `/park` still work.
 - **consumed** — post-loop picker resolved (or Park fired). Terminal
@@ -251,12 +258,58 @@ current `agent_end` handler returns, so pi can finish flipping idle
 before any `pi.sendMessage(..., { triggerTurn: true })` calls inside
 `runVerify` / `runReview` / `runCommit` queue new turns.
 
+## Auto-review pass (post-verify, cross-model consensus)
+
+Once the auto-verify loop settles (clean or bailed), `/develop` runs a
+focused **auto-review pass** before the post-loop picker. Two reviewer
+lanes — `code-reviewer` and `code-simplifier` — each run **twice**: once
+against `backgroundModels.primary.heavy`, once against
+`backgroundModels.secondary.heavy`. Findings the two model tiers
+**independently agree on** (cross-model consensus) and that carry a
+concrete `suggestedAction` are queued for the host agent automatically;
+everything else is dropped (run `/review` manually for the broader pass).
+
+```
+ loop-complete | loop-bailed
+        ↓
+ auto-reviewing            — 4 subagents (2 lanes × 2 models) in flight
+        ↓
+ awaiting-auto-review-fix  — host agent applies the consensus fixes
+        ↓  next agent_end
+ runPostLoopPicker         — same picker as before, with /commit still
+                              annotated when the verify loop bailed
+```
+
+If either model tier is unresolvable (no `backgroundModels.primary.heavy`
+or `backgroundModels.secondary.heavy`, or auth fails), or no consensus
+findings surface, the pass is skipped and the post-loop picker fires
+directly. The verify-loop bail annotation on `/commit` is preserved
+across the auto-review intermission.
+
+Disable per-project / globally with:
+
+```jsonc
+{
+  "extensionConfig": {
+    "develop": { "autoReview": false }
+  }
+}
+```
+
 ## Configuration
 
 The loop cap is currently a constant (`VERIFY_LOOP_CAP = 5`); make it
 a settings knob if you start hitting it routinely. The verifier model
 is selected entirely by `/verify`'s configuration (see
 `packages/verify/README.md`).
+
+The auto-review pass uses `backgroundModels.primary.heavy` and
+`backgroundModels.secondary.heavy` (resolved via `_shared/model-resolver.ts`).
+Set both to two different model families if you want the cross-check
+to be meaningful — if both point at the same model, every finding
+becomes "consensus" trivially. Override per-extension with
+`extensionConfig.develop.model` (legacy override, applied to both
+tiers) if you really need the same model on both sides.
 
 ## Session resume
 

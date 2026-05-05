@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	getExtensionConfigBoolean,
 	getExtensionModelOverride,
 	getTierModel,
 	readRelevantSettings,
@@ -309,6 +310,55 @@ describe("helpers", () => {
 				"primary",
 			),
 		).toBeUndefined();
+	});
+
+	it("getExtensionConfigBoolean returns the default when nothing is set", () => {
+		expect(getExtensionConfigBoolean({}, "develop", "autoReview", true)).toBe(
+			true,
+		);
+		expect(getExtensionConfigBoolean({}, "develop", "autoReview", false)).toBe(
+			false,
+		);
+	});
+
+	it("getExtensionConfigBoolean reads a boolean value", () => {
+		expect(
+			getExtensionConfigBoolean(
+				{ extensionConfig: { develop: { autoReview: false } } },
+				"develop",
+				"autoReview",
+				true,
+			),
+		).toBe(false);
+		expect(
+			getExtensionConfigBoolean(
+				{ extensionConfig: { develop: { autoReview: true } } },
+				"develop",
+				"autoReview",
+				false,
+			),
+		).toBe(true);
+	});
+
+	it("getExtensionConfigBoolean falls back to default for non-boolean values (no string coercion)", () => {
+		// Fail closed on typos like `"true"` — the user gets the
+		// extension's default instead of a silent behavioral flip.
+		expect(
+			getExtensionConfigBoolean(
+				{ extensionConfig: { develop: { autoReview: "true" } } },
+				"develop",
+				"autoReview",
+				false,
+			),
+		).toBe(false);
+		expect(
+			getExtensionConfigBoolean(
+				{ extensionConfig: { develop: { autoReview: 1 } } },
+				"develop",
+				"autoReview",
+				true,
+			),
+		).toBe(true);
 	});
 });
 
