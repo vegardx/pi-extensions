@@ -98,9 +98,9 @@ The two are complementary: Copilot catches the obvious stuff cheap, `/review` go
 
 Several extensions in this monorepo call an LLM on a side task —
 `prompt-suggestion` predicts the next message, `session-title` names
-the session, `nitpick` runs a subagent reviewer. None of them
-hard-code a provider/model id; each declares a **tier** and the user
-decides what that tier means.
+the session, `verify` fans out parallel subagents to verify a plan.
+None of them hard-code a provider/model id; each declares a **tier**
+and the user decides what that tier means.
 
 Configure once in `settings.json`:
 
@@ -116,7 +116,7 @@ Configure once in `settings.json`:
   },
   // Optional per-extension overrides win over the tier above.
   "extensionConfig": {
-    "nitpick": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
+    "verify": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
   }
 }
 ```
@@ -132,7 +132,6 @@ Current tier assignments:
 |---|---|---|
 | `prompt-suggestion` | `fast` | Ghost text on every turn; 40-token output. |
 | `session-title` (auto-title) | `fast` | Once per session; 2–5 word output. |
-| `nitpick` | `normal` | Continuous code review; needs real reasoning. |
 | `verify` | `normal` (set: `secondary`) | Per-step plan verifier; reads `secondary` for cross-checking. |
 
 Resolution order (high → low priority), same in every extension:

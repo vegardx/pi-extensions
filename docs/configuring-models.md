@@ -4,8 +4,8 @@ Several extensions in this monorepo call an LLM on a side task:
 
 - `prompt-suggestion` predicts the next message after every turn.
 - `session-title` names the session for your terminal tab / tmux window.
-- `nitpick` runs a long-lived reviewer subagent that comments on every
-  edit.
+- `verify` fans out parallel read-only subagents to check whether each
+  step of a plan is actually done.
 
 None of them hard-code a provider/model id. Each one declares a **tier**
 (`fast` / `normal` / `heavy`) and a **set** (`primary` / `secondary`),
@@ -61,8 +61,8 @@ Two top-level keys this monorepo's extensions read from pi's
   user to fully configure both sets.
 - **`extensionConfig.<name>.model`** — per-extension override. Wins
   over the (set, tier) lookup. Use it when one extension should run on
-  something different than your general tier choice (e.g. nitpick on a
-  gateway, but the rest on direct Anthropic).
+  something different than your general tier choice (e.g. `verify`
+  on a gateway, but the rest on direct Anthropic).
 
 Any other keys in `settings.json` belong to pi and are ignored by
 these extensions. The converse is also true: pi doesn't know about
@@ -78,7 +78,7 @@ candidate that resolves in the registry **and** has usable auth:
 1. **Extension-specific explicit override** — a CLI flag, in-session
    command value, or legacy env var that the extension passes in as
    `opts.explicit`. (Examples: `--suggest-model=...`,
-   `/nitpick model ...`, `$PI_SESSION_AUTO_TITLE_MODEL`.)
+   `$PI_SESSION_AUTO_TITLE_MODEL`.)
 2. **`settings.json` → `extensionConfig.<name>.model`** — the
    persistent per-extension escape hatch.
 3. **`settings.json` → `backgroundModels.<set>.<tier>`** — the user's
@@ -100,8 +100,8 @@ treat `{ ok: true, apiKey: undefined }` results as unusable via
 `requireApiKey: true` — see the
 [resolver source](../packages/_shared/model-resolver.ts) for details.
 Other consumers accept headers-only auth because they hand the model
-spec off to something that does its own auth (nitpick's `RpcClient`,
-prompt-suggestion's `Predictor`).
+spec off to something that does its own auth (the subagent RPC
+clients in `/review` and `/verify`, prompt-suggestion's `Predictor`).
 
 ## Per-extension tier and set assignments
 
@@ -109,7 +109,6 @@ prompt-suggestion's `Predictor`).
 |---|---|---|---|---|
 | `prompt-suggestion` | `primary` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
 | `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
-| `nitpick` | `primary` | `normal` | Continuous code review. Needs real reasoning to read diffs and produce structured findings. | `/nitpick model <provider/id>` (in-session), `extensionConfig.nitpick.model` |
 | `verify` | `secondary` | `normal` | Per-step plan verifier. Reads `secondary` so its verdicts are independent of whatever model produced the work being verified. Falls back to `primary.normal` when `secondary.normal` isn't set. | `extensionConfig.verify.model` |
 
 Extensions that don't take a background model and use `ctx.model`
@@ -135,8 +134,8 @@ The simplest setup: one provider, one config, done. Assuming you have
 }
 ```
 
-Ghost text runs on haiku, auto-title runs on haiku, nitpick runs on
-sonnet. Nothing touches opus unless another extension declares `heavy`.
+Ghost text runs on haiku, auto-title runs on haiku. Nothing touches
+opus unless an extension declares `heavy`.
 
 ### Cross-checking with primary + secondary
 
@@ -216,12 +215,12 @@ Mix per-extension with the tier defaults:
     }
   },
   "extensionConfig": {
-    "nitpick": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
+    "verify": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
   }
 }
 ```
 
-nitpick reaches for openrouter, prompt-suggestion and session-title
+`verify` reaches for openrouter, prompt-suggestion and session-title
 stay on direct Anthropic.
 
 ### Local model (Ollama, LM Studio, etc.)
@@ -242,8 +241,9 @@ can target it like any other:
 ```
 
 Local models cost nothing per call but tend to be slower and less
-capable. Good fit for `fast`-tier extensions (short outputs) and
-possibly nitpick if the model is sharp enough for diff review.
+capable. Good fit for `fast`-tier extensions (short outputs); for
+`normal`-tier consumers like `verify`, only viable if the local
+model is sharp enough to read diffs and produce structured JSON.
 
 ### Minimal — configure only what you care about
 
@@ -266,8 +266,9 @@ tiers, just set `backgroundModels.primary.fast`:
 ```
 
 Covers both prompt-suggestion and session-title (the only `fast`-tier
-consumers). nitpick falls through to `ctx.model` until you configure
-`normal` too.
+consumers). `verify` (`normal`-tier, `secondary` set) falls through
+to `ctx.model` until you configure `secondary.normal` or
+`primary.normal`.
 
 ## Provider and gateway notes
 
@@ -302,8 +303,8 @@ Quick checks:
 
 - `/suggest-status` dumps prompt-suggestion's current resolved model,
   auth status, gate reasons, and the last few predict attempts.
-- `/nitpick status` shows nitpick's resolved model and the active
-  in-session override.
+- `/verify` (when run) reports the resolved model in its TUI report
+  header.
 - session-title auto-title runs at most once per session and writes
   its status to the session's auto-title state; re-run with `/retitle`
   to force a fresh attempt.
@@ -325,18 +326,14 @@ top-to-bottom against your current state:
 
 If a higher-priority candidate isn't in the registry or has no auth,
 the resolver skips it and continues. That's why a typo'd
-`extensionConfig.nitpick.model` can produce "huh, it's using my
-session model, not the thing I configured" — nitpick's override
+`extensionConfig.verify.model` can produce "huh, it's using my
+session model, not the thing I configured" — verify's override
 didn't resolve, so step 3 won.
 
 ### Settings changes aren't being picked up
 
 Extensions read `settings.json` at `session_start`. Edit the file and
 restart pi; the new values apply on the next session.
-
-One exception: `/nitpick model <spec>` is an **in-session** override
-that doesn't persist. To make it stick, move it into
-`extensionConfig.nitpick.model`.
 
 ### Old flat `backgroundModels.<tier>` config doesn't work
 
@@ -374,9 +371,9 @@ Three consumers with different needs:
   text under `fast` is the obvious default.
 
 A single `backgroundModel` would force users to compromise between
-"cheap enough for ghost text" and "smart enough for nitpick." Three
-tiers give three knobs, priced and picked independently. Users who
-don't care set one (`primary.fast`); users who care set three.
+"cheap enough for ghost text" and "capable enough for verification."
+Three tiers give three knobs, priced and picked independently. Users
+who don't care set one (`primary.fast`); users who care set three.
 
 Tier labels are intent, not implementation. If "heavy" means
 `claude-opus-4-5` to you and `gemini-2.5-pro` to someone else, that's

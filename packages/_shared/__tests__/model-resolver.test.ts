@@ -99,7 +99,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "a/b" } },
+					extensionConfig: { verify: { model: "a/b" } },
 					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const explicit = makeModel("e", "f");
@@ -113,7 +113,7 @@ describe("resolveModel", () => {
 					},
 				});
 				const r = await resolveModel(ctx, {
-					name: "nitpick",
+					name: "verify",
 					tier: "fast",
 					explicit: "e/f",
 				});
@@ -129,7 +129,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "a/b" } },
+					extensionConfig: { verify: { model: "a/b" } },
 					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
@@ -140,7 +140,7 @@ describe("resolveModel", () => {
 						"c/d": makeModel("c", "d"),
 					},
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r?.model.provider).toBe("a");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -163,7 +163,7 @@ describe("resolveModel", () => {
 						"session/model": makeModel("session", "model"),
 					},
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -272,7 +272,7 @@ describe("resolveModel", () => {
 					model: sessionModel,
 					models: { "session/model": sessionModel },
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r?.model).toBe(sessionModel);
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -285,7 +285,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				const ctx = fakeCtx({ cwd });
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r).toBeNull();
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -298,7 +298,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "unknown/model" } },
+					extensionConfig: { verify: { model: "unknown/model" } },
 					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
@@ -308,7 +308,7 @@ describe("resolveModel", () => {
 						"c/d": makeModel("c", "d"),
 					},
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -321,7 +321,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "a/b" } },
+					extensionConfig: { verify: { model: "a/b" } },
 					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
@@ -333,7 +333,7 @@ describe("resolveModel", () => {
 					},
 					authOk: { "a/b": false }, // no key for the override
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -346,7 +346,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "a/b" } },
+					extensionConfig: { verify: { model: "a/b" } },
 					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const sessionModel = makeModel("session", "model");
@@ -364,7 +364,7 @@ describe("resolveModel", () => {
 						"session/model": false,
 					},
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r).toBeNull();
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
@@ -377,14 +377,14 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "a/b" } },
+					extensionConfig: { verify: { model: "a/b" } },
 				});
 				const ctx = fakeCtx({
 					cwd,
 					models: { "a/b": makeModel("a", "b") },
 					authHeadersOnly: { "a/b": true },
 				});
-				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
+				const r = await resolveModel(ctx, { name: "verify", tier: "fast" });
 				expect(r?.model.provider).toBe("a");
 				expect(r?.apiKey).toBeUndefined();
 				expect(r?.headers).toEqual({ "X-Token": "h" });
@@ -399,7 +399,7 @@ describe("resolveModel", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { nitpick: { model: "a/b" } },
+					extensionConfig: { verify: { model: "a/b" } },
 					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
@@ -411,7 +411,7 @@ describe("resolveModel", () => {
 					authHeadersOnly: { "a/b": true }, // higher priority but no apiKey
 				});
 				const r = await resolveModel(ctx, {
-					name: "nitpick",
+					name: "verify",
 					tier: "fast",
 					requireApiKey: true,
 				});
@@ -435,7 +435,7 @@ describe("resolveModel", () => {
 					authHeadersOnly: { "session/model": true },
 				});
 				const r = await resolveModel(ctx, {
-					name: "nitpick",
+					name: "verify",
 					tier: "fast",
 					requireApiKey: true,
 				});
