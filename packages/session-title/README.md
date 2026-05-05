@@ -136,21 +136,49 @@ Auto-title never beats `/title`, `--title`, or `$PI_SESSION_TITLE`.
 
 ### Knobs
 
-| Env / flag                             | Default                                              | What it does                                  |
-| -------------------------------------- | ---------------------------------------------------- | --------------------------------------------- |
-| `--no-auto-title`                      | off (auto-title enabled)                             | Opt out for this invocation.                  |
-| `PI_SESSION_AUTO_TITLE`                | `1`                                                  | Set to `0` / `off` / `false` / `no` to disable. |
-| `PI_SESSION_AUTO_TITLE_MODEL`          | unset                                                | Single `provider/id` to use, e.g. `openai/gpt-4o-mini`. Wins over the shortlist. |
-| `PI_SESSION_AUTO_TITLE_MODELS`         | unset                                                | Comma-separated `provider/id` shortlist; first one with working auth wins. |
-| `PI_SESSION_AUTO_TITLE_THRESHOLD_CHARS`| `500`                                                | User-input character threshold.               |
+| Env / flag                             | Default                  | What it does                                                                                                |
+| -------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `--no-auto-title`                      | off (auto-title enabled) | Opt out for this invocation.                                                                                |
+| `PI_SESSION_AUTO_TITLE`                | `1`                      | Set to `0` / `off` / `false` / `no` to disable.                                                             |
+| `PI_SESSION_AUTO_TITLE_MODEL`          | unset                    | `provider/id` override, e.g. `openai/gpt-4o-mini`. Wins over `settings.json`. Kept for backwards compat. |
+| `PI_SESSION_AUTO_TITLE_THRESHOLD_CHARS`| `500`                    | User-input character threshold.                                                                             |
 
-If none of the configured / default models have credentials, auto-title
-silently skips and leaves the git-branch / cwd fallback in place.
+If no model can be resolved or none has credentials, auto-title silently
+skips and leaves the git-branch / cwd fallback in place.
 
-The built-in model shortlist (tried in order until one resolves auth):
-`google/gemini-2.5-flash` → `anthropic/claude-haiku-4-5` →
-`openai/gpt-5-nano` → `openai/gpt-4o-mini` → your current session model
-as a last resort.
+### Model selection
+
+Auto-title declares itself a **`fast`-tier** consumer. It runs at most
+once per session, emits 2–5 words, and reads a short prompt — there is
+no reason to spend anything more than the cheapest model the user has
+configured.
+
+Resolution order (high → low priority), via
+`packages/_shared/model-resolver.ts`:
+
+1. `$PI_SESSION_AUTO_TITLE_MODEL` — legacy env override.
+2. `settings.json → extensionConfig.session-title.model` —
+   persistent per-extension override.
+3. `settings.json → backgroundModels.fast` — the "what does `fast`
+   tier mean to me" setting, shared with any other `fast`-tier consumer.
+4. `ctx.model` — the active session model.
+5. Nothing usable → skip auto-title; fall back to git branch / cwd.
+
+No hard-coded model IDs. Example `settings.json`:
+
+```jsonc
+{
+  "backgroundModels": {
+    "fast": "openai/gpt-4o-mini"
+  }
+}
+```
+
+> **Breaking change (from previous versions of this extension):** the
+> `PI_SESSION_AUTO_TITLE_MODELS` comma-separated shortlist env var is
+> gone, along with the hard-coded model shortlist it fell back to. Pick
+> a single model (via one of the knobs above) and it'll be used
+> consistently.
 
 ### Force regeneration
 

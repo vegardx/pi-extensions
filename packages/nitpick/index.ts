@@ -5,6 +5,7 @@ import {
 	isEditToolResult,
 	isWriteToolResult,
 } from "@mariozechner/pi-coding-agent";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { ReviewerClient } from "./reviewer-client.js";
 import {
 	countChangedLines,
@@ -18,17 +19,30 @@ import {
 const EXT_ID = "nitpick";
 const CUSTOM_TYPE = "nitpick-review";
 const STATE_ENTRY = "nitpick-state";
-const DEFAULT_MODEL = "claude-haiku-4-5";
 
 interface NitpickState {
 	enabled: boolean;
-	model: string;
 }
 
 export default function (pi: ExtensionAPI) {
 	// ---- Session-scoped state ----------------------------------------------
 	let enabled = true;
-	let model = DEFAULT_MODEL;
+
+	/**
+	 * Resolved `"provider/id"` string passed to the reviewer subagent.
+	 * Produced by the shared resolver during `session_start` (and whenever
+	 * the user runs `/nitpick model <spec>` to override in-session). When
+	 * undefined, review requests are dropped — we've already surfaced a
+	 * notify() explaining why.
+	 */
+	let resolvedModelSpec: string | undefined;
+
+	/**
+	 * In-session-only override set by `/nitpick model <spec>`. Takes
+	 * precedence over `settings.json`. Not persisted — for persistent
+	 * overrides, edit `settings.json` directly.
+	 */
+	let modelOverride: string | undefined;
 
 	/**
 	 * True while the turn that nitpick itself triggered (via a follow-up
@@ -59,7 +73,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Persistence --------------------------------------------------------
 	function persist(): void {
-		pi.appendEntry(STATE_ENTRY, { enabled, model } satisfies NitpickState);
+		pi.appendEntry(STATE_ENTRY, { enabled } satisfies NitpickState);
 	}
 
 	function hydrate(ctx: ExtensionContext): void {
@@ -71,7 +85,26 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!latest) return;
 		enabled = Boolean(latest.enabled);
-		model = latest.model || DEFAULT_MODEL;
+	}
+
+	// ---- Model resolution --------------------------------------------------
+	async function resolveAndCacheModel(ctx: ExtensionContext): Promise<void> {
+		const r = await resolveModel(ctx, {
+			name: EXT_ID,
+			tier: "normal",
+			explicit: modelOverride,
+		});
+		if (!r) {
+			resolvedModelSpec = undefined;
+			if (ctx.hasUI) {
+				ctx.ui.notify(
+					"nitpick: no usable model (set backgroundModels.normal or extensionConfig.nitpick.model in settings.json, or run `/nitpick model <provider/id>`). Reviews are disabled for this session.",
+					"warning",
+				);
+			}
+			return;
+		}
+		resolvedModelSpec = `${r.model.provider}/${r.model.id}`;
 	}
 
 	// ---- UI helpers ---------------------------------------------------------
@@ -83,7 +116,8 @@ export default function (pi: ExtensionAPI) {
 		}
 		const active = reviewer?.activeReviews() ?? 0;
 		if (active === 0) {
-			ctx.ui.setStatus(EXT_ID, `nitpick: on (${model})`);
+			const label = resolvedModelSpec ?? "no model";
+			ctx.ui.setStatus(EXT_ID, `nitpick: on (${label})`);
 		} else {
 			ctx.ui.setStatus(EXT_ID, `nitpick: reviewing ${active} file(s)`);
 		}
@@ -131,7 +165,12 @@ export default function (pi: ExtensionAPI) {
 		if (editHashes.get(args.absPath) === args.contentHash) return;
 		editHashes.set(args.absPath, args.contentHash);
 
-		if (!reviewer) reviewer = new ReviewerClient(model, args.ctx.cwd);
+		// No model resolved (either misconfigured or no auth anywhere) —
+		// silently drop; the notify was already surfaced at session_start.
+		if (!resolvedModelSpec) return;
+
+		if (!reviewer)
+			reviewer = new ReviewerClient(resolvedModelSpec, args.ctx.cwd);
 		const client = reviewer;
 
 		refreshStatus(args.ctx);
@@ -211,11 +250,32 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	// ---- Lifecycle events ---------------------------------------------------
-	pi.on("session_start", (_event, ctx) => {
+	pi.on("session_start", async (_event, ctx) => {
 		hydrate(ctx);
+
+		// Apply the CLI-flag override if any. --nitpick=false disables the
+		// reviewer entirely for this session; --nitpick=true is the default.
+		const flag = pi.getFlag("nitpick");
+		if (flag === false) {
+			enabled = false;
+			void reviewer?.stop();
+			reviewer = null;
+			persist();
+			refreshStatus(ctx);
+			return;
+		}
+		if (flag === true) {
+			enabled = true;
+			persist();
+		}
+
+		if (enabled) {
+			await resolveAndCacheModel(ctx);
+		}
+
 		refreshStatus(ctx);
-		if (enabled && ctx.hasUI) {
-			ctx.ui.notify(`nitpick active (${model})`, "info");
+		if (enabled && ctx.hasUI && resolvedModelSpec) {
+			ctx.ui.notify(`nitpick active (${resolvedModelSpec})`, "info");
 		}
 	});
 
@@ -288,7 +348,8 @@ export default function (pi: ExtensionAPI) {
 				case "status": {
 					const parts = [
 						`enabled: ${enabled}`,
-						`model: ${model}`,
+						`model: ${resolvedModelSpec ?? "(none)"}`,
+						`override: ${modelOverride ?? "(none)"}`,
 						`client: ${reviewer?.isStarted() ? "warm" : "cold"}`,
 						`active: ${reviewer?.activeReviews() ?? 0}`,
 						`findings: ${latestFindings ? "yes" : "no"}`,
@@ -300,8 +361,12 @@ export default function (pi: ExtensionAPI) {
 				case "on": {
 					enabled = true;
 					persist();
+					await resolveAndCacheModel(ctx);
 					refreshStatus(ctx);
-					ctx.ui.notify(`nitpick enabled (${model})`, "info");
+					ctx.ui.notify(
+						`nitpick enabled (${resolvedModelSpec ?? "no model"})`,
+						"info",
+					);
 					return;
 				}
 				case "off": {
@@ -329,19 +394,31 @@ export default function (pi: ExtensionAPI) {
 				case "model": {
 					const next = rest.join(" ").trim();
 					if (!next) {
-						ctx.ui.notify(`nitpick model: ${model}`, "info");
+						ctx.ui.notify(
+							`nitpick model: ${resolvedModelSpec ?? "(none)"}${
+								modelOverride ? ` (override: ${modelOverride})` : ""
+							}`,
+							"info",
+						);
 						return;
 					}
-					model = next;
-					persist();
-					// Existing client was spawned with the old model; tear it down
-					// so the next review lazily starts one with the new model.
+					if (next === "clear" || next === "reset") {
+						modelOverride = undefined;
+					} else {
+						modelOverride = next;
+					}
+					await resolveAndCacheModel(ctx);
+					// Existing client was spawned with the previous model; tear
+					// it down so the next review lazily starts one with the new.
 					if (reviewer) {
 						await reviewer.stop();
 						reviewer = null;
 					}
 					refreshStatus(ctx);
-					ctx.ui.notify(`nitpick model → ${model}`, "info");
+					ctx.ui.notify(
+						`nitpick model → ${resolvedModelSpec ?? "(unresolved)"}`,
+						"info",
+					);
 					return;
 				}
 				case "show": {
@@ -369,21 +446,5 @@ export default function (pi: ExtensionAPI) {
 			"Control the nitpick simplification reviewer (default: on). Pass --nitpick=false to disable.",
 		type: "boolean",
 		default: true,
-	});
-
-	// Check the flag during session_start, once the runner is up.
-	pi.on("session_start", (_event, ctx) => {
-		const flag = pi.getFlag("nitpick");
-		if (flag === false) {
-			enabled = false;
-			void reviewer?.stop();
-			reviewer = null;
-			persist();
-			refreshStatus(ctx);
-		} else if (flag === true) {
-			enabled = true;
-			persist();
-			refreshStatus(ctx);
-		}
 	});
 }

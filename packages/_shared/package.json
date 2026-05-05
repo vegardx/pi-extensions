@@ -1,0 +1,15 @@
+{
+  "name": "@vegardx/pi-extensions-shared",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Shared helpers used by the extensions in this monorepo (model resolution, settings reading).",
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": { "optional": true },
+    "@mariozechner/pi-coding-agent": { "optional": true }
+  }
+}

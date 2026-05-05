@@ -2,10 +2,11 @@
 
 Claude-Code-style inline ghost-text prompt suggestions for [pi](https://pi.dev).
 
-After pi finishes responding, a secondary model (Haiku 4.5 by default)
-predicts your next message and renders it as dim ghost text inside the input.
-Press Tab to accept the suggestion into the buffer, then Enter to submit.
-Any other key dismisses the suggestion.
+After pi finishes responding, a secondary model (configured via
+`settings.json` — see [Model selection](#model-selection) below)
+predicts your next message and renders it as dim ghost text inside
+the input. Press Tab to accept the suggestion into the buffer, then
+Enter to submit. Any other key dismisses the suggestion.
 
 ## Try it
 
@@ -15,16 +16,18 @@ pi -e ./packages/prompt-suggestion
 
 ## Requirements
 
-- An API key for whichever provider backs the suggestion model. By default
-  this is `anthropic/claude-haiku-4-5-20251001`, which reads
-  `ANTHROPIC_API_KEY`.
-- Any model available through `ctx.modelRegistry.find()` works — swap via
-  `/suggest-model` or `--suggest-model=...`. Local Ollama, OpenAI, Groq etc.
-  all work once pi itself can authenticate to them.
+- An API key for whichever provider backs the suggestion model. No
+  hard-coded default — see **Model selection** below for how the
+  extension figures out which model to use.
+- Any model available through `ctx.modelRegistry.find()` works — swap
+  via `/suggest`, `--suggest-model=...`, or `settings.json`. Local
+  Ollama, OpenAI, Groq etc. all work once pi itself can authenticate
+  to them.
 
-If the configured suggestion model has no API key or auth fails, the
-extension surfaces a single `notify()` warning for the session and disables
-suggestions silently thereafter — it will not spam on every turn.
+If no model can be resolved, or the resolved model has no API key,
+the extension surfaces a single `notify()` warning for the session
+and disables suggestions silently thereafter — it will not spam on
+every turn.
 
 ## Scope and security
 
@@ -65,14 +68,46 @@ not a command-safety filter.
 | Flag | Default | Description |
 |---|---|---|
 | `--suggest` | `true` | Enable/disable the feature for this run |
-| `--suggest-model` | `anthropic/claude-haiku-4-5-20251001` | `provider/modelId` to use |
+| `--suggest-model` | _(unset)_ | `provider/modelId` to use (session override). Without this, the resolver decides; see **Model selection** below. |
 
 ## Commands
 
 | Command | Effect |
 |---|---|
-| `/suggest` | Interactive picker: list of models with configured auth, plus an "off" option |
+| `/suggest` | Interactive picker: list of models with configured auth, plus an "off" option. Selection persists in `~/.pi/agent/prompt-suggestion.json`. |
 | `/suggest-status` | Dump the extension's runtime state for debugging |
+
+## Model selection
+
+Prompt-suggestion declares itself a **`fast`-tier** consumer — ghost
+text runs on every `agent_end` and wants a cheap, fast model.
+
+Resolution order (high → low priority):
+
+1. `/suggest` picker selection — persisted in
+   `~/.pi/agent/prompt-suggestion.json`.
+2. `--suggest-model=<provider/id>` CLI flag — session override.
+3. `settings.json → extensionConfig.prompt-suggestion.model` —
+   persistent per-extension override.
+4. `settings.json → backgroundModels.fast` — the "what does `fast`
+   tier mean to me" setting, shared with any other `fast`-tier
+   consumer.
+5. `ctx.model` — the active session model. Always has auth but may
+   be more expensive than necessary for background calls.
+6. Nothing usable → notify once, ghost text disabled for the session.
+
+No hard-coded model IDs. Example `settings.json`:
+
+```jsonc
+{
+  "backgroundModels": {
+    "fast": "anthropic/claude-haiku-4-5-20251001"
+  },
+  "extensionConfig": {
+    "prompt-suggestion": { "model": "openai/gpt-4o-mini" }
+  }
+}
+```
 
 ## How it works
 

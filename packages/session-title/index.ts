@@ -80,6 +80,7 @@ import type {
 import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import type { EditorTheme, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -92,23 +93,12 @@ const ENV_POSITION = "PI_SESSION_TITLE_POSITION";
 // Auto-title (LLM-generated) config env vars. See the top-of-file docstring
 // for the resolution order.
 const ENV_AUTO_TITLE = "PI_SESSION_AUTO_TITLE"; // 0/off/false/no disables
-const ENV_AUTO_TITLE_MODEL = "PI_SESSION_AUTO_TITLE_MODEL"; // "provider/id"
-const ENV_AUTO_TITLE_MODELS = "PI_SESSION_AUTO_TITLE_MODELS"; // comma list
+const ENV_AUTO_TITLE_MODEL = "PI_SESSION_AUTO_TITLE_MODEL"; // "provider/id" override; see README
 const ENV_AUTO_TITLE_THRESHOLD = "PI_SESSION_AUTO_TITLE_THRESHOLD_CHARS";
 
 const DEFAULT_AUTO_TITLE_THRESHOLD_CHARS = 500;
 const AUTO_TITLE_MAX_TOKENS = 40;
 const AUTO_TITLE_MAX_VISIBLE_WIDTH = 60;
-
-// Ordered from "preferred for short, cheap output" to "still fine". First
-// entry with resolved auth wins. Hard-coded lists rot; `PI_SESSION_AUTO_TITLE_MODELS`
-// env override exists exactly for that.
-const DEFAULT_AUTO_TITLE_MODELS: ReadonlyArray<readonly [string, string]> = [
-	["google", "gemini-2.5-flash"],
-	["anthropic", "claude-haiku-4-5"],
-	["openai", "gpt-5-nano"],
-	["openai", "gpt-4o-mini"],
-];
 
 const STATUS_KEY = "session-title";
 
@@ -205,22 +195,6 @@ function parseAutoTitleThreshold(): number {
 	if (!raw) return DEFAULT_AUTO_TITLE_THRESHOLD_CHARS;
 	const n = Number.parseInt(raw, 10);
 	return Number.isFinite(n) && n > 0 ? n : DEFAULT_AUTO_TITLE_THRESHOLD_CHARS;
-}
-
-function parseModelList(
-	raw: string | undefined,
-): Array<[string, string]> | undefined {
-	if (!raw) return undefined;
-	const out: Array<[string, string]> = [];
-	for (const part of raw
-		.split(",")
-		.map((s) => s.trim())
-		.filter(Boolean)) {
-		const idx = part.indexOf("/");
-		if (idx <= 0 || idx === part.length - 1) continue;
-		out.push([part.slice(0, idx), part.slice(idx + 1)]);
-	}
-	return out.length > 0 ? out : undefined;
 }
 
 /**
@@ -897,47 +871,37 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// ---- auto-title: pick a cheap model with resolved auth --------------
+	// ---- auto-title: pick a model via the shared resolver ---------------
+	//
+	// Resolution (high → low priority):
+	//   1. $PI_SESSION_AUTO_TITLE_MODEL — legacy explicit override.
+	//   2. settings.json → extensionConfig.session-title.model.
+	//   3. settings.json → backgroundModels.fast.
+	//   4. ctx.model (the active session model).
+	//   5. Nothing usable → skip auto-title for this session.
+	//
+	// The old `PI_SESSION_AUTO_TITLE_MODELS` shortlist env var is gone —
+	// configure a single model instead. Hard-coded defaults are gone too
+	// so there's no risk of calling a rotted model id.
 	async function pickAutoTitleModel(
 		ctx: ExtensionContext,
 	): Promise<
 		| { model: Model<Api>; apiKey: string; headers?: Record<string, string> }
 		| undefined
 	> {
-		const explicit = parseModelList(process.env[ENV_AUTO_TITLE_MODEL]);
-		const listEnv = parseModelList(process.env[ENV_AUTO_TITLE_MODELS]);
-		const candidates: ReadonlyArray<readonly [string, string]> =
-			explicit ?? listEnv ?? DEFAULT_AUTO_TITLE_MODELS;
-
-		for (const [provider, id] of candidates) {
-			const model = ctx.modelRegistry.find(provider, id);
-			if (!model) continue;
-			try {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-				if (!auth.ok || !auth.apiKey) continue;
-				return { model, apiKey: auth.apiKey, headers: auth.headers };
-			} catch {
-				/* try next candidate */
-			}
-		}
-
-		// Last resort: the model the user is already using. This can be
-		// expensive per call but at least we know auth works, and with
-		// maxTokens=40 the cost is negligible.
-		if (ctx.model) {
-			try {
-				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
-				if (auth.ok && auth.apiKey)
-					return {
-						model: ctx.model,
-						apiKey: auth.apiKey,
-						headers: auth.headers,
-					};
-			} catch {
-				/* fall through to skipped */
-			}
-		}
-		return undefined;
+		const envOverride = process.env[ENV_AUTO_TITLE_MODEL]?.trim();
+		const resolved = await resolveModel(ctx, {
+			name: "session-title",
+			tier: "fast",
+			explicit: envOverride || undefined,
+			requireApiKey: true,
+		});
+		if (!resolved?.apiKey) return undefined;
+		return {
+			model: resolved.model,
+			apiKey: resolved.apiKey,
+			headers: resolved.headers,
+		};
 	}
 
 	async function generateAutoTitle(ctx: ExtensionContext): Promise<void> {
