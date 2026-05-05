@@ -3,7 +3,7 @@
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
-	"description": "Reports what pi loaded from this monorepo on session start: registered extensions (with their commands and tools), the active session model, configured background-model tiers, and per-extension model overrides. Provides /loaded for the full breakdown on demand.",
+	"description": "Reports what pi loaded from this monorepo on session start: declared extensions (with their commands, tools, config schemas, and effective values from settings.json), the active session model, and configured background-model tiers. Provides /extensions for the full breakdown on demand.",
 	"pi": {
 		"extensions": ["./index.ts"]
 	},

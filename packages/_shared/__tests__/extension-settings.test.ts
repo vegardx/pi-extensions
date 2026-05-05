@@ -5,6 +5,7 @@ import {
 	getExtensionModelOverride,
 	getTierModel,
 	readRelevantSettings,
+	readRelevantSettingsLayered,
 } from "../extension-settings.js";
 
 function mkTempCwd(): string {
@@ -308,5 +309,83 @@ describe("helpers", () => {
 				"primary",
 			),
 		).toBeUndefined();
+	});
+});
+
+describe("readRelevantSettingsLayered", () => {
+	it("returns three empty objects when nothing is configured", () => {
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				const layered = readRelevantSettingsLayered(cwd);
+				expect(layered.global).toEqual({});
+				expect(layered.project).toEqual({});
+				expect(layered.merged).toEqual({});
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("keeps global and project slices separate while merging into `merged`", () => {
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				writeGlobalSettings({
+					backgroundModels: {
+						primary: { fast: "g/fast", normal: "g/normal" },
+					},
+					extensionConfig: {
+						verify: { model: "g/verify", maxParallel: 4 },
+					},
+				});
+				writeProjectSettings(cwd, {
+					backgroundModels: { primary: { fast: "p/fast" } },
+					extensionConfig: { verify: { model: "p/verify" } },
+				});
+
+				const layered = readRelevantSettingsLayered(cwd);
+
+				expect(layered.global.backgroundModels?.primary).toEqual({
+					fast: "g/fast",
+					normal: "g/normal",
+				});
+				expect(layered.global.extensionConfig?.verify?.model).toBe("g/verify");
+				expect(layered.project.backgroundModels?.primary).toEqual({
+					fast: "p/fast",
+				});
+				expect(layered.project.extensionConfig?.verify?.model).toBe("p/verify");
+
+				// merged: project overrides global at the leaf level.
+				expect(layered.merged.backgroundModels?.primary).toEqual({
+					fast: "p/fast",
+					normal: "g/normal",
+				});
+				expect(layered.merged.extensionConfig?.verify?.model).toBe("p/verify");
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("`merged` matches what readRelevantSettings returns", () => {
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				writeGlobalSettings({
+					extensionConfig: { verify: { model: "g/x" } },
+				});
+				writeProjectSettings(cwd, {
+					extensionConfig: {
+						"prompt-suggestion": { model: "p/y" },
+					},
+				});
+
+				const layered = readRelevantSettingsLayered(cwd);
+				expect(layered.merged).toEqual(readRelevantSettings(cwd));
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
 	});
 });

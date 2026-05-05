@@ -70,6 +70,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { writeSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { completeSimple } from "@mariozechner/pi-ai";
 import type {
@@ -80,6 +81,7 @@ import type {
 import { CustomEditor } from "@mariozechner/pi-coding-agent";
 import type { EditorTheme, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
 // ---------------------------------------------------------------------------
@@ -636,6 +638,27 @@ class TitledEditor extends CustomEditor {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	declareExtension({
+		name: "session-title",
+		path: fileURLToPath(import.meta.url),
+		doc: "Pin a title in pi's header bar; auto-generates one from the first turn when configured.",
+		configSchema: [
+			{
+				key: "model",
+				type: "string",
+				fallbackChain:
+					"$PI_SESSION_AUTO_TITLE_MODEL → extensionConfig.session-title.model → backgroundModels.primary.fast → ctx.model",
+				doc: "provider/id override for the auto-title model (fast tier).",
+			},
+		],
+		backgroundModelUse: {
+			tier: "fast",
+			set: "primary",
+			explanation:
+				"Used once per session to summarise the first turn into a header title.",
+		},
+	});
+
 	pi.registerFlag("title", {
 		description: `Title to pin somewhere visible in pi (overrides $${ENV_TITLE}).`,
 		type: "string",

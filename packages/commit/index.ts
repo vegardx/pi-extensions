@@ -1,8 +1,10 @@
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { createPr, editPr, findOpenPr, type PrMetadata, viewPr } from "./gh.js";
 import {
 	addRemoteIdempotent,
@@ -218,6 +220,12 @@ function lastAssistantText(ctx: ExtensionContext): string | null {
 }
 
 export default function (pi: ExtensionAPI) {
+	declareExtension({
+		name: EXT_ID,
+		path: fileURLToPath(import.meta.url),
+		doc: "Drive a focused commit/PR loop: stage, summarise, push, open or edit the PR.",
+	});
+
 	function notify(
 		ctx: ExtensionContext,
 		msg: string,
