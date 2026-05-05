@@ -207,8 +207,18 @@ export default function (pi: ExtensionAPI) {
 	 * After plan-complete, offer to dispatch a natural follow-up
 	 * command. Each option is gated on the target being installed via
 	 * `pi.getCommands()` — missing extensions don't appear in the picker.
-	 * Picking a command sends `"/<cmd>"` as a follow-up user message,
-	 * which queues a fresh turn after this handler returns.
+	 *
+	 * Picking a command sends `"/<cmd>"` as a user message, which pi's
+	 * slash-command parser then routes to the registered extension
+	 * command handler. The branching on `ctx.isIdle()` is required:
+	 * pi's RPC contract (see pi-coding-agent docs/rpc.md §§ steer /
+	 * follow-up) explicitly disallows extension commands in the
+	 * `steer` and `followUp` delivery modes — only the plain `prompt`
+	 * path expands `/cmd` into a registered handler. So when the
+	 * agent is idle we use the plain path; when it's still streaming
+	 * we degrade to `steer`, which delivers the literal text and the
+	 * model handles it as a regular user turn (better than dropping
+	 * the dispatch on the floor).
 	 */
 	async function offerHandoff(ctx: ExtensionContext): Promise<void> {
 		// Gate options on the extension commands being installed. The
@@ -241,7 +251,21 @@ export default function (pi: ExtensionAPI) {
 		else if (choice.startsWith("Run /commit")) command = "/commit";
 		if (!command) return;
 
-		pi.sendUserMessage(command, { deliverAs: "followUp" });
+		if (ctx.isIdle()) {
+			// Plain prompt path: pi parses `/<cmd>` and invokes the
+			// registered handler. This is the normal case — by the time
+			// `ctx.ui.select` resolves the plan turn is over.
+			pi.sendUserMessage(command);
+		} else {
+			// Streaming fallback: `followUp`/`steer` do NOT expand
+			// extension commands per docs/rpc.md, so the slash command
+			// would be delivered as literal text and never dispatched.
+			// Use `steer` (delivered after the current tool burst) and
+			// accept that the model receives `/verify` as user text —
+			// it'll typically respond by manually invoking the workflow,
+			// which is degraded but better than the message vanishing.
+			pi.sendUserMessage(command, { deliverAs: "steer" });
+		}
 		notify(ctx, `dispatched ${command}`);
 	}
 
