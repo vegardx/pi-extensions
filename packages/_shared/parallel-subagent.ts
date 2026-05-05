@@ -126,7 +126,7 @@ export async function runSubagent<Tag>(
 
 	try {
 		await Promise.race([client.prompt(input.task), aborted]);
-		await Promise.race([client.waitForIdle(input.timeoutMs), aborted]);
+		await awaitIdleOrAbort(client, input.timeoutMs, aborted);
 		const raw = (await client.getLastAssistantText()) ?? "";
 		return { tag: input.tag, rawText: raw };
 	} catch (err) {
@@ -182,4 +182,35 @@ async function tryStop(client: RpcClient): Promise<void> {
 	} catch {
 		/* best-effort shutdown */
 	}
+}
+
+// ---- Idle-await helper ------------------------------------------------
+//
+// Extracted so callers can unit-test that `runSubagent` actually
+// forwards their `timeoutMs` into `RpcClient.waitForIdle`. A typo or
+// refactor accident that dropped the argument here would silently
+// re-introduce the post-PR-#27 60s timeout regression on `/verify`.
+//
+// Loose on the input shape — takes a minimal `{ waitForIdle }`
+// surface so tests can pass a spy without constructing a real
+// `RpcClient`. Public `runSubagent` callers continue to pass the
+// real client; the type narrows at the call site via structural
+// typing.
+
+/** Minimum surface `awaitIdleOrAbort` needs from its client argument. */
+export interface IdleWaitable {
+	waitForIdle(timeoutMs?: number): Promise<void>;
+}
+
+/**
+ * Race `client.waitForIdle(timeoutMs)` against the abort promise.
+ * Forwards `timeoutMs` verbatim — when `undefined`, `RpcClient`'s
+ * own default (60s today) applies.
+ */
+export function awaitIdleOrAbort(
+	client: IdleWaitable,
+	timeoutMs: number | undefined,
+	aborted: Promise<never>,
+): Promise<void> {
+	return Promise.race([client.waitForIdle(timeoutMs), aborted]);
 }

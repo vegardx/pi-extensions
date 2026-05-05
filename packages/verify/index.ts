@@ -13,6 +13,7 @@ export type {
 // want to touch the `./core` subpath import directly.
 export {
 	BASE_VERIFY_TIMEOUT_MS,
+	buildVerifySubagentInput,
 	extractPlanSteps,
 	findAutoModeIteration,
 	MAX_VERIFY_TIMEOUT_MS,
