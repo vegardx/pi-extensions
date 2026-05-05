@@ -20,24 +20,37 @@ import { SettingsManager } from "@mariozechner/pi-coding-agent";
  *
  *     {
  *       "backgroundModels": {
- *         "fast":   "provider/id",
- *         "normal": "provider/id",
- *         "heavy":  "provider/id"
+ *         "primary":   { "fast": "provider/id", "normal": "provider/id", "heavy": "provider/id" },
+ *         "secondary": { "fast": "provider/id", "normal": "provider/id", "heavy": "provider/id" }
  *       },
  *       "extensionConfig": {
  *         "<extension-name>": { "model": "provider/id" }
  *       }
  *     }
  *
+ * The `primary` and `secondary` sets are peers, not fallbacks. Most
+ * extensions read from `primary`; `verify` reads from `secondary` so
+ * users can configure two model families and use one to cross-check
+ * the other. If a tier isn't set under the requested set, the
+ * resolver falls back to the same tier under `primary` so users
+ * who configure only `primary` still get sensible behavior.
+ *
  * Anything else in settings.json is pi's business and is ignored here.
  */
 
 export type Tier = "fast" | "normal" | "heavy";
 
-export interface BackgroundModels {
+export type BackgroundSet = "primary" | "secondary";
+
+export interface BackgroundModelsTiers {
 	fast?: string;
 	normal?: string;
 	heavy?: string;
+}
+
+export interface BackgroundModels {
+	primary?: BackgroundModelsTiers;
+	secondary?: BackgroundModelsTiers;
 }
 
 export interface ExtensionConfig {
@@ -47,6 +60,19 @@ export interface ExtensionConfig {
 export interface RelevantSettings {
 	backgroundModels?: BackgroundModels;
 	extensionConfig?: Record<string, ExtensionConfig | undefined>;
+}
+
+/**
+ * Validate and pick a tier object out of an unknown value.
+ */
+function extractTiers(raw: unknown): BackgroundModelsTiers | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const obj = raw as Record<string, unknown>;
+	const pick: BackgroundModelsTiers = {};
+	if (typeof obj.fast === "string") pick.fast = obj.fast;
+	if (typeof obj.normal === "string") pick.normal = obj.normal;
+	if (typeof obj.heavy === "string") pick.heavy = obj.heavy;
+	return pick.fast || pick.normal || pick.heavy ? pick : undefined;
 }
 
 /**
@@ -61,11 +87,13 @@ function extractRelevant(raw: unknown): RelevantSettings {
 
 	if (obj.backgroundModels && typeof obj.backgroundModels === "object") {
 		const bg = obj.backgroundModels as Record<string, unknown>;
-		const pick: BackgroundModels = {};
-		if (typeof bg.fast === "string") pick.fast = bg.fast;
-		if (typeof bg.normal === "string") pick.normal = bg.normal;
-		if (typeof bg.heavy === "string") pick.heavy = bg.heavy;
-		if (pick.fast || pick.normal || pick.heavy) out.backgroundModels = pick;
+		const primary = extractTiers(bg.primary);
+		const secondary = extractTiers(bg.secondary);
+		if (primary || secondary) {
+			out.backgroundModels = {};
+			if (primary) out.backgroundModels.primary = primary;
+			if (secondary) out.backgroundModels.secondary = secondary;
+		}
 	}
 
 	if (obj.extensionConfig && typeof obj.extensionConfig === "object") {
@@ -105,10 +133,22 @@ export function readRelevantSettings(
 	const merged: RelevantSettings = {};
 
 	if (global.backgroundModels || project.backgroundModels) {
-		merged.backgroundModels = {
-			...global.backgroundModels,
-			...project.backgroundModels,
-		};
+		merged.backgroundModels = {};
+		if (global.backgroundModels?.primary || project.backgroundModels?.primary) {
+			merged.backgroundModels.primary = {
+				...global.backgroundModels?.primary,
+				...project.backgroundModels?.primary,
+			};
+		}
+		if (
+			global.backgroundModels?.secondary ||
+			project.backgroundModels?.secondary
+		) {
+			merged.backgroundModels.secondary = {
+				...global.backgroundModels?.secondary,
+				...project.backgroundModels?.secondary,
+			};
+		}
 	}
 
 	if (global.extensionConfig || project.extensionConfig) {
@@ -140,12 +180,20 @@ export function getExtensionModelOverride(
 }
 
 /**
- * Get the configured model for a background tier (if any).
- * Format is `"provider/id"` when set.
+ * Get the configured model for a background tier under the requested
+ * set. If the tier isn't set under `secondary`, falls back to the same
+ * tier under `primary` — the resolver's "secondary uses primary as a
+ * sensible default" rule. Format is `"provider/id"` when set.
  */
 export function getTierModel(
 	settings: RelevantSettings,
 	tier: Tier,
+	set: BackgroundSet = "primary",
 ): string | undefined {
-	return settings.backgroundModels?.[tier];
+	const direct = settings.backgroundModels?.[set]?.[tier];
+	if (direct) return direct;
+	if (set === "secondary") {
+		return settings.backgroundModels?.primary?.[tier];
+	}
+	return undefined;
 }

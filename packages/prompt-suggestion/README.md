@@ -93,9 +93,9 @@ Resolution order (high → low priority):
 2. `--suggest-model=<provider/id>` CLI flag — session override.
 3. `settings.json → extensionConfig.prompt-suggestion.model` —
    persistent per-extension override.
-4. `settings.json → backgroundModels.fast` — the "what does `fast`
-   tier mean to me" setting, shared with any other `fast`-tier
-   consumer.
+4. `settings.json → backgroundModels.primary.fast` — the "what
+   does `fast` tier mean to me" setting, shared with any other
+   `fast`-tier consumer.
 5. `ctx.model` — the active session model. Always has auth but may
    be more expensive than necessary for background calls.
 6. Nothing usable → notify once, ghost text disabled for the session.
@@ -105,7 +105,9 @@ No hard-coded model IDs. Example `settings.json`:
 ```jsonc
 {
   "backgroundModels": {
-    "fast": "anthropic/claude-haiku-4-5-20251001"
+    "primary": {
+      "fast": "anthropic/claude-haiku-4-5-20251001"
+    }
   },
   "extensionConfig": {
     "prompt-suggestion": { "model": "openai/gpt-4o-mini" }

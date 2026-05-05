@@ -40,12 +40,17 @@ not flag. When in doubt, read those.
 - **Background models**: extensions that call an LLM for side tasks
   (ghost text, auto-title, subagent review) must not hard-code a
   provider/model id. Use `packages/_shared/model-resolver.ts` — call
-  `resolveModel(ctx, { name, tier })` with one of `"fast"` /
-  `"normal"` / `"heavy"`. Users configure what each tier means via
-  `settings.json → backgroundModels.<tier>`, and can override per
-  extension via `settings.json → extensionConfig.<name>.model`. If
-  resolution fails, the extension disables its side task for the
-  session with a single `notify()`. See
+  `resolveModel(ctx, { name, tier, set? })` with `tier` one of
+  `"fast"` / `"normal"` / `"heavy"` and `set` one of `"primary"`
+  (default) / `"secondary"`. Users configure what each (set, tier)
+  pair means via `settings.json → backgroundModels.<set>.<tier>`,
+  and can override per extension via
+  `settings.json → extensionConfig.<name>.model`. Most extensions
+  read `primary`; consumers that want cross-model checking (today:
+  only `verify`) read `secondary`, which falls back to `primary`
+  when a tier isn't configured under it. If resolution fails, the
+  extension disables its side task for the session with a single
+  `notify()`. See
   [`docs/configuring-models.md`](../docs/configuring-models.md) for the
   full resolution chain and examples.
 

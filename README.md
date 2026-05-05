@@ -108,9 +108,11 @@ Configure once in `settings.json`:
 // ~/.pi/agent/settings.json or .pi/settings.json (project)
 {
   "backgroundModels": {
-    "fast":   "anthropic/claude-haiku-4-5-20251001",
-    "normal": "anthropic/claude-sonnet-4-5-20250929",
-    "heavy":  "anthropic/claude-opus-4-5-20250929"
+    "primary": {
+      "fast":   "anthropic/claude-haiku-4-5-20251001",
+      "normal": "anthropic/claude-sonnet-4-5-20250929",
+      "heavy":  "anthropic/claude-opus-4-5-20250929"
+    }
   },
   // Optional per-extension overrides win over the tier above.
   "extensionConfig": {
@@ -118,6 +120,11 @@ Configure once in `settings.json`:
   }
 }
 ```
+
+There's also a `secondary` set under `backgroundModels` that peer
+consumers (today: `verify`) read from for cross-model checks.
+Configure both sets to use one to verify the other; configure only
+`primary` and `secondary` consumers fall back to it.
 
 Current tier assignments:
 
@@ -131,9 +138,12 @@ Resolution order (high → low priority), same in every extension:
 
 1. Extension-specific explicit override (CLI flag / in-session command).
 2. `settings.json → extensionConfig.<name>.model`.
-3. `settings.json → backgroundModels.<tier>`.
-4. `ctx.model` (the active session model).
-5. Nothing resolves with working auth → the feature disables itself
+3. `settings.json → backgroundModels.<set>.<tier>` (default `set` is
+   `primary`; some extensions request `secondary`).
+4. `settings.json → backgroundModels.primary.<tier>` (fallback when
+   `secondary` lacks the requested tier).
+5. `ctx.model` (the active session model).
+6. Nothing resolves with working auth → the feature disables itself
    for the session with a single `notify()`.
 
 The shared implementation lives in `packages/_shared/model-resolver.ts`.

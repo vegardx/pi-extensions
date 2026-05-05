@@ -163,8 +163,9 @@ Resolution order (high → low priority), via
 1. `$PI_SESSION_AUTO_TITLE_MODEL` — legacy env override.
 2. `settings.json → extensionConfig.session-title.model` —
    persistent per-extension override.
-3. `settings.json → backgroundModels.fast` — the "what does `fast`
-   tier mean to me" setting, shared with any other `fast`-tier consumer.
+3. `settings.json → backgroundModels.primary.fast` — the "what does
+   `fast` tier mean to me" setting, shared with any other
+   `fast`-tier consumer.
 4. `ctx.model` — the active session model.
 5. Nothing usable → skip auto-title; fall back to git branch / cwd.
 
@@ -173,7 +174,9 @@ No hard-coded model IDs. Example `settings.json`:
 ```jsonc
 {
   "backgroundModels": {
-    "fast": "openai/gpt-4o-mini"
+    "primary": {
+      "fast": "openai/gpt-4o-mini"
+    }
   }
 }
 ```
