@@ -18,13 +18,18 @@ This repo uses npm workspaces: one package per extension under `packages/`, shar
 ```bash
 npm install
 make check                        # lint + typecheck + test
-pi -e ./packages/example          # smoke-test the example extension
+pi -e ./packages/startup          # smoke-test the startup extension
 ```
 
 Inside pi, try:
 
-- `/hello world` — runs the example `/hello` command
-- Ask the model: "use the greet tool to greet me" — triggers the example tool
+- Watch the `session_start` toast — `pi-ext-startup` reports how many
+  extensions registered with pi and how many `extensionConfig`
+  overrides are set.
+- Run `/loaded` for the full breakdown: every loaded extension (with
+  the commands and tools it registered), the active session model, the
+  configured `backgroundModels` tiers, and per-extension `model`
+  overrides.
 
 ## Adding a new extension
 
@@ -64,10 +69,9 @@ pi-ext-dev/
 ├── vitest.config.ts
 ├── Makefile                  install / test / lint / check / new-ext
 └── packages/
-    └── example/              reference extension — copy as a starting point
-        ├── package.json      per-package pi manifest + peerDeps
-        ├── index.ts          default-export factory receiving ExtensionAPI
-        └── README.md
+    ├── _shared/              shared helpers (settings, model resolver, …)
+    ├── startup/              first-party extension — reports what pi loaded
+    └── …                     one directory per extension; see each README
 ```
 
 ## Extension API reference
