@@ -80,6 +80,10 @@ picked up without needing to reconfigure in-session.
 
 ## Model selection
 
+> For the monorepo-wide picture (how tiers work across extensions,
+> common configurations, troubleshooting), see
+> [`docs/configuring-models.md`](../../docs/configuring-models.md).
+
 Nitpick declares itself a **`normal`-tier** consumer — code review needs
 enough reasoning to read diffs and produce structured findings; a
 haiku-class model under-performs, an opus-class model is overkill for the
