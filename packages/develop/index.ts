@@ -1,12 +1,14 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
 	checkoutBranch,
 	createBranch,
@@ -168,6 +170,12 @@ function buildExecContext(todos: readonly TodoItem[]): string {
 }
 
 export default function (pi: ExtensionAPI) {
+	declareExtension({
+		name: EXT_ID,
+		path: fileURLToPath(import.meta.url),
+		doc: "Drive an intake → plan → implement loop with branch / todo bookkeeping.",
+	});
+
 	let state: DevelopState | null = null;
 
 	// ---- Persistence ----------------------------------------------------

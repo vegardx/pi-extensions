@@ -9,10 +9,12 @@
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
+    "@sinclair/typebox": "*",
+    "@vegardx/pi-extensions-shared": "*"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-coding-agent": { "optional": true },
-    "@sinclair/typebox": { "optional": true }
+    "@sinclair/typebox": { "optional": true },
+    "@vegardx/pi-extensions-shared": { "optional": true }
   }
 }

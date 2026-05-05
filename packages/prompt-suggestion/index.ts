@@ -1,10 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { GhostEditor } from "./ghost-editor.js";
 import { Predictor, parseModelSpec } from "./predictor.js";
@@ -67,6 +69,27 @@ async function resolveInitialModelSpec(
 }
 
 export default function (pi: ExtensionAPI): void {
+	declareExtension({
+		name: "prompt-suggestion",
+		path: fileURLToPath(import.meta.url),
+		doc: "Ghost-text prompt suggestions in the input box, powered by a configurable fast model.",
+		configSchema: [
+			{
+				key: "model",
+				type: "string",
+				fallbackChain:
+					"--suggest-model flag → /suggest pick → extensionConfig.prompt-suggestion.model → backgroundModels.primary.fast → ctx.model",
+				doc: "provider/id override for the suggestion model.",
+			},
+		],
+		backgroundModelUse: {
+			tier: "fast",
+			set: "primary",
+			explanation:
+				"Used for ghost-text completions; runs once per keystroke debounce.",
+		},
+	});
+
 	pi.registerFlag("suggest", {
 		type: "boolean",
 		default: true,

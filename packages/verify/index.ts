@@ -6,6 +6,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import {
@@ -305,6 +306,33 @@ function readVerifySettings(ctx: ExtensionContext): VerifySettings {
 // ---- Extension factory --------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
+	declareExtension({
+		name: EXT_ID,
+		path: fileURLToPath(import.meta.url),
+		doc: "Verify each step of a plan against the working tree using parallel read-only subagents.",
+		configSchema: [
+			{
+				key: "model",
+				type: "string",
+				fallbackChain:
+					"extensionConfig.verify.model → backgroundModels.secondary.normal → backgroundModels.primary.normal → ctx.model",
+				doc: "provider/id override for the verifier model.",
+			},
+			{
+				key: "maxParallel",
+				type: "number",
+				default: DEFAULT_MAX_PARALLEL,
+				doc: "Max concurrent verifier subagents per /verify run.",
+			},
+		],
+		backgroundModelUse: {
+			tier: "normal",
+			set: "secondary",
+			explanation:
+				"Each plan step spawns one read-only subagent against this model.",
+		},
+	});
+
 	pi.registerCommand(EXT_ID, {
 		description:
 			"Verify each step of a plan against the working tree using parallel read-only subagents.",
