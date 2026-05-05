@@ -7,6 +7,10 @@
     "extensions": ["./index.ts"],
     "skills": ["./skills/"]
   },
+  "exports": {
+    ".": "./index.ts",
+    "./core": "./core.ts"
+  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*",

@@ -7,6 +7,10 @@
   "pi": {
     "extensions": ["./index.ts"]
   },
+  "exports": {
+    ".": "./index.ts",
+    "./core": "./core.ts"
+  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@vegardx/pi-extensions-shared": "*"
