@@ -220,3 +220,184 @@ export function markCompletedSteps(text: string, items: TodoItem[]): number {
 	}
 	return newly;
 }
+
+// ---- Auto-verify loop helpers ------------------------------------------
+//
+// Pure decision logic for /develop's ralph-style verify loop. Lives here
+// so it's testable without booting the extension. Index.ts owns the
+// side effects (state mutation, dispatch, picker); this module owns the
+// "given these inputs, what should happen" math.
+
+/**
+ * Minimum shape of a verifier verdict that the loop reasons about.
+ * Mirrors the public `VerifierVerdict` type from /verify but kept loose
+ * so /develop never cross-imports the verify package.
+ */
+export interface VerifyVerdictLike {
+	step: number;
+	status: "done" | "partial" | "missing" | "unverifiable";
+}
+
+/**
+ * "Concerns" = steps that came back partial or missing. `unverifiable` is
+ * not a concern — it means the verifier *can't* tell from the working
+ * tree (e.g. "open a PR"), which is fine to exit on. Errors (verifier
+ * crashes, JSON parse failures) are tracked separately because they
+ * can't be diagnosed by the host agent the same way concerns can.
+ */
+export function aggregateConcerns(verdicts: readonly VerifyVerdictLike[]): {
+	concernSteps: number[];
+	isClean: boolean;
+} {
+	const concernSteps = verdicts
+		.filter((v) => v.status === "partial" || v.status === "missing")
+		.map((v) => v.step);
+	return { concernSteps, isClean: concernSteps.length === 0 };
+}
+
+/**
+ * No-progress = at least one step that was a concern in the previous
+ * iteration is *still* a concern in the current iteration. Other steps
+ * shifting around (one heals, another newly breaks) counts as progress
+ * — the cap covers eternal regressions.
+ *
+ * Returns `false` if there's no previous iteration to compare against.
+ */
+export function detectNoProgress(
+	prev: readonly VerifyVerdictLike[] | undefined,
+	curr: readonly VerifyVerdictLike[],
+): boolean {
+	if (!prev || prev.length === 0) return false;
+	const prevConcerns = new Set(
+		prev
+			.filter((v) => v.status === "partial" || v.status === "missing")
+			.map((v) => v.step),
+	);
+	if (prevConcerns.size === 0) return false;
+	for (const v of curr) {
+		if (
+			(v.status === "partial" || v.status === "missing") &&
+			prevConcerns.has(v.step)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Decision the loop driver should take after a /verify run completes.
+ *
+ * - `exit-clean` — nothing flagged. Pop the post-loop picker.
+ * - `bail-cap` — hit the iteration cap with concerns still on the table.
+ *               Pop the post-loop picker, annotated.
+ * - `bail-no-progress` — same step stuck two runs in a row.
+ *                       Pop the post-loop picker, annotated.
+ * - `retry` — send findings back to the host agent, wait for fix,
+ *             re-verify on the next iteration.
+ */
+export type LoopDecision =
+	| { kind: "exit-clean" }
+	| {
+			kind: "bail-cap";
+			concernCount: number;
+			errorCount: number;
+			iteration: number;
+	  }
+	| {
+			kind: "bail-no-progress";
+			concernCount: number;
+			errorCount: number;
+			iteration: number;
+	  }
+	| {
+			kind: "retry";
+			concernSteps: number[];
+			nextIteration: number;
+	  };
+
+/**
+ * Decide the next loop step from the inputs the driver has on hand:
+ * how many iterations have run, the cap, last and current verdict
+ * snapshots, and the verify-side error count.
+ *
+ * Errors block clean exit but don't, on their own, force a bail —
+ * a transient JSON parse failure on iteration 1 shouldn't kill the
+ * loop. They count toward bail messaging when one fires, though, so
+ * the picker can warn the user.
+ */
+export function decideLoopAction(opts: {
+	iteration: number;
+	cap: number;
+	prevVerdicts: readonly VerifyVerdictLike[] | undefined;
+	currVerdicts: readonly VerifyVerdictLike[];
+	errorCount: number;
+}): LoopDecision {
+	const { concernSteps, isClean } = aggregateConcerns(opts.currVerdicts);
+	if (isClean && opts.errorCount === 0) {
+		return { kind: "exit-clean" };
+	}
+	if (opts.iteration >= opts.cap) {
+		return {
+			kind: "bail-cap",
+			concernCount: concernSteps.length,
+			errorCount: opts.errorCount,
+			iteration: opts.iteration,
+		};
+	}
+	if (detectNoProgress(opts.prevVerdicts, opts.currVerdicts)) {
+		return {
+			kind: "bail-no-progress",
+			concernCount: concernSteps.length,
+			errorCount: opts.errorCount,
+			iteration: opts.iteration,
+		};
+	}
+	return {
+		kind: "retry",
+		concernSteps,
+		nextIteration: opts.iteration + 1,
+	};
+}
+
+/**
+ * Snapshot we persist on `DevelopState.verifyLoop.previousVerdicts` for
+ * the next iteration's no-progress comparison. Just step+status; the
+ * full verdict (reason, suggestion) lives in the verify-result session
+ * entry.
+ */
+export function toVerdictSnapshot(
+	verdicts: readonly VerifyVerdictLike[],
+): VerifyVerdictLike[] {
+	return verdicts.map((v) => ({ step: v.step, status: v.status }));
+}
+
+/**
+ * Gate the post-loop follow-up picker on which target extensions are
+ * actually installed. Returns the picker option labels in display
+ * order. `Stay here` is always present.
+ *
+ * `loopBailed` toggles the annotation suffix on Run /commit so the
+ * user doesn't blindly commit work with unresolved verifier concerns.
+ */
+export function buildPostLoopPickerOptions(opts: {
+	installedCommands: ReadonlySet<string>;
+	loopBailed: boolean;
+	unresolvedConcerns: number;
+}): string[] {
+	const options: string[] = [];
+	if (opts.installedCommands.has("review")) {
+		options.push("Run /review");
+	}
+	if (opts.installedCommands.has("commit")) {
+		const suffix =
+			opts.loopBailed && opts.unresolvedConcerns > 0
+				? ` (with ${opts.unresolvedConcerns} unresolved concern${
+						opts.unresolvedConcerns === 1 ? "" : "s"
+					})`
+				: "";
+		options.push(`Run /commit${suffix}`);
+	}
+	options.push("Stay here — I'll handle it");
+	return options;
+}
