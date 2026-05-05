@@ -6,6 +6,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import {
 	checkoutBranch,
 	createBranch,
@@ -18,11 +19,16 @@ import {
 	workingTreeClean,
 } from "./git.js";
 import {
+	buildIntakePrompt,
 	deriveBranchName,
+	deriveBranchNameWithModel,
 	deriveIssueTitle,
 	derivePrefix,
+	needsIntake,
+	sanitizeSlug,
 	scanForSecrets,
 	slugify,
+	slugifyWithModel,
 } from "./helpers.js";
 import {
 	extractTodoItems,
@@ -37,6 +43,7 @@ const STATE_ENTRY = "develop-state";
 // Custom message types for our injected context. The `context` handler
 // strips these once the dispatch is over so stale plan-mode instructions
 // don't leak into future turns.
+const CUSTOM_INTAKE_CONTEXT = "develop-intake-context";
 const CUSTOM_PLAN_CONTEXT = "develop-plan-context";
 const CUSTOM_EXEC_CONTEXT = "develop-exec-context";
 const CUSTOM_EXECUTE_MARKER = "develop-execute-marker";
@@ -46,15 +53,34 @@ const CUSTOM_COMPLETE_MESSAGE = "develop-complete";
 const PLAN_PHASE_TOOLS = ["read", "bash", "grep", "find", "ls"] as const;
 
 /**
+ * Intake phase: same read-only set as plan phase, plus the `develop_ready`
+ * sentinel tool the agent calls when it's gathered enough context to
+ * transition into plan mode.
+ */
+const INTAKE_TOOL_NAME = "develop_ready";
+const INTAKE_PHASE_TOOLS = [...PLAN_PHASE_TOOLS, INTAKE_TOOL_NAME] as const;
+
+/**
  * Persisted state for one /develop dispatch. One at a time per session —
  * /develop <desc> clears any previous entry.
  */
 interface DevelopState {
+	/** Final firmed-up description (post-intake). May start empty during
+	 *  intake and get overwritten when the agent calls `develop_ready`. */
 	description: string;
+	/** Raw description the user typed at /develop time — retained for
+	 *  debugging and for `/park` fallback titles. */
+	rawDescription: string;
+	/**
+	 * Branch name. Derived once we have a firmed-up description; empty
+	 *  string while still in `awaiting-intake`.
+	 */
 	branch: string;
 	defaultBranch: string;
 	/**
 	 * Lifecycle:
+	 *   awaiting-intake — read-only tools + develop_ready; agent is
+	 *                     gathering context via Q&A before plan mode
 	 *   awaiting-plan  — plan-phase tools active; agent producing the plan
 	 *   awaiting-choice — plan done, picker is armed on next agent_end
 	 *   executing      — exec-phase tools, [DONE:n] tracking live
@@ -63,6 +89,7 @@ interface DevelopState {
 	 *   consumed       — Implement finished or Park fired; terminal
 	 */
 	phase:
+		| "awaiting-intake"
 		| "awaiting-plan"
 		| "awaiting-choice"
 		| "executing"
@@ -218,6 +245,11 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		switch (state.phase) {
+			case "awaiting-intake": {
+				ctx.ui.setStatus(EXT_ID, `❔ intake — gathering context`);
+				ctx.ui.setWidget("develop-todos", undefined);
+				return;
+			}
 			case "awaiting-plan": {
 				ctx.ui.setStatus(EXT_ID, `📋 planning ${state.branch}`);
 				ctx.ui.setWidget("develop-todos", undefined);
@@ -363,6 +395,15 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
+		if (state.phase === "awaiting-intake") {
+			notify(
+				ctx,
+				"still gathering context — finish answering intake questions first " +
+					"(or /develop <desc> with more detail to skip intake)",
+				"warning",
+			);
+			return;
+		}
 		const count = state.todos?.length ?? 0;
 		const title =
 			count > 0
@@ -411,6 +452,10 @@ export default function (pi: ExtensionAPI) {
 				"no active /develop session — run /develop <desc> first",
 				"warning",
 			);
+			return;
+		}
+		if (state.phase === "awaiting-intake") {
+			notify(ctx, "still gathering context — finish intake first", "warning");
 			return;
 		}
 		if (!isGitRepo(ctx.cwd)) {
@@ -482,6 +527,14 @@ export default function (pi: ExtensionAPI) {
 			notify(
 				ctx,
 				"no active /develop session — run /develop <desc> first",
+				"warning",
+			);
+			return;
+		}
+		if (state.phase === "awaiting-intake") {
+			notify(
+				ctx,
+				"still gathering context — finish intake first (no plan to park yet)",
 				"warning",
 			);
 			return;
@@ -646,8 +699,13 @@ export default function (pi: ExtensionAPI) {
 			updateWidget(ctx);
 			return;
 		}
-		// Re-apply tool lockdown if we interrupted mid-plan.
-		if (state.phase === "awaiting-plan" || state.phase === "awaiting-choice") {
+		// Re-apply tool lockdown if we interrupted mid-plan or mid-intake.
+		if (state.phase === "awaiting-intake") {
+			pi.setActiveTools([...INTAKE_PHASE_TOOLS]);
+		} else if (
+			state.phase === "awaiting-plan" ||
+			state.phase === "awaiting-choice"
+		) {
 			pi.setActiveTools([...PLAN_PHASE_TOOLS]);
 		}
 		// On resume during execution, re-scan [DONE:n] markers since the
@@ -699,6 +757,21 @@ export default function (pi: ExtensionAPI) {
 	// until the user accepts the plan.
 	pi.on("before_agent_start", async () => {
 		if (!state) return;
+		if (state.phase === "awaiting-intake") {
+			return {
+				message: {
+					customType: CUSTOM_INTAKE_CONTEXT,
+					content: [
+						"[DEVELOP — INTAKE PHASE]",
+						"You are gathering context. Edit/write are disabled; bash is",
+						"restricted to read-only exploration. Ask focused questions if",
+						"needed, then call the `develop_ready` tool with a firmed-up",
+						"description to transition into plan mode.",
+					].join("\n"),
+					display: false,
+				},
+			};
+		}
 		if (state.phase === "awaiting-plan") {
 			return {
 				message: {
@@ -724,20 +797,24 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
-	// Block destructive bash during plan phase. Edit/write are already
-	// absent from the toolset so the model shouldn't attempt them; this
-	// is the belt-and-braces net.
+	// Block destructive bash during intake or plan phase. Edit/write are
+	// already absent from the toolset so the model shouldn't attempt them;
+	// this is the belt-and-braces net.
 	pi.on("tool_call", async (event) => {
 		if (!state) return;
-		if (state.phase !== "awaiting-plan" && state.phase !== "awaiting-choice") {
+		if (
+			state.phase !== "awaiting-intake" &&
+			state.phase !== "awaiting-plan" &&
+			state.phase !== "awaiting-choice"
+		) {
 			return;
 		}
 		if (event.toolName === "edit" || event.toolName === "write") {
 			return {
 				block: true,
 				reason:
-					"develop: edit/write are disabled during plan phase. Produce the plan first; " +
-					"the user will pick Implement to unlock full tools.",
+					"develop: edit/write are disabled until intake/plan are over. " +
+					"Finish gathering context and pick Implement to unlock full tools.",
 			};
 		}
 		if (event.toolName === "bash") {
@@ -786,14 +863,19 @@ export default function (pi: ExtensionAPI) {
 	pi.on("context", async (event) => {
 		const active =
 			state &&
-			(state.phase === "awaiting-plan" ||
+			(state.phase === "awaiting-intake" ||
+				state.phase === "awaiting-plan" ||
 				state.phase === "awaiting-choice" ||
 				state.phase === "executing");
 		if (active) return;
 		return {
 			messages: event.messages.filter((m) => {
 				const ct = (m as { customType?: string }).customType;
-				return ct !== CUSTOM_PLAN_CONTEXT && ct !== CUSTOM_EXEC_CONTEXT;
+				return (
+					ct !== CUSTOM_INTAKE_CONTEXT &&
+					ct !== CUSTOM_PLAN_CONTEXT &&
+					ct !== CUSTOM_EXEC_CONTEXT
+				);
 			}),
 		};
 	});
@@ -878,34 +960,130 @@ export default function (pi: ExtensionAPI) {
 		// vanish when the UI tears down. Left as a hook for future cleanup.
 	});
 
+	// ---- Intake sentinel tool ------------------------------------------
+	// Always registered so pi knows about it; gated via setActiveTools so
+	// the agent can only call it during `awaiting-intake`. The execute
+	// handler also defends against stale calls from a previous phase.
+	pi.registerTool({
+		name: INTAKE_TOOL_NAME,
+		label: "Develop: ready",
+		description:
+			"Signal that intake is complete. Pi will derive a branch name from " +
+			"the firmed-up description and transition into plan mode. Call this " +
+			"once you understand the user's intent well enough to plan.",
+		parameters: Type.Object({
+			description: Type.String({
+				description:
+					"A single-paragraph firmed-up description of what the user wants " +
+					"to change and why. Will drive the branch name and feed the plan " +
+					"prompt verbatim.",
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			if (!state || state.phase !== "awaiting-intake") {
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								"develop_ready: not in intake phase — ignoring. " +
+								"Use /develop <desc> to start a fresh dispatch.",
+						},
+					],
+					isError: true,
+					details: { phase: state?.phase ?? "none" },
+				};
+			}
+			const description = (params.description ?? "").trim();
+			if (!description) {
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								"develop_ready: empty description. Provide a single-paragraph " +
+								"summary of the change before calling this tool.",
+						},
+					],
+					isError: true,
+					details: { phase: state.phase },
+				};
+			}
+			const branch = await deriveBranchNameWithModel(ctx, description);
+			if (!branch) {
+				return {
+					content: [
+						{
+							type: "text",
+							text:
+								"develop_ready: could not derive a branch slug from the " +
+								"description. Refine it (more concrete words) and call " +
+								"`develop_ready` again.",
+						},
+					],
+					isError: true,
+					details: { phase: state.phase },
+				};
+			}
+
+			state.description = description;
+			state.branch = branch;
+			state.phase = "awaiting-plan";
+			// Drop develop_ready from the active set so the agent can't fire
+			// it twice; PLAN_PHASE_TOOLS is the right set going forward.
+			pi.setActiveTools([...PLAN_PHASE_TOOLS]);
+			persist();
+			updateWidget(ctx);
+
+			// Kick off the plan turn. The current turn ends with this tool
+			// result; the queued follow-up triggers the next turn so the agent
+			// produces the plan against a fresh slate.
+			pi.sendMessage(
+				{
+					customType: EXT_ID,
+					content: buildPlanPrompt(description),
+					display: false,
+					details: {
+						description,
+						branch,
+						defaultBranch: state.defaultBranch,
+					},
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+			notify(
+				ctx,
+				`intake complete — target branch will be ${branch}; generating plan…`,
+				"info",
+			);
+			return {
+				content: [
+					{
+						type: "text",
+						text:
+							`Intake complete. Branch will be \`${branch}\`. ` +
+							"Stop here — the extension has queued a plan-mode prompt for " +
+							"the next turn.",
+					},
+				],
+				details: { branch, description },
+			};
+		},
+	});
+
 	// ---- Commands ------------------------------------------------------
 	pi.registerCommand(EXT_ID, {
 		description:
 			"Plan a change on the default branch, then implement or park. " +
-			"With no arguments, just syncs to the default branch (replaces /sync).",
+			"With thin or no arguments, starts an intake conversation first. " +
+			"Use /sync to just fast-forward to the default branch.",
 		handler: async (args, ctx) => {
-			const description = args?.trim() ?? "";
+			const rawDescription = args?.trim() ?? "";
+			const goIntake = needsIntake(rawDescription);
 
-			// Sync-only mode.
-			if (!description) {
-				const branch = await syncToDefault(ctx);
-				if (branch) notify(ctx, `on ${branch}, up to date`, "info");
-				return;
-			}
-
-			// Full mode: sync, lock down tools, start plan.
+			// Sync first regardless — same as the previous behavior.
 			const defaultBranch = await syncToDefault(ctx);
 			if (!defaultBranch) return;
-
-			const branch = deriveBranchName(description);
-			if (!branch) {
-				notify(
-					ctx,
-					"could not derive a branch slug from the description — try more words",
-					"error",
-				);
-				return;
-			}
 
 			// Tear down any previous dispatch cleanly.
 			if (state) {
@@ -915,8 +1093,54 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			const priorTools = pi.getActiveTools();
+
+			if (goIntake) {
+				state = {
+					description: "",
+					rawDescription,
+					branch: "",
+					defaultBranch,
+					phase: "awaiting-intake",
+					startedAt: Date.now(),
+					priorTools,
+				};
+				persist();
+				pi.setActiveTools([...INTAKE_PHASE_TOOLS]);
+				updateWidget(ctx);
+
+				pi.sendMessage(
+					{
+						customType: EXT_ID,
+						content: buildIntakePrompt(rawDescription),
+						display: false,
+						details: { rawDescription, defaultBranch },
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+				notify(
+					ctx,
+					rawDescription
+						? `intake on ${defaultBranch} — the agent may ask clarifying questions before planning`
+						: `intake on ${defaultBranch} — the agent will ask what you want to build`,
+					"info",
+				);
+				return;
+			}
+
+			// Substantive description — skip intake, go straight to plan.
+			const branch = await deriveBranchNameWithModel(ctx, rawDescription);
+			if (!branch) {
+				notify(
+					ctx,
+					"could not derive a branch slug from the description — try more words",
+					"error",
+				);
+				return;
+			}
+
 			state = {
-				description,
+				description: rawDescription,
+				rawDescription,
 				branch,
 				defaultBranch,
 				phase: "awaiting-plan",
@@ -930,9 +1154,13 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: EXT_ID,
-					content: buildPlanPrompt(description),
+					content: buildPlanPrompt(rawDescription),
 					display: false,
-					details: { description, branch, defaultBranch },
+					details: {
+						description: rawDescription,
+						branch,
+						defaultBranch,
+					},
 				},
 				{ deliverAs: "followUp", triggerTurn: true },
 			);
@@ -941,6 +1169,16 @@ export default function (pi: ExtensionAPI) {
 				`planning on ${defaultBranch} — target branch will be ${branch}`,
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("sync", {
+		description:
+			"Fast-forward to the default branch. Same as the no-args /develop " +
+			"behavior pre-intake.",
+		handler: async (_args, ctx) => {
+			const branch = await syncToDefault(ctx);
+			if (branch) notify(ctx, `on ${branch}, up to date`, "info");
 		},
 	});
 
@@ -979,9 +1217,14 @@ export default function (pi: ExtensionAPI) {
 
 // Re-export pure helpers for test reach-through.
 export {
+	buildIntakePrompt,
 	deriveBranchName,
+	deriveBranchNameWithModel,
 	deriveIssueTitle,
 	derivePrefix,
+	needsIntake,
+	sanitizeSlug,
 	scanForSecrets,
 	slugify,
+	slugifyWithModel,
 };
