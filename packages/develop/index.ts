@@ -176,13 +176,14 @@ export default function (pi: ExtensionAPI) {
 	 * which queues a fresh turn after this handler returns.
 	 */
 	async function offerHandoff(ctx: ExtensionContext): Promise<void> {
+		// Gate options on the extension commands being installed. The
+		// /skill:<name> standalone path is a different UX (manually
+		// invoked) and we don't want to dispatch to it from here — the
+		// auto-handoff is meant for extension-extension integration.
 		const commandNames = new Set(pi.getCommands().map((c) => c.name));
-		const hasReview =
-			commandNames.has("review") || commandNames.has("skill:review");
-		const hasCommit =
-			commandNames.has("commit") || commandNames.has("skill:commit");
-		const hasVerify =
-			commandNames.has("verify") || commandNames.has("skill:verify");
+		const hasReview = commandNames.has("review");
+		const hasCommit = commandNames.has("commit");
+		const hasVerify = commandNames.has("verify");
 
 		const options: string[] = [];
 		if (hasVerify) options.push("Run /verify");

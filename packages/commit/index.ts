@@ -296,12 +296,11 @@ export default function (pi: ExtensionAPI) {
 				// Dispatch /review for the user instead of describing it. The
 				// command appears as a typed user message and triggers a fresh
 				// turn after this picker returns; same flow as the user typing
-				// it themselves, just one fewer keystroke. Fall back to the
-				// old self-help notify if /review isn't installed (e.g. someone
-				// installed pi-ext-commit standalone).
-				const hasReview = pi
-					.getCommands()
-					.some((c) => c.name === "review" || c.name === "skill:review");
+				// it themselves, just one fewer keystroke. Gate only on the
+				// extension command — the standalone /skill:review path is a
+				// different UX (manual invocation) and dispatching to it from
+				// here would be surprising.
+				const hasReview = pi.getCommands().some((c) => c.name === "review");
 				if (hasReview) {
 					pi.sendUserMessage("/review", { deliverAs: "followUp" });
 					notify(
@@ -314,7 +313,7 @@ export default function (pi: ExtensionAPI) {
 				} else {
 					notify(
 						ctx,
-						`/review not installed (install vegardx/pi-extensions to enable it). Type /review yourself, then re-invoke /commit${
+						`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; re-invoke /commit when you're ready to commit${
 							guidance ? ` ${guidance}` : ""
 						}`,
 						"info",
