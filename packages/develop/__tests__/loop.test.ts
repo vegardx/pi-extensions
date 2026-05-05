@@ -1,8 +1,10 @@
 import {
 	aggregateConcerns,
 	buildPostLoopPickerOptions,
+	decideAutoReviewNextAction,
 	decideLoopAction,
 	detectNoProgress,
+	restoreLoopPhaseFromAutoReview,
 	toVerdictSnapshot,
 	type VerifyVerdictLike,
 } from "../plan-utils.js";
@@ -290,5 +292,55 @@ describe("buildPostLoopPickerOptions", () => {
 		});
 		expect(options[0]).toBe("Run /review");
 		expect(options[1]).toBe("Run /commit (with 2 unresolved concerns)");
+	});
+});
+
+describe("decideAutoReviewNextAction", () => {
+	it("skips to picker when the auto-review pass didn't run", () => {
+		expect(decideAutoReviewNextAction({ ran: false, appliedCount: 0 })).toBe(
+			"skip-to-picker",
+		);
+		// Even if a leftover applied-count is nonzero, a non-run pass
+		// can't have queued anything for the host — still skip.
+		expect(decideAutoReviewNextAction({ ran: false, appliedCount: 5 })).toBe(
+			"skip-to-picker",
+		);
+	});
+
+	it("skips to picker when the pass ran but found no consensus", () => {
+		expect(decideAutoReviewNextAction({ ran: true, appliedCount: 0 })).toBe(
+			"skip-to-picker",
+		);
+	});
+
+	it("applies fixes when at least one consensus finding was queued", () => {
+		expect(decideAutoReviewNextAction({ ran: true, appliedCount: 1 })).toBe(
+			"apply-fixes",
+		);
+		expect(decideAutoReviewNextAction({ ran: true, appliedCount: 12 })).toBe(
+			"apply-fixes",
+		);
+	});
+
+	it("treats negative applied counts defensively as skip-to-picker", () => {
+		// Shouldn't happen in practice, but make sure the boundary is
+		// `> 0` not `!= 0` so a defensive negative still routes safely.
+		expect(decideAutoReviewNextAction({ ran: true, appliedCount: -1 })).toBe(
+			"skip-to-picker",
+		);
+	});
+});
+
+describe("restoreLoopPhaseFromAutoReview", () => {
+	it("returns loop-bailed when the verify loop bailed", () => {
+		expect(restoreLoopPhaseFromAutoReview({ loopBailed: true })).toBe(
+			"loop-bailed",
+		);
+	});
+
+	it("returns loop-complete when the verify loop exited clean", () => {
+		expect(restoreLoopPhaseFromAutoReview({ loopBailed: false })).toBe(
+			"loop-complete",
+		);
 	});
 });

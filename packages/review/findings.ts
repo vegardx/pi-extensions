@@ -33,7 +33,30 @@ export interface Finding extends RawFinding {
 	flaggedBy: ReviewerRole[];
 	/** True if at least two reviewers raised the same issue. */
 	consensus: boolean;
+	/**
+	 * Which background-model tiers contributed this finding. Populated
+	 * only when the caller passes tier-tagged bundles to
+	 * `dedupeFindings` (currently the auto-review pass in `/develop` —
+	 * primary.heavy + secondary.heavy). Empty / unset when tiers are
+	 * irrelevant (the standard interactive `/review` fan-out).
+	 */
+	flaggedByTier?: BackgroundTier[];
+	/**
+	 * True iff this finding was flagged by at least one reviewer in
+	 * BOTH the primary and secondary tier. Set only when tier-tagged
+	 * bundles are provided. The auto-review pass uses this as the
+	 * gate for auto-applying a fix without user confirmation.
+	 */
+	crossModelConsensus?: boolean;
 }
+
+/**
+ * Background-model tier label used to attribute tier-tagged review
+ * bundles. Mirrors the `BackgroundSet` type from
+ * `_shared/extension-settings.ts` but kept local so this pure module
+ * doesn't pull in pi types just for an enum literal.
+ */
+export type BackgroundTier = "primary" | "secondary";
 
 /**
  * Parse a reviewer's stdout into a list of RawFindings. Accepts either:
@@ -118,6 +141,19 @@ const SEVERITY_RANK: Record<Severity, number> = {
 };
 
 /**
+ * Bundle of raw findings from one reviewer run. The optional `tier`
+ * field is set by tier-tagged callers (the auto-review pass in
+ * `/develop`); standard `/review` callers omit it. When set, dedupe
+ * tracks tier provenance and computes `crossModelConsensus` per
+ * merged finding.
+ */
+export interface FindingsBundle {
+	role: ReviewerRole;
+	findings: readonly RawFinding[];
+	tier?: BackgroundTier;
+}
+
+/**
  * Merge raw findings from every reviewer into a deduped, severity-sorted
  * list. Dedupe key is `${file}:${line ?? "0"}:${title.lower()}` — when two
  * reviewers flag the same issue with the same title, we collapse them.
@@ -125,24 +161,46 @@ const SEVERITY_RANK: Record<Severity, number> = {
  * Severity promotion: when one reviewer rates an issue CRITICAL and another
  * NOTE, the merged finding takes the highest severity. Consensus (2+
  * reviewers on the same dedupe key) is tracked separately for the report.
+ *
+ * When bundles carry a `tier`, the merged finding additionally records
+ * `flaggedByTier` and `crossModelConsensus`. `crossModelConsensus` is
+ * `true` iff the finding was flagged by at least one reviewer in BOTH
+ * the `primary` and `secondary` tiers — the gate the auto-review pass
+ * in `/develop` uses to decide whether to apply a fix without user
+ * confirmation. Bundles without `tier` leave both fields unset.
  */
 export function dedupeFindings(
-	bundles: ReadonlyArray<{
-		role: ReviewerRole;
-		findings: readonly RawFinding[];
-	}>,
+	bundles: ReadonlyArray<FindingsBundle>,
 ): Finding[] {
 	const merged = new Map<string, Finding>();
-	for (const { role, findings } of bundles) {
+	for (const { role, findings, tier } of bundles) {
 		for (const f of findings) {
 			const key = `${f.file}:${f.line ?? 0}:${f.title.toLowerCase().trim()}`;
 			const existing = merged.get(key);
 			if (!existing) {
-				merged.set(key, { ...f, flaggedBy: [role], consensus: false });
+				const seed: Finding = {
+					...f,
+					flaggedBy: [role],
+					consensus: false,
+				};
+				if (tier) {
+					seed.flaggedByTier = [tier];
+					seed.crossModelConsensus = false;
+				}
+				merged.set(key, seed);
 				continue;
 			}
 			if (!existing.flaggedBy.includes(role)) existing.flaggedBy.push(role);
 			existing.consensus = existing.flaggedBy.length >= 2;
+			if (tier) {
+				if (!existing.flaggedByTier) existing.flaggedByTier = [];
+				if (!existing.flaggedByTier.includes(tier)) {
+					existing.flaggedByTier.push(tier);
+				}
+				existing.crossModelConsensus =
+					existing.flaggedByTier.includes("primary") &&
+					existing.flaggedByTier.includes("secondary");
+			}
 			// Promote severity to the highest seen. Prefer the more specific
 			// description if the incoming one is longer; same for suggestedAction.
 			if (SEVERITY_RANK[f.severity] < SEVERITY_RANK[existing.severity]) {
@@ -169,6 +227,17 @@ export function dedupeFindings(
 		if (a.file !== b.file) return a.file < b.file ? -1 : 1;
 		return (a.line ?? 0) - (b.line ?? 0);
 	});
+}
+
+/**
+ * Filter a deduped finding list down to those flagged by both the
+ * primary and secondary tier — the cross-model consensus the auto-
+ * review pass in `/develop` requires before auto-applying a fix.
+ * Findings without tier metadata are excluded (caller didn't pass
+ * tier-tagged bundles, so cross-model consensus is undefined).
+ */
+export function crossModelConsensus(findings: readonly Finding[]): Finding[] {
+	return findings.filter((f) => f.crossModelConsensus === true);
 }
 
 export interface SeverityCounts {
