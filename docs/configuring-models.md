@@ -4,8 +4,13 @@ Several extensions in this monorepo call an LLM on a side task:
 
 - `prompt-suggestion` predicts the next message after every turn.
 - `session-title` names the session for your terminal tab / tmux window.
-- `verify` fans out parallel read-only subagents to check whether each
-  step of a plan is actually done.
+- `verify` runs one read-only subagent that walks a plan and returns
+  per-step verdicts.
+- `develop` derives a kebab-case branch slug from a free-form description.
+- `/develop`'s auto-review pass (in `pi-ext-review/auto-review`) runs
+  the `code-reviewer` and `code-simplifier` lanes twice each — once
+  against `primary.heavy`, once against `secondary.heavy` — and queues
+  only the findings both tiers independently flag.
 
 None of them hard-code a provider/model id. Each one declares a **tier**
 (`fast` / `normal` / `heavy`) and a **set** (`primary` / `secondary`),
@@ -52,8 +57,9 @@ Two top-level keys this monorepo's extensions read from pi's
 
 - **`backgroundModels.<set>.<tier>`** — maps each (set, tier) pair to a
   `provider/id` string. Most extensions read from `primary`. Consumers
-  that want a different model family for cross-checking (today: only
-  `verify`, in PR C of this branch's plan) read from `secondary`.
+  that want a different model family for cross-checking (today:
+  `/develop`'s auto-review pass via `pi-ext-review/auto-review`) read
+  from `secondary`.
 - **`primary` / `secondary` are peers, not fallbacks.** A user
   configures one or both. When a `secondary` consumer asks for a tier
   that isn't set under `secondary`, the resolver falls back to
@@ -109,10 +115,14 @@ clients in `/review` and `/verify`, prompt-suggestion's `Predictor`).
 |---|---|---|---|---|
 | `prompt-suggestion` | `primary` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
 | `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
-| `verify` | `secondary` | `normal` | Per-step plan verifier. Reads `secondary` so its verdicts are independent of whatever model produced the work being verified. Falls back to `primary.normal` when `secondary.normal` isn't set. | `extensionConfig.verify.model` |
+| `verify` | `primary` | `fast` | Single-subagent plan verifier. JSON-array structured output, runs up to 5× per `/develop` plan via the auto-loop. | `extensionConfig.verify.model` |
+| `develop` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves. | `$PI_DEVELOP_SLUG_MODEL` (session), `extensionConfig.develop.model` |
+| `/develop` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.develop.autoReview: false` to disable; both heavy tiers must resolve or the pass is skipped. |
 
 Extensions that don't take a background model and use `ctx.model`
-directly: `commit`, `develop`, `review`, `example`, `gh`.
+directly: `commit`, `review` (the interactive `/review` command —
+only `auto-review` consumes background tiers), `gh` (skills-only),
+`startup`.
 
 ## Common configurations
 
@@ -139,10 +149,12 @@ opus unless an extension declares `heavy`.
 
 ### Cross-checking with primary + secondary
 
-Configure two model families. Most extensions use `primary`; consumers
-that want a second opinion (today: `verify` in PR C) use `secondary`.
-Set both for proper cross-model checking; set only `primary` and
-`secondary` consumers fall back to it.
+Configure two model families. Most extensions use `primary`; the
+`/develop` auto-review pass uses both — each reviewer lane runs once
+against `primary.heavy` and once against `secondary.heavy`, and only
+findings both tiers flag are queued for the host agent. Set both for
+proper cross-model checking; if `secondary.heavy` isn't set the pass
+is skipped (the post-loop picker still fires).
 
 ```jsonc
 {
@@ -202,7 +214,7 @@ Note the model id can contain slashes (`anthropic/claude-haiku-4.5`);
 the resolver splits only on the **first** slash, so the provider is
 `openrouter` and the model id is `anthropic/claude-haiku-4.5`.
 
-### Nitpick on one provider, suggestions on another
+### Verify on one provider, suggestions on another
 
 Mix per-extension with the tier defaults:
 
@@ -241,9 +253,11 @@ can target it like any other:
 ```
 
 Local models cost nothing per call but tend to be slower and less
-capable. Good fit for `fast`-tier extensions (short outputs); for
-`normal`-tier consumers like `verify`, only viable if the local
-model is sharp enough to read diffs and produce structured JSON.
+capable. Good fit for `fast`-tier extensions (short outputs) such as
+`prompt-suggestion`, `session-title`, and `verify`. The `/develop`
+auto-review pass (`heavy`) is only viable on a local model sharp
+enough to read diffs and produce structured JSON — expect to wire
+it up against a hosted model in practice.
 
 ### Minimal — configure only what you care about
 
@@ -265,10 +279,11 @@ tiers, just set `backgroundModels.primary.fast`:
 }
 ```
 
-Covers both prompt-suggestion and session-title (the only `fast`-tier
-consumers). `verify` (`normal`-tier, `secondary` set) falls through
-to `ctx.model` until you configure `secondary.normal` or
-`primary.normal`.
+Covers both prompt-suggestion and session-title (`fast`-tier consumers).
+`verify` is also `fast`-tier and so picks up the same setting. The
+`/develop` auto-review pass (`heavy`-tier across both `primary` and
+`secondary`) stays skipped until you configure `primary.heavy` and
+`secondary.heavy` — it's strictly opt-in.
 
 ## Provider and gateway notes
 
@@ -382,13 +397,17 @@ whatever comes back.
 
 ## Why two sets (primary / secondary)
 
-A second model family is useful for cross-checking. Run a verifier on
-your primary stack, and run it again on the secondary stack — if both
-agree, high confidence; if they disagree, that's a signal worth
-investigating.
+A second model family is useful for cross-checking. Run a reviewer
+lane on your primary stack, and run it again on the secondary stack —
+if both flag the same finding, high confidence; if only one does, the
+finding is dropped. That's exactly what `/develop`'s auto-review pass
+does between the auto-verify loop and the post-loop picker.
 
 Most users will configure only `primary`. The `secondary` set exists
 for users who want cross-model checking and have credentials for a
-second provider. Consumers that read `secondary` (today: just
-`verify`) fall back to `primary` cleanly when `secondary` isn't
-configured, so the schema isn't a tax on users who don't care.
+second provider. The `/develop` auto-review pass requires both heavy
+tiers to resolve; if one doesn't, the pass is skipped (the verify
+loop result still drives the post-loop picker). Other `secondary`
+consumers — should any be added later — fall back to `primary` cleanly
+when `secondary` isn't configured, so the schema isn't a tax on
+users who don't care.

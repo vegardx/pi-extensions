@@ -102,9 +102,10 @@ The two are complementary: Copilot catches the obvious stuff cheap, `/review` go
 
 Several extensions in this monorepo call an LLM on a side task —
 `prompt-suggestion` predicts the next message, `session-title` names
-the session, `verify` fans out parallel subagents to verify a plan.
-None of them hard-code a provider/model id; each declares a **tier**
-and the user decides what that tier means.
+the session, `verify` runs a read-only subagent over a plan, and
+`/develop`'s auto-review pass runs cross-model code-reviewer / code-
+simplifier subagents. None of them hard-code a provider/model id;
+each declares a **tier** and the user decides what that tier means.
 
 Configure once in `settings.json`:
 
@@ -126,10 +127,12 @@ Configure once in `settings.json`:
 ```
 
 There's also a `secondary` set under `backgroundModels` that peer
-consumers can read from for cross-model checks. The `secondary` set is
-reserved for future multi-model fan-out consumers (planned: `/review`).
-Consumers that request a tier from `secondary` and don't find it fall
-back to `primary`.
+consumers can read from for cross-model checks. Today the only
+consumer is `/develop`'s auto-review pass (in `pi-ext-review/auto-review`),
+which runs each of two reviewer lanes once against `primary.heavy`
+and once against `secondary.heavy` and queues only the findings both
+tiers agree on. Consumers that request a tier from `secondary` and
+don't find it fall back to `primary`.
 
 Current tier assignments:
 
@@ -137,7 +140,9 @@ Current tier assignments:
 |---|---|---|
 | `prompt-suggestion` | `fast` | Ghost text on every turn; 40-token output. |
 | `session-title` (auto-title) | `fast` | Once per session; 2–5 word output. |
-| `verify` | `fast` | Per-step plan verifier; bounded JSON output, runs up to 5× per `/develop` plan via the auto-loop. |
+| `verify` | `fast` | Single-subagent plan verifier; bounded JSON-array output, runs up to 5× per `/develop` plan via the auto-loop. |
+| `develop` smart slug | `fast` | One-shot kebab-case branch-slug derivation; deterministic fallback when no model resolves. |
+| `/develop` auto-review (`pi-ext-review/auto-review`) | `heavy` (both `primary` and `secondary`) | Cross-model consensus pass between the auto-verify loop and the post-loop picker. |
 
 Resolution order (high → low priority), same in every extension:
 
