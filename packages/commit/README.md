@@ -45,9 +45,17 @@ generation stay on the main agent via `pi.sendMessage` +
    asks whether to continue (you usually want to branch first via
    `/develop <desc>`).
 2. **Offer `/review`** — picker: run review first, or commit now. If
-   review, the extension dispatches `/review` for the user via
-   `pi.sendUserMessage` and prints a short re-invoke note (falls
-   back to a self-help message if `/review` isn't installed).
+   review, the extension calls `runReview(...)` from `pi-ext-review/core`
+   directly (in-process via dynamic `import()`), gated on the extension
+   being installed. When `runReview` returns, `/commit`'s flow
+   continues into the plan step automatically — no need to re-invoke
+   `/commit` manually. (Earlier drafts dispatched `/review` via
+   `pi.sendUserMessage("/review")` and asked the user to re-invoke,
+   but that path was hard-coded to skip slash expansion in
+   pi-coding-agent ≤ 0.73.0; see
+   [badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549),
+   [#2994](https://github.com/badlogic/pi-mono/issues/2994), and
+   [#3673](https://github.com/badlogic/pi-mono/issues/3673).)
 3. **Plan** — `pi.sendMessage(..., deliverAs: "followUp", triggerTurn:
    true)` with a prompt asking the agent to analyze the diff and
    propose a conventional-commit plan. `ctx.waitForIdle()` blocks the

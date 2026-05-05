@@ -7,6 +7,7 @@ import { EXT_ID, runReview } from "./core.js";
 // piggybacks on the binding imported above; the others aren't needed at
 // runtime in this module so we re-export them straight from their sources.
 export type { RunReviewOptions, RunReviewResult } from "./core.js";
+export { shouldOfferPostReviewCommit } from "./core.js";
 export type { Severity } from "./findings.js";
 export { dedupeFindings } from "./findings.js";
 export type { ReviewMode } from "./scope.js";
