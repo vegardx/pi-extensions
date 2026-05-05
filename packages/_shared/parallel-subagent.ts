@@ -43,6 +43,17 @@ export interface SubagentTask<Tag = string> {
 	cwd: string;
 	/** Abort signal wired to the active agent turn, if any. */
 	signal?: AbortSignal;
+	/**
+	 * `waitForIdle` timeout in milliseconds. When unset, the
+	 * underlying `RpcClient` falls back to its 60s default.
+	 *
+	 * Callers that batch a lot of work into one subagent (e.g.
+	 * `/verify`'s single-subagent fan-in over a long plan) should
+	 * scale this with payload size: 60s is plenty for a 1-step
+	 * verify, but a 13-step plan with a large embedded diff
+	 * routinely needs 4–5 minutes against a fast-tier model.
+	 */
+	timeoutMs?: number;
 }
 
 export interface SubagentOutcome<Tag = string> {
@@ -115,7 +126,7 @@ export async function runSubagent<Tag>(
 
 	try {
 		await Promise.race([client.prompt(input.task), aborted]);
-		await Promise.race([client.waitForIdle(), aborted]);
+		await Promise.race([client.waitForIdle(input.timeoutMs), aborted]);
 		const raw = (await client.getLastAssistantText()) ?? "";
 		return { tag: input.tag, rawText: raw };
 	} catch (err) {
