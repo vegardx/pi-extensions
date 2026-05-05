@@ -139,7 +139,7 @@ Then in pi:
 /review --staged          # staged changes
 /review                   # working tree
 /review --all             # whole codebase (slow)
-/review packages/example/index.ts
+/review packages/startup/index.ts
 ```
 
 ## Known limitations

@@ -1,0 +1,18 @@
+{
+	"name": "pi-ext-startup",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Reports what pi loaded from this monorepo on session start: registered extensions (with their commands and tools), the active session model, configured background-model tiers, and per-extension model overrides. Provides /loaded for the full breakdown on demand.",
+	"pi": {
+		"extensions": ["./index.ts"]
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"@vegardx/pi-extensions-shared": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-coding-agent": { "optional": true },
+		"@vegardx/pi-extensions-shared": { "optional": true }
+	}
+}
