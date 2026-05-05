@@ -205,3 +205,14 @@ Try:
   <desc>` clears any prior state, restoring tools first.
 - **No worktree mode.** Awesome-agents has `/implementer` for parallel
   worktrees; that's out of scope here.
+- **Branch + session naming is dumb.** `slugify()` in `helpers.ts` just
+  takes the first 3–5 alphanumeric tokens of the description, so
+  `/develop "I think we can just remove the example extension"` produces
+  `feat/i-think-we-can-just` and a session named the same thing.
+  Planned fix: send the description to a `fast`-tier background model
+  (root `README.md` “Background models” + `_shared/model-resolver.ts`)
+  and ask for a short kebab-case slug describing the *intent*; fall
+  back to the current token-truncation when no fast-tier model
+  resolves so the extension still works offline. Same suggestion
+  should drive `pi.setSessionName` in the Implement path. Tracked as a
+  TODO on `slugify()`.

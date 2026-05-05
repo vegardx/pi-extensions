@@ -93,6 +93,21 @@ export function derivePrefix(description: string): BranchPrefix {
  * Kebab-case slug from a description: 3–5 alphanumeric tokens, max 50 chars.
  * Mirrors the slug the awesome-agents `/feature` hook produces so branches
  * and session titles line up across harnesses.
+ *
+ * TODO: this is dumb — it just keeps the first 3–5 alphanumeric tokens of
+ * whatever the user typed, so "I think we can just remove the example
+ * extension" becomes `feat/i-think-we-can-just`. Replace with a smarter
+ * naming pass that hands the description to a `fast`-tier background
+ * model (see root `README.md` “Background models” + `_shared/model-resolver.ts`)
+ * and asks for a 3–5 word kebab-case branch slug describing the *intent*.
+ * Fall back to this token-truncation behaviour when no fast-tier model
+ * resolves (offline, no auth, etc.) so the extension still works without
+ * a model. The same suggestion should also feed `pi.setSessionName` in
+ * the Implement path so session titles aren’t the user’s first sentence
+ * either. Mirror any change into `packages/session-title/` if it grows
+ * an `auto-title` mode that should agree with the branch name. See
+ * `packages/develop/README.md` “Known limitations” for the user-facing
+ * note.
  */
 export function slugify(
 	description: string,
