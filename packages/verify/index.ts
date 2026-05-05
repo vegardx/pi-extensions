@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
-import { DEFAULT_MAX_PARALLEL, EXT_ID, runVerify } from "./core.js";
+import { EXT_ID, runVerify } from "./core.js";
 
 export type {
 	PlanStep,
@@ -15,6 +15,7 @@ export {
 	extractPlanSteps,
 	findAutoModeIteration,
 	parseVerdict,
+	parseVerdictArray,
 	runVerify,
 	VERIFY_REQUEST_ENTRY,
 	VERIFY_RESULT_ENTRY,
@@ -24,7 +25,7 @@ export default function (pi: ExtensionAPI) {
 	declareExtension({
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
-		doc: "Verify each step of a plan against the working tree using parallel read-only subagents.",
+		doc: "Verify each step of a plan against the working tree using a single read-only subagent that returns one verdict per step.",
 		configSchema: [
 			{
 				key: "model",
@@ -33,24 +34,18 @@ export default function (pi: ExtensionAPI) {
 					"extensionConfig.verify.model → backgroundModels.primary.fast → ctx.model",
 				doc: "provider/id override for the verifier model.",
 			},
-			{
-				key: "maxParallel",
-				type: "number",
-				default: DEFAULT_MAX_PARALLEL,
-				doc: "Max concurrent verifier subagents per /verify run.",
-			},
 		],
 		backgroundModelUse: {
 			tier: "fast",
 			set: "primary",
 			explanation:
-				"Each plan step spawns one read-only subagent against this model. Bounded structured-output task; fast tier is plenty.",
+				"One read-only subagent walks the whole plan and returns a JSON array of verdicts. Bounded structured-output task; fast tier is plenty.",
 		},
 	});
 
 	pi.registerCommand(EXT_ID, {
 		description:
-			"Verify each step of a plan against the working tree using parallel read-only subagents.",
+			"Verify each step of a plan against the working tree using a single read-only subagent.",
 		handler: async (args, ctx) => {
 			await runVerify({ ctx, pi, arg: args ?? "" });
 		},

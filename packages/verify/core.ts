@@ -14,13 +14,8 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
-import {
-	runSubagentsParallel,
-	type SubagentOutcome,
-	type SubagentTask,
-} from "@vegardx/pi-extensions-shared/parallel-subagent.js";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 
 export const EXT_ID = "verify";
 
@@ -29,9 +24,6 @@ const PROMPT_PATH = join(
 	"prompts",
 	"verify.md",
 );
-
-/** Default cap on parallel subagents per /verify run. */
-export const DEFAULT_MAX_PARALLEL = 15;
 
 /** /develop's session-state entry type — read to find the most recent plan. */
 const DEVELOP_STATE_ENTRY = "develop-state";
@@ -191,6 +183,36 @@ async function resolvePlan(
 
 // ---- Verifier output parsing --------------------------------------------
 
+/**
+ * Validate one verdict-shaped object and coerce it into a
+ * `VerifierVerdict`. Returns `null` if the shape is wrong; callers
+ * decide how to surface the failure.
+ */
+function coerceVerdict(parsed: unknown): VerifierVerdict | null {
+	if (
+		typeof parsed === "object" &&
+		parsed !== null &&
+		typeof (parsed as Record<string, unknown>).step === "number" &&
+		((parsed as Record<string, unknown>).status === "done" ||
+			(parsed as Record<string, unknown>).status === "partial" ||
+			(parsed as Record<string, unknown>).status === "missing" ||
+			(parsed as Record<string, unknown>).status === "unverifiable") &&
+		typeof (parsed as Record<string, unknown>).reason === "string"
+	) {
+		const rec = parsed as Record<string, unknown>;
+		return {
+			step: rec.step as number,
+			status: rec.status as VerifierVerdict["status"],
+			reason: rec.reason as string,
+			suggestion:
+				typeof rec.suggestion === "string" && rec.suggestion
+					? (rec.suggestion as string)
+					: undefined,
+		};
+	}
+	return null;
+}
+
 export function parseVerdict(rawText: string): VerifierVerdict | null {
 	const trimmed = rawText.trim();
 	if (!trimmed) return null;
@@ -200,30 +222,49 @@ export function parseVerdict(rawText: string): VerifierVerdict | null {
 
 	try {
 		const parsed = JSON.parse(payload);
-		if (
-			typeof parsed === "object" &&
-			parsed !== null &&
-			typeof parsed.step === "number" &&
-			(parsed.status === "done" ||
-				parsed.status === "partial" ||
-				parsed.status === "missing" ||
-				parsed.status === "unverifiable") &&
-			typeof parsed.reason === "string"
-		) {
-			return {
-				step: parsed.step,
-				status: parsed.status,
-				reason: parsed.reason,
-				suggestion:
-					typeof parsed.suggestion === "string" && parsed.suggestion
-						? parsed.suggestion
-						: undefined,
-			};
-		}
+		return coerceVerdict(parsed);
 	} catch {
-		// fallthrough
+		return null;
 	}
-	return null;
+}
+
+/**
+ * Parse the single-subagent batch output: a JSON array of verdict
+ * objects, one per plan step. Tolerates code-fence wrapping (the
+ * system prompt forbids it, but models occasionally still wrap).
+ *
+ * Invalid elements are dropped silently — callers cross-check the
+ * returned `step` numbers against the expected plan and surface
+ * any missing steps as verifier errors.
+ *
+ * Returns `null` when the response can't be parsed as a JSON array
+ * at all (the host treats this as a hard failure that errors every
+ * step). Returns an empty array `[]` when the model legitimately
+ * had no input to verify.
+ */
+export function parseVerdictArray(
+	rawText: string,
+): readonly VerifierVerdict[] | null {
+	const trimmed = rawText.trim();
+	if (!trimmed) return null;
+
+	const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
+	const payload = fence ? (fence[1] ?? "").trim() : trimmed;
+
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(payload);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(parsed)) return null;
+
+	const out: VerifierVerdict[] = [];
+	for (const entry of parsed) {
+		const v = coerceVerdict(entry);
+		if (v) out.push(v);
+	}
+	return out;
 }
 
 // ---- Report rendering ---------------------------------------------------
@@ -273,26 +314,59 @@ function renderReport(
 	return lines.join("\n");
 }
 
-// ---- Settings ----------------------------------------------------------
+// ---- Live progress widget ---------------------------------------------
+//
+// `/verify` runs a single subagent that returns all verdicts at once,
+// so we can't show genuine per-step progress while it runs. The widget
+// instead renders the plan-step *scope* (so the user sees what's
+// being checked) and flips each line's glyph from `⏳` to the
+// verdict status as soon as the batch returns. It's brief by design —
+// the report message that follows carries the same data in a richer
+// form, and the widget clears once the report is sent.
 
-interface VerifySettings {
-	maxParallel?: number;
+const VERIFY_PROGRESS_WIDGET = "verify-progress";
+const PROGRESS_TEXT_MAX = 60;
+
+function truncateForWidget(text: string): string {
+	if (text.length <= PROGRESS_TEXT_MAX) return text;
+	return `${text.slice(0, PROGRESS_TEXT_MAX - 1).trimEnd()}…`;
 }
 
-function readVerifySettings(ctx: ExtensionContext): VerifySettings {
-	try {
-		const settings = readRelevantSettings(ctx.cwd);
-		const ec = settings.extensionConfig?.[EXT_ID] as
-			| (VerifySettings & { model?: string })
-			| undefined;
-		if (ec && typeof ec.maxParallel === "number" && ec.maxParallel > 0) {
-			return { maxParallel: ec.maxParallel };
-		}
-	} catch {
-		// settings unreadable — caller falls back to defaults.
+function renderProgressWidget(
+	steps: readonly PlanStep[],
+	verdicts: ReadonlyMap<number, VerifierVerdict> | undefined,
+	errors: ReadonlyMap<number, string> | undefined,
+	resolvedModel: string,
+): string[] {
+	const lines: string[] = [];
+	const total = steps.length;
+	let done = 0;
+	if (verdicts) done = verdicts.size + (errors?.size ?? 0);
+	const header = verdicts
+		? `🔍 verify (${done}/${total} done, model ${resolvedModel})`
+		: `🔍 verify (${total} step(s), model ${resolvedModel})`;
+	lines.push(header);
+	for (const s of steps) {
+		const v = verdicts?.get(s.step);
+		const err = errors?.get(s.step);
+		let glyph: string;
+		if (v) glyph = STATUS_GLYPHS[v.status];
+		else if (err) glyph = "!";
+		else if (verdicts)
+			glyph = "?"; // post-fan-out, no result
+		else glyph = "⏳"; // running
+		lines.push(`  ${glyph} ${s.step}. ${truncateForWidget(s.text)}`);
 	}
-	return {};
+	return lines;
 }
+
+// ---- Settings ----------------------------------------------------------
+//
+// `/verify` no longer fans out per-step subagents (it runs a single
+// subagent that returns an array of verdicts), so the legacy
+// `extensionConfig.verify.maxParallel` knob is no longer consulted.
+// We keep no settings reader here — the per-extension `model`
+// override is handled by `resolveModel` directly.
 
 // ---- Auto-mode detection (audit-log helper) -----------------------------
 //
@@ -415,56 +489,91 @@ export async function runVerify(
 	}
 	const resolvedModelSpec = `${resolved.model.provider}/${resolved.model.id}`;
 
-	const settings = readVerifySettings(ctx);
-	const maxParallel = settings.maxParallel ?? DEFAULT_MAX_PARALLEL;
-
 	if (ctx.hasUI) {
 		ctx.ui.notify(
-			`verify: dispatching ${steps.length} subagent(s) (model ${resolvedModelSpec}, max ${maxParallel} parallel${
+			`verify: running ${steps.length}-step batch (model ${resolvedModelSpec}${
 				autoMode ? `, auto-mode iter ${iteration ?? "?"}` : ""
 			})`,
 			"info",
 		);
+		ctx.ui.setStatus(EXT_ID, `verify: ${steps.length} steps`);
+		ctx.ui.setWidget(
+			VERIFY_PROGRESS_WIDGET,
+			renderProgressWidget(steps, undefined, undefined, resolvedModelSpec),
+		);
 	}
 
-	const tasks: SubagentTask<number>[] = steps.map((s) => ({
-		tag: s.step,
-		task: buildStepTask(steps, s.step),
+	const clearProgress = () => {
+		if (!ctx.hasUI) return;
+		ctx.ui.setStatus(EXT_ID, undefined);
+		ctx.ui.setWidget(VERIFY_PROGRESS_WIDGET, undefined);
+	};
+
+	// Single-subagent fan-in: one read-only subagent walks the whole
+	// plan and returns a JSON array of verdicts. Trades the previous
+	// per-step parallelism (and its error-isolation) for ~10× cheaper
+	// runs and a simpler control flow. Reliability is recovered by
+	// cross-checking each returned `step` field against the expected
+	// step set: missing steps surface as verifier errors per-step,
+	// extras are ignored. The host pi process stays out of the verify
+	// model context (the subagent runs against its own RpcClient with
+	// `--no-session`), so verify never pollutes the active session.
+	const outcome = await runSubagent({
+		tag: 0,
+		task: buildPlanTask(steps),
 		systemPromptPath: PROMPT_PATH,
 		provider: resolved.model.provider,
 		model: resolved.model.id,
 		cwd: ctx.cwd,
 		signal: ctx.signal,
-	}));
+	});
 
-	const outcomes = await runSubagentsParallel(tasks, { maxParallel });
 	const verdictsMap = new Map<number, VerifierVerdict>();
 	const errorsMap = new Map<number, string>();
-	for (const o of outcomes as SubagentOutcome<number>[]) {
-		if (o.error) {
-			errorsMap.set(o.tag, o.error);
-			continue;
+
+	if (outcome.error) {
+		// Subagent failed to start, crashed, or aborted. Every step
+		// becomes a verifier error so the report still aligns with the
+		// plan.
+		for (const s of steps) errorsMap.set(s.step, outcome.error);
+	} else {
+		const parsed = parseVerdictArray(outcome.rawText);
+		if (parsed === null) {
+			const snippet = outcome.rawText.slice(0, 200);
+			for (const s of steps) {
+				errorsMap.set(
+					s.step,
+					`subagent output was not a JSON array: ${snippet}`,
+				);
+			}
+		} else {
+			const expectedSteps = new Set(steps.map((s) => s.step));
+			for (const v of parsed) {
+				if (!expectedSteps.has(v.step)) {
+					// Extra/fabricated step — ignore.
+					continue;
+				}
+				verdictsMap.set(v.step, v);
+			}
+			for (const s of steps) {
+				if (!verdictsMap.has(s.step)) {
+					errorsMap.set(
+						s.step,
+						"subagent did not return a verdict for this step",
+					);
+				}
+			}
 		}
-		const parsed = parseVerdict(o.rawText);
-		if (!parsed) {
-			errorsMap.set(
-				o.tag,
-				`output was not valid JSON: ${o.rawText.slice(0, 200)}`,
-			);
-			continue;
-		}
-		// Cross-check the verdict's `step` against the task tag we
-		// sent in. If they disagree the subagent verified the wrong
-		// step; trust our tag and surface the mismatch as an error
-		// so the misattribution doesn't silently corrupt the report.
-		if (parsed.step !== o.tag) {
-			errorsMap.set(
-				o.tag,
-				`subagent returned step=${parsed.step} but was asked about step=${o.tag}; verdict ignored`,
-			);
-			continue;
-		}
-		verdictsMap.set(o.tag, parsed);
+	}
+
+	if (ctx.hasUI) {
+		// Show the final state in the widget for one render before
+		// clearing it on return. The visible report has the same data
+		// in a richer form, so a brief flash is enough.
+		ctx.ui.setWidget(
+			VERIFY_PROGRESS_WIDGET,
+			renderProgressWidget(steps, verdictsMap, errorsMap, resolvedModelSpec),
+		);
 	}
 
 	const verdicts = Array.from(verdictsMap.values());
@@ -488,6 +597,10 @@ export async function runVerify(
 		},
 		{ triggerTurn: false },
 	);
+
+	// The report message has the same data as the widget but in
+	// richer form; clear the widget once it's been sent.
+	clearProgress();
 
 	const concerns = verdicts.filter(
 		(v) => v.status === "partial" || v.status === "missing",
@@ -592,22 +705,23 @@ export async function runVerify(
 
 // ---- Task / follow-up payload assembly ---------------------------------
 
-function buildStepTask(steps: readonly PlanStep[], step: number): string {
-	const target = steps.find((s) => s.step === step);
-	if (!target) return "";
+/**
+ * Build the single-subagent task payload: the full plan plus an
+ * instruction to return one verdict per step in a JSON array.
+ */
+function buildPlanTask(steps: readonly PlanStep[]): string {
 	const planList = steps.map((s) => `${s.step}. ${s.text}`).join("\n");
 	return [
-		"You are verifying ONE step of a development plan against the",
-		"working tree. The full plan is included for context, but only",
-		"return a verdict for the step indicated below.",
+		"You are verifying a development plan against the working tree.",
+		"Walk every numbered step below and return a JSON array with",
+		"one verdict object per step, in plan order. The schema is in",
+		"your system prompt; emit the array and nothing else.",
 		"",
 		"## Plan",
 		"",
 		planList,
 		"",
-		`## Your step: ${target.step}. ${target.text}`,
-		"",
-		"Return JSON only, matching the schema in your system prompt.",
+		`Emit exactly ${steps.length} verdict object(s), one per step.`,
 	].join("\n");
 }
 
