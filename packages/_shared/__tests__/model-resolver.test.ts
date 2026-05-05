@@ -100,7 +100,7 @@ describe("resolveModel", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: { nitpick: { model: "a/b" } },
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const explicit = makeModel("e", "f");
 				const ctx = fakeCtx({
@@ -130,7 +130,7 @@ describe("resolveModel", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: { nitpick: { model: "a/b" } },
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
 					cwd,
@@ -148,12 +148,12 @@ describe("resolveModel", () => {
 		});
 	});
 
-	it("falls through to backgroundModels.<tier> when no extension override", async () => {
+	it("falls through to backgroundModels.primary.<tier> by default", async () => {
 		await withIsolatedAgentDir(async () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
 					cwd,
@@ -165,6 +165,97 @@ describe("resolveModel", () => {
 				});
 				const r = await resolveModel(ctx, { name: "nitpick", tier: "fast" });
 				expect(r?.model.provider).toBe("c");
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("reads from backgroundModels.secondary when set: 'secondary'", async () => {
+		await withIsolatedAgentDir(async () => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					backgroundModels: {
+						primary: { normal: "p/n" },
+						secondary: { normal: "s/n" },
+					},
+				});
+				const ctx = fakeCtx({
+					cwd,
+					model: makeModel("session", "model"),
+					models: {
+						"p/n": makeModel("p", "n"),
+						"s/n": makeModel("s", "n"),
+					},
+				});
+				const r = await resolveModel(ctx, {
+					name: "verify",
+					tier: "normal",
+					set: "secondary",
+				});
+				expect(r?.model.provider).toBe("s");
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("falls back from secondary to primary when secondary lacks the tier", async () => {
+		await withIsolatedAgentDir(async () => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					backgroundModels: {
+						primary: { heavy: "p/h" },
+						secondary: { fast: "s/f" }, // no `heavy`
+					},
+				});
+				const ctx = fakeCtx({
+					cwd,
+					model: makeModel("session", "model"),
+					models: {
+						"p/h": makeModel("p", "h"),
+						"s/f": makeModel("s", "f"),
+					},
+				});
+				const r = await resolveModel(ctx, {
+					name: "verify",
+					tier: "heavy",
+					set: "secondary",
+				});
+				expect(r?.model.provider).toBe("p"); // primary's `heavy`
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("does NOT fall back primary to secondary when set: 'primary'", async () => {
+		await withIsolatedAgentDir(async () => {
+			const cwd = mkTempCwd();
+			try {
+				const sessionModel = makeModel("session", "model");
+				writeProjectSettings(cwd, {
+					backgroundModels: {
+						secondary: { fast: "s/f" }, // only secondary has fast
+					},
+				});
+				const ctx = fakeCtx({
+					cwd,
+					model: sessionModel,
+					models: {
+						"s/f": makeModel("s", "f"),
+						"session/model": sessionModel,
+					},
+				});
+				const r = await resolveModel(ctx, {
+					name: "verify",
+					tier: "fast",
+					set: "primary",
+				});
+				// Should fall through to ctx.model, not pick from secondary.
+				expect(r?.model).toBe(sessionModel);
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
 			}
@@ -208,7 +299,7 @@ describe("resolveModel", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: { nitpick: { model: "unknown/model" } },
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
 					cwd,
@@ -231,7 +322,7 @@ describe("resolveModel", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: { nitpick: { model: "a/b" } },
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
 					cwd,
@@ -256,7 +347,7 @@ describe("resolveModel", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: { nitpick: { model: "a/b" } },
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const sessionModel = makeModel("session", "model");
 				const ctx = fakeCtx({
@@ -309,7 +400,7 @@ describe("resolveModel", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: { nitpick: { model: "a/b" } },
-					backgroundModels: { fast: "c/d" },
+					backgroundModels: { primary: { fast: "c/d" } },
 				});
 				const ctx = fakeCtx({
 					cwd,

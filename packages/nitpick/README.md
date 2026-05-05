@@ -95,9 +95,9 @@ Resolution order (high → low priority), via
 1. `/nitpick model <provider/id>` — in-session override, not persisted.
 2. `settings.json → extensionConfig.nitpick.model` — persistent
    per-extension override.
-3. `settings.json → backgroundModels.normal` — the "what does
-   `normal` tier mean to me" setting, shared with any future
-   `normal`-tier consumer.
+3. `settings.json → backgroundModels.primary.normal` — the
+   "what does `normal` tier mean to me" setting, shared with any
+   other `normal`-tier consumer.
 4. `ctx.model` — the active session model. Always has auth but may be
    more expensive than necessary.
 5. Nothing usable → notify once, reviews disabled for the session.
@@ -111,7 +111,9 @@ authenticate with:
 // ~/.pi/agent/settings.json or .pi/settings.json (project)
 {
   "backgroundModels": {
-    "normal": "radicalai/claude-haiku-4-5-20251001"
+    "primary": {
+      "normal": "radicalai/claude-haiku-4-5-20251001"
+    }
   }
 }
 ```

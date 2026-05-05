@@ -1,6 +1,7 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import {
+	type BackgroundSet,
 	getExtensionModelOverride,
 	getTierModel,
 	readRelevantSettings,
@@ -18,18 +19,24 @@ import {
  *      in-session command, legacy env var, …). Optional.
  *   2. `settings.json → extensionConfig.<name>.model` — full
  *      `"provider/id"` override, the total escape hatch.
- *   3. `settings.json → backgroundModels.<tier>` — the user's
- *      "what does fast/normal/heavy mean for me" configuration.
- *   4. `ctx.model` — the active session model. Always has auth by
+ *   3. `settings.json → backgroundModels.<set>.<tier>` — the user's
+ *      "what does fast/normal/heavy mean for me" configuration under
+ *      the requested set (`primary` by default; `secondary` for
+ *      cross-checking consumers like `verify`).
+ *   4. `settings.json → backgroundModels.primary.<tier>` — fallback
+ *      when the requested set is `secondary` and the tier isn't
+ *      configured under it. Lets users who only configure `primary`
+ *      still get sensible behavior from `secondary` consumers.
+ *   5. `ctx.model` — the active session model. Always has auth by
  *      definition, even if using it for background work is expensive.
- *   5. Nothing usable → return `null`; the caller disables the
+ *   6. Nothing usable → return `null`; the caller disables the
  *      feature for this session and `notify()`s once.
  *
  * No hard-coded provider/model IDs anywhere.
  *
  * Extensions declare the *tier* they want (`fast`, `normal`, `heavy`)
- * at the call site — tier is a stable label, provider/model choice is
- * the user's.
+ * and the *set* (`primary`, `secondary`) at the call site — both are
+ * stable labels, provider/model choice is the user's.
  */
 
 export interface ResolvedBackgroundModel {
@@ -43,6 +50,14 @@ export interface ResolveOptions {
 	name: string;
 	/** Which tier this call wants if no per-extension override is set. */
 	tier: Tier;
+	/**
+	 * Which background-model set to read from. Most extensions use
+	 * `primary` (the default). Consumers like `verify` use `secondary`
+	 * so users can configure two model families and cross-check one
+	 * with the other; `secondary` falls back to `primary` for any tier
+	 * not configured under it.
+	 */
+	set?: BackgroundSet;
 	/**
 	 * Optional extra override — e.g. a CLI-flag / in-session command
 	 * value. Wins over everything in settings.json. Shape is the usual
@@ -60,8 +75,8 @@ export interface ResolveOptions {
 	 * report ok). Callers that directly pass `apiKey` to a completion
 	 * call — session-title's `completeSimple`, for example — cannot
 	 * use such a result. Callers that hand the model spec off to
-	 * something else that does its own auth (nitpick's `RpcClient`,
-	 * prompt-suggestion's `Predictor`) don't need this.
+	 * something else that does its own auth (subagent RPC clients)
+	 * don't need this.
 	 *
 	 * Default: false. Preserves the headers-only auth path for callers
 	 * that don't care.
@@ -97,11 +112,12 @@ export async function resolveModel(
 	opts: ResolveOptions,
 ): Promise<ResolvedBackgroundModel | null> {
 	const settings = readRelevantSettings(ctx.cwd);
+	const set: BackgroundSet = opts.set ?? "primary";
 
 	const candidates: Array<string | undefined> = [
 		opts.explicit,
 		getExtensionModelOverride(settings, opts.name),
-		getTierModel(settings, opts.tier),
+		getTierModel(settings, opts.tier, set),
 	];
 
 	for (const spec of candidates) {

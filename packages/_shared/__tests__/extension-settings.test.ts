@@ -68,20 +68,46 @@ describe("readRelevantSettings", () => {
 		});
 	});
 
-	it("picks up backgroundModels from project settings", () => {
+	it("picks up backgroundModels.primary from project settings", () => {
 		withIsolatedAgentDir(() => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
 					backgroundModels: {
-						fast: "anthropic/haiku",
-						normal: "anthropic/sonnet",
+						primary: {
+							fast: "anthropic/haiku",
+							normal: "anthropic/sonnet",
+						},
 					},
 				});
 				expect(readRelevantSettings(cwd)).toEqual({
 					backgroundModels: {
-						fast: "anthropic/haiku",
-						normal: "anthropic/sonnet",
+						primary: {
+							fast: "anthropic/haiku",
+							normal: "anthropic/sonnet",
+						},
+					},
+				});
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("picks up backgroundModels.secondary from project settings", () => {
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					backgroundModels: {
+						primary: { normal: "anthropic/sonnet" },
+						secondary: { normal: "openai/gpt-4o" },
+					},
+				});
+				expect(readRelevantSettings(cwd)).toEqual({
+					backgroundModels: {
+						primary: { normal: "anthropic/sonnet" },
+						secondary: { normal: "openai/gpt-4o" },
 					},
 				});
 			} finally {
@@ -96,12 +122,12 @@ describe("readRelevantSettings", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: {
-						nitpick: { model: "openai/gpt-4o-mini" },
+						verify: { model: "openai/gpt-4o-mini" },
 						"prompt-suggestion": { model: "anthropic/haiku" },
 					},
 				});
 				const r = readRelevantSettings(cwd);
-				expect(r.extensionConfig?.nitpick?.model).toBe("openai/gpt-4o-mini");
+				expect(r.extensionConfig?.verify?.model).toBe("openai/gpt-4o-mini");
 				expect(r.extensionConfig?.["prompt-suggestion"]?.model).toBe(
 					"anthropic/haiku",
 				);
@@ -111,34 +137,46 @@ describe("readRelevantSettings", () => {
 		});
 	});
 
-	it("merges global and project, with project overriding global", () => {
+	it("merges global and project, with project overriding global per-set per-tier", () => {
 		withIsolatedAgentDir(() => {
 			const cwd = mkTempCwd();
 			try {
 				writeGlobalSettings({
 					backgroundModels: {
-						fast: "anthropic/haiku",
-						normal: "anthropic/sonnet",
-						heavy: "anthropic/opus",
+						primary: {
+							fast: "anthropic/haiku",
+							normal: "anthropic/sonnet",
+							heavy: "anthropic/opus",
+						},
+						secondary: {
+							normal: "openai/gpt-4o",
+						},
 					},
 					extensionConfig: {
-						nitpick: { model: "anthropic/sonnet" },
+						verify: { model: "anthropic/sonnet" },
 					},
 				});
 				writeProjectSettings(cwd, {
-					backgroundModels: { normal: "openai/gpt-4o" },
+					backgroundModels: {
+						primary: { normal: "openai/gpt-4o" },
+						secondary: { heavy: "openai/o1" },
+					},
 					extensionConfig: {
 						"prompt-suggestion": { model: "openai/gpt-4o-mini" },
 					},
 				});
 
 				const r = readRelevantSettings(cwd);
-				expect(r.backgroundModels).toEqual({
+				expect(r.backgroundModels?.primary).toEqual({
 					fast: "anthropic/haiku", // from global
 					normal: "openai/gpt-4o", // project overrides global
 					heavy: "anthropic/opus", // from global
 				});
-				expect(r.extensionConfig?.nitpick?.model).toBe("anthropic/sonnet");
+				expect(r.backgroundModels?.secondary).toEqual({
+					normal: "openai/gpt-4o", // from global
+					heavy: "openai/o1", // from project
+				});
+				expect(r.extensionConfig?.verify?.model).toBe("anthropic/sonnet");
 				expect(r.extensionConfig?.["prompt-suggestion"]?.model).toBe(
 					"openai/gpt-4o-mini",
 				);
@@ -168,17 +206,23 @@ describe("readRelevantSettings", () => {
 			try {
 				writeProjectSettings(cwd, {
 					backgroundModels: {
-						fast: 42, // wrong type
-						normal: "anthropic/sonnet",
+						primary: {
+							fast: 42, // wrong type
+							normal: "anthropic/sonnet",
+						},
+						secondary: "not an object", // wrong shape
 					},
 					extensionConfig: {
-						nitpick: "not an object", // wrong shape
+						verify: "not an object", // wrong shape
 						"prompt-suggestion": { model: "anthropic/haiku" },
 					},
 				});
 				const r = readRelevantSettings(cwd);
-				expect(r.backgroundModels).toEqual({ normal: "anthropic/sonnet" });
-				expect(r.extensionConfig?.nitpick).toBeUndefined();
+				expect(r.backgroundModels?.primary).toEqual({
+					normal: "anthropic/sonnet",
+				});
+				expect(r.backgroundModels?.secondary).toBeUndefined();
+				expect(r.extensionConfig?.verify).toBeUndefined();
 				expect(r.extensionConfig?.["prompt-suggestion"]?.model).toBe(
 					"anthropic/haiku",
 				);
@@ -191,14 +235,14 @@ describe("readRelevantSettings", () => {
 
 describe("helpers", () => {
 	it("getExtensionModelOverride returns undefined when nothing is set", () => {
-		expect(getExtensionModelOverride({}, "nitpick")).toBeUndefined();
+		expect(getExtensionModelOverride({}, "verify")).toBeUndefined();
 	});
 
 	it("getExtensionModelOverride returns the configured model", () => {
 		expect(
 			getExtensionModelOverride(
-				{ extensionConfig: { nitpick: { model: "x/y" } } },
-				"nitpick",
+				{ extensionConfig: { verify: { model: "x/y" } } },
+				"verify",
 			),
 		).toBe("x/y");
 	});
@@ -207,9 +251,62 @@ describe("helpers", () => {
 		expect(getTierModel({}, "fast")).toBeUndefined();
 	});
 
-	it("getTierModel returns the configured model for the tier", () => {
-		expect(getTierModel({ backgroundModels: { fast: "x/y" } }, "fast")).toBe(
-			"x/y",
-		);
+	it("getTierModel returns the configured model for the primary set by default", () => {
+		expect(
+			getTierModel({ backgroundModels: { primary: { fast: "x/y" } } }, "fast"),
+		).toBe("x/y");
+	});
+
+	it("getTierModel reads from secondary when requested", () => {
+		expect(
+			getTierModel(
+				{
+					backgroundModels: {
+						primary: { fast: "p/p" },
+						secondary: { fast: "s/s" },
+					},
+				},
+				"fast",
+				"secondary",
+			),
+		).toBe("s/s");
+	});
+
+	it("getTierModel falls back to primary when secondary lacks the tier", () => {
+		expect(
+			getTierModel(
+				{
+					backgroundModels: {
+						primary: { fast: "p/p", normal: "p/n" },
+						secondary: { fast: "s/s" }, // no `normal`
+					},
+				},
+				"normal",
+				"secondary",
+			),
+		).toBe("p/n");
+	});
+
+	it("getTierModel returns undefined when both primary and secondary lack the tier", () => {
+		expect(
+			getTierModel(
+				{ backgroundModels: { primary: { fast: "p/p" } } },
+				"normal",
+				"secondary",
+			),
+		).toBeUndefined();
+	});
+
+	it("getTierModel does NOT fall through to secondary when primary lacks the tier", () => {
+		// The fallback rule is asymmetric — secondary uses primary as a
+		// sensible default, but primary is the explicit choice, so a
+		// missing primary tier shouldn't quietly use secondary.
+		expect(
+			getTierModel(
+				{ backgroundModels: { secondary: { fast: "s/s" } } },
+				"fast",
+				"primary",
+			),
+		).toBeUndefined();
 	});
 });

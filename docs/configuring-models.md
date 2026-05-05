@@ -8,14 +8,15 @@ Several extensions in this monorepo call an LLM on a side task:
   edit.
 
 None of them hard-code a provider/model id. Each one declares a **tier**
-(`fast` / `normal` / `heavy`) and the user decides what each tier means
-for them, once, in `settings.json`.
+(`fast` / `normal` / `heavy`) and a **set** (`primary` / `secondary`),
+and the user decides what each tier means for them, once, in
+`settings.json`.
 
 This document is the single place that covers:
 
 - [The `settings.json` keys](#the-settingsjson-keys)
 - [The resolution chain](#the-resolution-chain)
-- [Per-extension tier assignments](#per-extension-tier-assignments)
+- [Per-extension tier and set assignments](#per-extension-tier-and-set-assignments)
 - [Common configurations](#common-configurations)
 - [Provider and gateway notes](#provider-and-gateway-notes)
 - [Troubleshooting](#troubleshooting)
@@ -32,9 +33,16 @@ Two top-level keys this monorepo's extensions read from pi's
 ```jsonc
 {
   "backgroundModels": {
-    "fast":   "provider/id",
-    "normal": "provider/id",
-    "heavy":  "provider/id"
+    "primary": {
+      "fast":   "provider/id",
+      "normal": "provider/id",
+      "heavy":  "provider/id"
+    },
+    "secondary": {
+      "fast":   "provider/id",
+      "normal": "provider/id",
+      "heavy":  "provider/id"
+    }
   },
   "extensionConfig": {
     "<extension-name>": { "model": "provider/id" }
@@ -42,11 +50,17 @@ Two top-level keys this monorepo's extensions read from pi's
 }
 ```
 
-- **`backgroundModels.<tier>`** — maps each tier label to a
-  `provider/id` string. Leave any tier unset to fall through to
-  `ctx.model`. You don't have to set all three.
+- **`backgroundModels.<set>.<tier>`** — maps each (set, tier) pair to a
+  `provider/id` string. Most extensions read from `primary`. Consumers
+  that want a different model family for cross-checking (today: only
+  `verify`, in PR C of this branch's plan) read from `secondary`.
+- **`primary` / `secondary` are peers, not fallbacks.** A user
+  configures one or both. When a `secondary` consumer asks for a tier
+  that isn't set under `secondary`, the resolver falls back to
+  `primary.<tier>` so the consumer still works without forcing the
+  user to fully configure both sets.
 - **`extensionConfig.<name>.model`** — per-extension override. Wins
-  over the tier lookup. Use it when one extension should run on
+  over the (set, tier) lookup. Use it when one extension should run on
   something different than your general tier choice (e.g. nitpick on a
   gateway, but the rest on direct Anthropic).
 
@@ -67,12 +81,18 @@ candidate that resolves in the registry **and** has usable auth:
    `/nitpick model ...`, `$PI_SESSION_AUTO_TITLE_MODEL`.)
 2. **`settings.json` → `extensionConfig.<name>.model`** — the
    persistent per-extension escape hatch.
-3. **`settings.json` → `backgroundModels.<tier>`** — the user's
-   "what does fast/normal/heavy mean for me" configuration.
-4. **`ctx.model`** — the active session model. Always has auth by
+3. **`settings.json` → `backgroundModels.<set>.<tier>`** — the user's
+   "what does fast/normal/heavy mean for me" configuration under
+   the requested set (`primary` by default; `secondary` for
+   cross-checking consumers).
+4. **`settings.json` → `backgroundModels.primary.<tier>`** — fallback
+   when the requested set is `secondary` and the tier isn't configured
+   under it. Lets users who only configure `primary` still get
+   sensible behavior from `secondary` consumers.
+5. **`ctx.model`** — the active session model. Always has auth by
    definition, but may be more expensive than necessary for
    background calls.
-5. **Nothing usable** → the extension disables its side task for the
+6. **Nothing usable** → the extension disables its side task for the
    session with a single `notify()`.
 
 Some extensions (today, only `session-title`) ask the resolver to
@@ -83,13 +103,13 @@ Other consumers accept headers-only auth because they hand the model
 spec off to something that does its own auth (nitpick's `RpcClient`,
 prompt-suggestion's `Predictor`).
 
-## Per-extension tier assignments
+## Per-extension tier and set assignments
 
-| Extension | Tier | Why | Override knob |
-|---|---|---|---|
-| `prompt-suggestion` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
-| `session-title` auto-title | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
-| `nitpick` | `normal` | Continuous code review. Needs real reasoning to read diffs and produce structured findings. | `/nitpick model <provider/id>` (in-session), `extensionConfig.nitpick.model` |
+| Extension | Set | Tier | Why | Override knob |
+|---|---|---|---|---|
+| `prompt-suggestion` | `primary` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
+| `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
+| `nitpick` | `primary` | `normal` | Continuous code review. Needs real reasoning to read diffs and produce structured findings. | `/nitpick model <provider/id>` (in-session), `extensionConfig.nitpick.model` |
 
 Extensions that don't take a background model and use `ctx.model`
 directly: `commit`, `develop`, `review`, `example`, `gh`.
@@ -105,18 +125,43 @@ The simplest setup: one provider, one config, done. Assuming you have
 // ~/.pi/agent/settings.json
 {
   "backgroundModels": {
-    "fast":   "anthropic/claude-haiku-4-5-20251001",
-    "normal": "anthropic/claude-sonnet-4-5-20250929",
-    "heavy":  "anthropic/claude-opus-4-5-20250929"
+    "primary": {
+      "fast":   "anthropic/claude-haiku-4-5-20251001",
+      "normal": "anthropic/claude-sonnet-4-5-20250929",
+      "heavy":  "anthropic/claude-opus-4-5-20250929"
+    }
   }
 }
 ```
 
 Ghost text runs on haiku, auto-title runs on haiku, nitpick runs on
-sonnet. Nothing touches opus unless another extension later declares
-`heavy`.
+sonnet. Nothing touches opus unless another extension declares `heavy`.
 
-### Mixed providers
+### Cross-checking with primary + secondary
+
+Configure two model families. Most extensions use `primary`; consumers
+that want a second opinion (today: `verify` in PR C) use `secondary`.
+Set both for proper cross-model checking; set only `primary` and
+`secondary` consumers fall back to it.
+
+```jsonc
+{
+  "backgroundModels": {
+    "primary": {
+      "fast":   "anthropic/claude-haiku-4-5-20251001",
+      "normal": "anthropic/claude-sonnet-4-5-20250929",
+      "heavy":  "anthropic/claude-opus-4-5-20250929"
+    },
+    "secondary": {
+      "fast":   "openai/gpt-4o-mini",
+      "normal": "openai/gpt-4o",
+      "heavy":  "openai/o1"
+    }
+  }
+}
+```
+
+### Mixed providers (no cross-checking)
 
 Use OpenAI for background tasks, keep Anthropic for the main session
 model (set via pi's `defaultProvider` / `defaultModel`):
@@ -126,8 +171,10 @@ model (set via pi's `defaultProvider` / `defaultModel`):
   "defaultProvider": "anthropic",
   "defaultModel": "claude-sonnet-4-5-20250929",
   "backgroundModels": {
-    "fast":   "openai/gpt-4o-mini",
-    "normal": "openai/gpt-4o-mini"
+    "primary": {
+      "fast":   "openai/gpt-4o-mini",
+      "normal": "openai/gpt-4o-mini"
+    }
   }
 }
 ```
@@ -143,8 +190,10 @@ gateway expects, then point tiers at `<gateway-provider>/<model-id>`.
 ```jsonc
 {
   "backgroundModels": {
-    "fast":   "openrouter/anthropic/claude-haiku-4.5",
-    "normal": "openrouter/anthropic/claude-sonnet-4.5"
+    "primary": {
+      "fast":   "openrouter/anthropic/claude-haiku-4.5",
+      "normal": "openrouter/anthropic/claude-sonnet-4.5"
+    }
   }
 }
 ```
@@ -160,8 +209,10 @@ Mix per-extension with the tier defaults:
 ```jsonc
 {
   "backgroundModels": {
-    "fast": "anthropic/claude-haiku-4-5-20251001",
-    "normal": "anthropic/claude-sonnet-4-5-20250929"
+    "primary": {
+      "fast":   "anthropic/claude-haiku-4-5-20251001",
+      "normal": "anthropic/claude-sonnet-4-5-20250929"
+    }
   },
   "extensionConfig": {
     "nitpick": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
@@ -181,8 +232,10 @@ can target it like any other:
 ```jsonc
 {
   "backgroundModels": {
-    "fast": "local-openai/qwen3-coder",
-    "normal": "local-openai/qwen3-coder"
+    "primary": {
+      "fast":   "local-openai/qwen3-coder",
+      "normal": "local-openai/qwen3-coder"
+    }
   }
 }
 ```
@@ -199,12 +252,14 @@ model you're OK with running ghost text on, you don't need any of
 this.
 
 If you find that behavior too expensive but don't want to think about
-tiers, just set `backgroundModels.fast`:
+tiers, just set `backgroundModels.primary.fast`:
 
 ```jsonc
 {
   "backgroundModels": {
-    "fast": "anthropic/claude-haiku-4-5-20251001"
+    "primary": {
+      "fast": "anthropic/claude-haiku-4-5-20251001"
+    }
   }
 }
 ```
@@ -261,8 +316,11 @@ top-to-bottom against your current state:
    / env var)?
 2. Does `extensionConfig.<name>.model` exist in your project or global
    settings? Project wins.
-3. Does `backgroundModels.<tier>` exist?
-4. What's `ctx.model` currently?
+3. Does `backgroundModels.<set>.<tier>` exist for the set the
+   extension uses?
+4. If the extension uses `secondary` and that tier is unset, does
+   `backgroundModels.primary.<tier>` exist?
+5. What's `ctx.model` currently?
 
 If a higher-priority candidate isn't in the registry or has no auth,
 the resolver skips it and continues. That's why a typo'd
@@ -278,6 +336,26 @@ restart pi; the new values apply on the next session.
 One exception: `/nitpick model <spec>` is an **in-session** override
 that doesn't persist. To make it stick, move it into
 `extensionConfig.nitpick.model`.
+
+### Old flat `backgroundModels.<tier>` config doesn't work
+
+It used to. The schema changed to nest tiers under `primary` /
+`secondary`. Move your existing settings under `primary`:
+
+```diff
+ {
+   "backgroundModels": {
+-    "fast":   "anthropic/claude-haiku-4-5-20251001",
+-    "normal": "anthropic/claude-sonnet-4-5-20250929",
+-    "heavy":  "anthropic/claude-opus-4-5-20250929"
++    "primary": {
++      "fast":   "anthropic/claude-haiku-4-5-20251001",
++      "normal": "anthropic/claude-sonnet-4-5-20250929",
++      "heavy":  "anthropic/claude-opus-4-5-20250929"
++    }
+   }
+ }
+```
 
 ### `PI_SESSION_AUTO_TITLE_MODELS` seems to be ignored
 
@@ -297,9 +375,22 @@ Three consumers with different needs:
 A single `backgroundModel` would force users to compromise between
 "cheap enough for ghost text" and "smart enough for nitpick." Three
 tiers give three knobs, priced and picked independently. Users who
-don't care set one (`fast`); users who care set three.
+don't care set one (`primary.fast`); users who care set three.
 
 Tier labels are intent, not implementation. If "heavy" means
 `claude-opus-4-5` to you and `gemini-2.5-pro` to someone else, that's
-fine — the extensions just ask the resolver for a tier and use
+fine — the extensions just ask the resolver for a (set, tier) and use
 whatever comes back.
+
+## Why two sets (primary / secondary)
+
+A second model family is useful for cross-checking. Run a verifier on
+your primary stack, and run it again on the secondary stack — if both
+agree, high confidence; if they disagree, that's a signal worth
+investigating.
+
+Most users will configure only `primary`. The `secondary` set exists
+for users who want cross-model checking and have credentials for a
+second provider. Consumers that read `secondary` (today: just
+`verify`) fall back to `primary` cleanly when `secondary` isn't
+configured, so the schema isn't a tax on users who don't care.
