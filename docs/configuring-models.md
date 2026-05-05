@@ -110,6 +110,7 @@ prompt-suggestion's `Predictor`).
 | `prompt-suggestion` | `primary` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
 | `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
 | `nitpick` | `primary` | `normal` | Continuous code review. Needs real reasoning to read diffs and produce structured findings. | `/nitpick model <provider/id>` (in-session), `extensionConfig.nitpick.model` |
+| `verify` | `secondary` | `normal` | Per-step plan verifier. Reads `secondary` so its verdicts are independent of whatever model produced the work being verified. Falls back to `primary.normal` when `secondary.normal` isn't set. | `extensionConfig.verify.model` |
 
 Extensions that don't take a background model and use `ctx.model`
 directly: `commit`, `develop`, `review`, `example`, `gh`.

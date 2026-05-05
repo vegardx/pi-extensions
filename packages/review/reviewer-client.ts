@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { RpcClient } from "@mariozechner/pi-coding-agent";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import {
 	parseReviewerOutput,
 	type RawFinding,
@@ -32,84 +32,34 @@ export interface ReviewerOutcome {
 }
 
 /**
- * Spawn one reviewer subagent, send it the task, collect its JSON reply,
- * then tear it down. Unlike nitpick's long-lived reviewer, /review fires
- * each role as a one-shot — we don't need per-turn continuity.
+ * Spawn one reviewer subagent, send it the task, collect its JSON
+ * reply, then tear it down. Thin wrapper over the shared
+ * `runSubagent` helper that adds reviewer-specific output parsing.
  */
 export async function runReviewer(
 	input: ReviewerInvocation,
 ): Promise<ReviewerOutcome> {
-	const cliPath = process.argv[1];
-	if (!cliPath) {
-		return {
-			role: input.role,
-			findings: [],
-			error: "could not locate pi cli entry point",
-		};
-	}
-	const client = new RpcClient({
-		cliPath,
-		cwd: input.cwd,
+	const out = await runSubagent({
+		tag: input.role,
+		task: input.task,
+		systemPromptPath: promptFileFor(input.role),
 		provider: input.provider,
 		model: input.model,
-		args: [
-			"--no-session",
-			"--tools",
-			"read,grep,find,ls",
-			"--append-system-prompt",
-			promptFileFor(input.role),
-		],
+		cwd: input.cwd,
+		signal: input.signal,
 	});
 
-	const aborted = new Promise<never>((_resolve, reject) => {
-		if (!input.signal) return;
-		if (input.signal.aborted) {
-			reject(new Error("aborted"));
-			return;
-		}
-		const onAbort = () => reject(new Error("aborted"));
-		input.signal.addEventListener("abort", onAbort, { once: true });
-	});
+	if (out.error) {
+		return { role: input.role, findings: [], error: out.error };
+	}
 
-	try {
-		await Promise.race([client.start(), aborted]);
-	} catch (err) {
-		await tryStop(client);
+	const parsed = parseReviewerOutput(out.rawText);
+	if (parsed === null) {
 		return {
 			role: input.role,
 			findings: [],
-			error: err instanceof Error ? err.message : String(err),
+			error: `reviewer output was not valid JSON:\n${out.rawText.slice(0, 500)}`,
 		};
 	}
-
-	try {
-		await Promise.race([client.prompt(input.task), aborted]);
-		await Promise.race([client.waitForIdle(), aborted]);
-		const raw = (await client.getLastAssistantText()) ?? "";
-		const parsed = parseReviewerOutput(raw);
-		if (parsed === null) {
-			return {
-				role: input.role,
-				findings: [],
-				error: `reviewer output was not valid JSON:\n${raw.slice(0, 500)}`,
-			};
-		}
-		return { role: input.role, findings: parsed };
-	} catch (err) {
-		return {
-			role: input.role,
-			findings: [],
-			error: err instanceof Error ? err.message : String(err),
-		};
-	} finally {
-		await tryStop(client);
-	}
-}
-
-async function tryStop(client: RpcClient): Promise<void> {
-	try {
-		await client.stop();
-	} catch {
-		/* best-effort shutdown */
-	}
+	return { role: input.role, findings: parsed };
 }

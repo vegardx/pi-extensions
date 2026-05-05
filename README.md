@@ -133,6 +133,7 @@ Current tier assignments:
 | `prompt-suggestion` | `fast` | Ghost text on every turn; 40-token output. |
 | `session-title` (auto-title) | `fast` | Once per session; 2–5 word output. |
 | `nitpick` | `normal` | Continuous code review; needs real reasoning. |
+| `verify` | `normal` (set: `secondary`) | Per-step plan verifier; reads `secondary` for cross-checking. |
 
 Resolution order (high → low priority), same in every extension:
 
