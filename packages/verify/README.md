@@ -6,9 +6,9 @@ parallel read-only subagents.
 ## What it does
 
 Given a numbered plan (a "Plan:" section with steps, the same shape
-`/develop` produces), `/verify` fans out one read-only subagent per
-step, each looking only at its own step. Every subagent gets the full
-plan for context but reports a verdict for **its** step only:
+`/develop` produces), `/verify` runs **one** read-only subagent that
+walks the entire plan and returns a JSON array of verdicts — one per
+step:
 
 - `done` — clear evidence in the working tree.
 - `partial` — started but incomplete or doesn't fully match the plan.
@@ -16,9 +16,26 @@ plan for context but reports a verdict for **its** step only:
 - `unverifiable` — can't be checked from the working tree (e.g. "open
   a PR", "send to upstream").
 
-Verdicts come back as JSON, get aggregated into a TUI report, and you
-get a picker for what to do next: send findings to the host agent so
-it addresses them, save them, or dismiss.
+The single-subagent design (vs. the previous N-subagent fan-out)
+trades per-step error isolation for ~10× cheaper runs and a simpler
+control flow. Reliability is recovered by cross-checking each
+returned `step` field against the expected plan: missing steps
+surface as verifier errors per-step, and extras are ignored. The
+subagent runs against its own RpcClient (`--no-session`), so
+`/verify` never pollutes the active session's context.
+
+Verdicts get aggregated into a TUI report, and you get a picker for
+what to do next: send findings to the host agent so it addresses
+them, save them, or dismiss.
+
+### Live progress widget
+
+While the subagent runs, `/verify` shows a widget above the editor
+listing every plan step with an `⏳` glyph (and the model name in
+the header). When the subagent returns, each line flips to its
+verdict glyph (`✓` / `⚠` / `✗` / `?`) before the widget clears —
+giving a brief visual confirmation of what was checked. The full
+report message that follows carries the same data in richer form.
 
 ## Try it
 
@@ -89,29 +106,22 @@ Example `settings.json`:
 > consumers (e.g. `/review`).
 
 If you want a heavier verifier (e.g. for high-stakes runs), override
-via `extensionConfig.verify.model` to a `normal`-tier id. The cost
-guardrail (`maxParallel`) still applies.
+via `extensionConfig.verify.model` to a `normal`-tier id.
 
-## Cost guardrail
+## Cost
 
-Each plan step gets its own subagent, run in parallel. For long plans
-or expensive models this can rack up cost — the auto-loop runs
-`/verify` up to 5× per plan, multiplying the per-run cost. Default
-cap on parallel subagents is **15**; tasks beyond that batch behind
-the cap.
+One subagent per `/verify` run. The auto-loop in `/develop` may
+invoke `/verify` up to 5× per plan, but each invocation is one
+subagent's worth of tokens — plan text in, JSON array out. For
+order-of-magnitude reference: a 10-step plan × `fast` tier on
+Anthropic haiku is well under \$0.005 per `/verify` run; a worst-case
+5-iteration auto-loop is still under \$0.03.
 
-Configure via `settings.json`:
-
-```jsonc
-{
-  "extensionConfig": {
-    "verify": { "maxParallel": 8 }
-  }
-}
-```
-
-For order-of-magnitude reference: a 10-step plan × `fast` tier on
-Anthropic haiku is well under $0.05 per `/verify` run.
+> **Migration note.** Earlier versions fanned out one subagent per
+> plan step and exposed `extensionConfig.verify.maxParallel` (default
+> 15) to bound the cost. The single-subagent rewrite removes the
+> fan-out entirely; the `maxParallel` setting is no longer consulted.
+> Existing settings entries are silently ignored.
 
 ## Picker after the report
 
@@ -179,15 +189,16 @@ running) and the post-loop picker (review / commit / stay), see
 ## Files
 
 - `core.ts` — `runVerify(opts)` plus the pure helpers (`extractPlanSteps`,
-  `parseVerdict`, `findAutoModeIteration`). Imported by both the slash
+  `parseVerdict`, `parseVerdictArray`, `findAutoModeIteration`) and
+  the live progress widget renderer. Imported by both the slash
   command handler and `/develop`'s auto-loop.
 - `index.ts` — thin extension factory: `declareExtension`,
   `registerCommand("verify")` delegating to `runVerify`. Re-exports
   the pure helpers so tests don't have to reach into `./core`.
-- `prompts/verify.md` — system prompt for the per-step verifier
-  subagent. Defines the JSON output schema.
-- `__tests__/parser.test.ts` — tests for `extractPlanSteps` and
-  `parseVerdict` (the pure helpers).
+- `prompts/verify.md` — system prompt for the single-subagent batch
+  verifier. Defines the JSON-array output schema.
+- `__tests__/parser.test.ts` — tests for `extractPlanSteps`,
+  `parseVerdict`, and `parseVerdictArray` (the pure helpers).
 - `__tests__/auto-mode.test.ts` — tests for `findAutoModeIteration`
   (the request/result iteration comparison; now a diagnostic helper).
 

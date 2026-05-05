@@ -56,6 +56,13 @@ generation stay on the main agent via `pi.sendMessage` +
    [badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549),
    [#2994](https://github.com/badlogic/pi-mono/issues/2994), and
    [#3673](https://github.com/badlogic/pi-mono/issues/3673).)
+
+   **Skipping the offer.** Callers of `runCommit({ ..., skipReviewOffer:
+   true })` bypass this picker entirely with a one-line breadcrumb
+   notification. Used by `/review`'s `chainToCommit` so the user
+   isn't asked "Run /review before committing?" right after they
+   already walked a /review run — see
+   [`packages/review/README.md`](../review/README.md) step 9.
 3. **Plan** — `pi.sendMessage(..., deliverAs: "followUp", triggerTurn:
    true)` with a prompt asking the agent to analyze the diff and
    propose a conventional-commit plan. `ctx.waitForIdle()` blocks the

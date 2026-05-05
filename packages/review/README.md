@@ -85,8 +85,11 @@ exist for explicit user invocation.
 2. Resolve the diff (or file list for `--all`) from git.
 3. Spawn seven `pi --mode rpc` subagents in parallel via `RpcClient`,
    each with `--tools read,grep,find,ls --append-system-prompt
-   prompts/<role>.md` and the current provider/model. Status footer
-   shows `reviewing N/7`.
+   prompts/<role>.md` and the current provider/model. While they
+   run, the status footer shows `reviewing N/7` and a progress
+   widget above the editor lists each reviewer with `⏳` (running)
+   or `✓` (done) per role — so you can see exactly which
+   specialists are still in flight.
 4. Each reviewer's prompt gives it the same scope-handling rules: in
    diff scope, review only the changed lines and reply `[]` if nothing
    in its lane appears; in whole-codebase scope, sweep the full tree

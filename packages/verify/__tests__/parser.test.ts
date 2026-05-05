@@ -1,4 +1,4 @@
-import { extractPlanSteps, parseVerdict } from "../index.js";
+import { extractPlanSteps, parseVerdict, parseVerdictArray } from "../index.js";
 
 describe("extractPlanSteps", () => {
 	it("returns [] when there's no Plan: header", () => {
@@ -152,5 +152,79 @@ describe("parseVerdict", () => {
 			const v = parseVerdict(JSON.stringify({ step: 1, status, reason: "x" }));
 			expect(v?.status).toBe(status);
 		}
+	});
+});
+
+describe("parseVerdictArray", () => {
+	it("returns null for empty input", () => {
+		expect(parseVerdictArray("")).toBeNull();
+		expect(parseVerdictArray("   \n  ")).toBeNull();
+	});
+
+	it("returns null for non-JSON input", () => {
+		expect(parseVerdictArray("the answer is 42")).toBeNull();
+	});
+
+	it("returns null when the JSON is not an array", () => {
+		// A bare object, even if shaped like a verdict, is not an array.
+		expect(
+			parseVerdictArray(
+				JSON.stringify({ step: 1, status: "done", reason: "x" }),
+			),
+		).toBeNull();
+	});
+
+	it("returns an empty array for `[]` input", () => {
+		expect(parseVerdictArray("[]")).toEqual([]);
+	});
+
+	it("parses a well-shaped array of verdicts", () => {
+		const input = JSON.stringify([
+			{ step: 1, status: "done", reason: "first" },
+			{ step: 2, status: "partial", reason: "second", suggestion: "do x" },
+			{ step: 3, status: "missing", reason: "third" },
+		]);
+		const result = parseVerdictArray(input);
+		expect(result).toEqual([
+			{ step: 1, status: "done", reason: "first", suggestion: undefined },
+			{
+				step: 2,
+				status: "partial",
+				reason: "second",
+				suggestion: "do x",
+			},
+			{ step: 3, status: "missing", reason: "third", suggestion: undefined },
+		]);
+	});
+
+	it("tolerates code-fence wrapping", () => {
+		const fenced = [
+			"```json",
+			JSON.stringify([{ step: 1, status: "done", reason: "x" }]),
+			"```",
+		].join("\n");
+		const result = parseVerdictArray(fenced);
+		expect(result).toHaveLength(1);
+		expect(result?.[0]).toEqual({
+			step: 1,
+			status: "done",
+			reason: "x",
+			suggestion: undefined,
+		});
+	});
+
+	it("drops malformed elements but keeps the rest", () => {
+		// Caller (runVerify) cross-checks returned `step` numbers
+		// against the expected plan, so silently dropping junk here
+		// surfaces as "missing verdict for step N" upstream.
+		const input = JSON.stringify([
+			{ step: 1, status: "done", reason: "ok" },
+			{ step: 2, status: "oops", reason: "bad status" }, // invalid
+			"not an object", // invalid
+			{ step: 3, status: "missing" }, // missing reason
+			{ step: 4, status: "partial", reason: "good" },
+		]);
+		const result = parseVerdictArray(input);
+		expect(result?.map((v) => v.step)).toEqual([1, 4]);
 	});
 });

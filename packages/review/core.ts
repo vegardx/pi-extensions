@@ -80,7 +80,12 @@ function ensurePostReviewCommitListener(pi: ExtensionAPI): void {
 			}
 			try {
 				const mod = await import("pi-ext-commit/core");
-				await mod.runCommit({ ctx, pi: api, guidance: "" });
+				await mod.runCommit({
+					ctx,
+					pi: api,
+					guidance: "",
+					skipReviewOffer: true,
+				});
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				notify(ctx, `commit failed: ${msg}`, "error");
@@ -297,6 +302,24 @@ function buildTaskFor(role: ReviewerRole, rc: ReviewContext): string {
 }
 
 // ---- Fan-out -----------------------------------------------------------
+
+const REVIEW_PROGRESS_WIDGET = "review-progress";
+
+function renderReviewProgress(
+	status: ReadonlyMap<ReviewerRole, "running" | "done">,
+): string[] {
+	const lines: string[] = [];
+	const total = status.size;
+	let done = 0;
+	for (const v of status.values()) if (v === "done") done++;
+	lines.push(`🔬 review (${done}/${total} reviewers done)`);
+	for (const role of ALL_ROLES) {
+		const s = status.get(role);
+		const glyph = s === "done" ? "✓" : "⏳";
+		lines.push(`  ${glyph} ${role}`);
+	}
+	return lines;
+}
 async function runAllReviewers(
 	ctx: ExtensionContext,
 	rc: ReviewContext,
@@ -312,8 +335,18 @@ async function runAllReviewers(
 	}
 	const roles: ReviewerRole[] = [...ALL_ROLES];
 
+	// Track per-role state for the progress widget. All seven start as
+	// in-flight (⏳) since we kick them off in parallel; each flips to
+	// ✓ the moment its outcome resolves.
+	const roleStatus = new Map<ReviewerRole, "running" | "done">(
+		roles.map((r) => [r, "running"]),
+	);
+
 	let completed = 0;
-	if (ctx.hasUI) ctx.ui.setStatus(EXT_ID, `reviewing 0/${roles.length}`);
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(EXT_ID, `reviewing 0/${roles.length}`);
+		ctx.ui.setWidget(REVIEW_PROGRESS_WIDGET, renderReviewProgress(roleStatus));
+	}
 
 	const results = await Promise.all(
 		roles.map(async (role) => {
@@ -326,14 +359,22 @@ async function runAllReviewers(
 				signal: ctx.signal,
 			});
 			completed++;
+			roleStatus.set(role, "done");
 			if (ctx.hasUI) {
 				ctx.ui.setStatus(EXT_ID, `reviewing ${completed}/${roles.length}`);
+				ctx.ui.setWidget(
+					REVIEW_PROGRESS_WIDGET,
+					renderReviewProgress(roleStatus),
+				);
 			}
 			return outcome;
 		}),
 	);
 
-	if (ctx.hasUI) ctx.ui.setStatus(EXT_ID, undefined);
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(EXT_ID, undefined);
+		ctx.ui.setWidget(REVIEW_PROGRESS_WIDGET, undefined);
+	}
 
 	const bundles = results.map((r) => ({
 		role: r.role,
@@ -715,7 +756,7 @@ async function chainToCommit(
 	// /develop's post-loop picker dispatch shape.
 	try {
 		const mod = await import("pi-ext-commit/core");
-		await mod.runCommit({ ctx, pi, guidance: "" });
+		await mod.runCommit({ ctx, pi, guidance: "", skipReviewOffer: true });
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		notify(ctx, `commit failed: ${msg}`, "error");

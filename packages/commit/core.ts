@@ -453,6 +453,13 @@ export interface RunCommitOptions {
 	pi: ExtensionAPI;
 	/** Free-form guidance (typically the slash-command argument). */
 	guidance?: string;
+	/**
+	 * Skip the "Run /review before committing?" picker (Step 2 of the
+	 * workflow). Set by callers that just ran /review themselves —
+	 * e.g. /review's chainToCommit — so the user isn't asked again.
+	 * Defaults to false.
+	 */
+	skipReviewOffer?: boolean;
 }
 
 export interface RunCommitResult {
@@ -529,48 +536,52 @@ export async function runCommit(
 	}
 
 	// ---- Step 2: offer /review first ----------------------------
-	const reviewChoice = await ctx.ui.select("Run /review before committing?", [
-		"Run /review first (Recommended)",
-		"Skip — commit now",
-	]);
-	if (!reviewChoice) {
-		notify(ctx, "aborted", "info");
-		return { ran: false, abortReason: "user-cancelled" };
-	}
-	if (reviewChoice.startsWith("Run")) {
-		// Run /review in-process by dynamic-importing its core module.
-		// We don't dispatch a slash command — `pi.sendUserMessage("/cmd")`
-		// is hard-coded to skip slash expansion in pi-coding-agent
-		// ≤ 0.73.0 (see badlogic/pi-mono#2549/#2994/#3673), so a dispatch
-		// would deliver `/review` as literal user text and the registered
-		// handler would never run. Gate only on the extension command —
-		// the standalone /skill:review path is a different UX (manual
-		// invocation) and dispatching to it from here would be surprising.
-		const hasReview = pi.getCommands().some((c) => c.name === "review");
-		if (!hasReview) {
-			notify(
-				ctx,
-				`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; continuing to commit${
-					guidance ? ` ${guidance}` : ""
-				}`,
-				"warning",
-			);
-		} else {
-			notify(ctx, "running /review before committing…", "info");
-			try {
-				const mod = await import("pi-ext-review/core");
-				await mod.runReview({ ctx, pi, arg: "" });
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				notify(ctx, `review failed: ${msg}; continuing to commit`, "warning");
-			}
+	if (opts.skipReviewOffer) {
+		notify(ctx, "skipping /review (just ran)", "info");
+	} else {
+		const reviewChoice = await ctx.ui.select("Run /review before committing?", [
+			"Run /review first (Recommended)",
+			"Skip — commit now",
+		]);
+		if (!reviewChoice) {
+			notify(ctx, "aborted", "info");
+			return { ran: false, abortReason: "user-cancelled" };
 		}
-		// Fall through into the commit-plan step. Note: `runReview` may
-		// have queued a fix-prompt to the agent and (when the post-review
-		// /commit offer landed) registered its own follow-up listener.
-		// Continuing here is still fine: we'll send our own commit-plan
-		// prompt below, await idle until the agent finishes whichever
-		// turn fires first, and proceed.
+		if (reviewChoice.startsWith("Run")) {
+			// Run /review in-process by dynamic-importing its core module.
+			// We don't dispatch a slash command — `pi.sendUserMessage("/cmd")`
+			// is hard-coded to skip slash expansion in pi-coding-agent
+			// ≤ 0.73.0 (see badlogic/pi-mono#2549/#2994/#3673), so a dispatch
+			// would deliver `/review` as literal user text and the registered
+			// handler would never run. Gate only on the extension command —
+			// the standalone /skill:review path is a different UX (manual
+			// invocation) and dispatching to it from here would be surprising.
+			const hasReview = pi.getCommands().some((c) => c.name === "review");
+			if (!hasReview) {
+				notify(
+					ctx,
+					`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; continuing to commit${
+						guidance ? ` ${guidance}` : ""
+					}`,
+					"warning",
+				);
+			} else {
+				notify(ctx, "running /review before committing…", "info");
+				try {
+					const mod = await import("pi-ext-review/core");
+					await mod.runReview({ ctx, pi, arg: "" });
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					notify(ctx, `review failed: ${msg}; continuing to commit`, "warning");
+				}
+			}
+			// Fall through into the commit-plan step. Note: `runReview` may
+			// have queued a fix-prompt to the agent and (when the post-review
+			// /commit offer landed) registered its own follow-up listener.
+			// Continuing here is still fine: we'll send our own commit-plan
+			// prompt below, await idle until the agent finishes whichever
+			// turn fires first, and proceed.
+		}
 	}
 
 	// ---- Step 3: ask agent for a commit plan --------------------
