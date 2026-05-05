@@ -47,8 +47,9 @@ not flag. When in doubt, read those.
   and can override per extension via
   `settings.json → extensionConfig.<name>.model`. Most extensions
   read `primary`; consumers that want cross-model checking (today:
-  only `verify`) read `secondary`, which falls back to `primary`
-  when a tier isn't configured under it. If resolution fails, the
+  `/develop`'s auto-review pass via `pi-ext-review/auto-review`) read
+  `secondary`, which falls back to `primary` when a tier isn't
+  configured under it. If resolution fails, the
   extension disables its side task for the session with a single
   `notify()`. See
   [`docs/configuring-models.md`](../docs/configuring-models.md) for the

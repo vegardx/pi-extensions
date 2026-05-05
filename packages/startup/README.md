@@ -41,7 +41,7 @@ Run `/extensions` to print the same breakdown again on demand:
     (`project` / `global` / `default`), the literal default or
     fallback chain, and a short doc line;
   - which `backgroundModels` tier+set the extension consumes
-    (e.g. `verify` → `secondary.normal`) and the resolved value with
+    (e.g. `verify` → `primary.fast`) and the resolved value with
     its source.
 - **Unrecognized extensions** — anything in pi's command/tool registry
   whose `sourceInfo.path` doesn't match any `declareExtension` entry
