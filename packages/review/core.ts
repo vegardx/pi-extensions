@@ -90,21 +90,23 @@ function ensurePostReviewCommitListener(pi: ExtensionAPI): void {
 }
 
 /**
- * Pure decision: should /review offer to chain into /commit after the
- * fix turn? Only when the user is interactive, the run actually
- * queued fixes, and the commit extension is installed.
+ * Pure decision: should /review offer to chain into /commit on
+ * completion? Only when the user is interactive and the commit
+ * extension is installed. The fix-count axis is intentionally NOT
+ * a precondition: a clean review (no findings) is just as natural
+ * a moment to commit as a fix-walked one. Whether to use a one-shot
+ * `agent_end` listener or dispatch immediately depends on whether a
+ * fix turn was queued; that's a separate decision handled by
+ * `chainToCommit`.
  *
- * Exported (and re-exported from `index.ts`) so unit tests can cover
- * the four edge cases without mocking pi.
+ * Exported (and re-exported from `index.ts`) so unit tests can
+ * cover the edge cases without mocking pi.
  */
 export function shouldOfferPostReviewCommit(opts: {
-	acceptedCount: number;
-	explainCount: number;
 	hasUI: boolean;
 	commitInstalled: boolean;
 }): boolean {
 	if (!opts.hasUI) return false;
-	if (opts.acceptedCount + opts.explainCount === 0) return false;
 	if (!opts.commitInstalled) return false;
 	return true;
 }
@@ -623,6 +625,7 @@ export async function runReview(
 
 	if (findings.length === 0) {
 		notify(ctx, "no findings — you're clear.", "info");
+		await chainToCommit(ctx, pi, false);
 		return { ran: true, scopeLabel: rc.scopeLabel, findings: [] };
 	}
 
@@ -667,27 +670,54 @@ export async function runReview(
 		"info",
 	);
 
-	// Post-fix /commit offer: chain into /commit when the agent
-	// finishes applying the fixes we just queued.
-	const commitInstalled = pi.getCommands().some((c) => c.name === "commit");
-	if (
-		shouldOfferPostReviewCommit({
-			acceptedCount: accepted.length,
-			explainCount: explainRequests.length,
-			hasUI: ctx.hasUI,
-			commitInstalled,
-		})
-	) {
-		const chain = await ctx.ui.confirm(
-			"Run /commit after the agent applies these fixes?",
-			"Recommended. /commit will run once the next agent turn ends so the fixes are committed without needing to re-invoke it manually.",
-		);
-		if (chain) {
-			ensurePostReviewCommitListener(pi);
-			pendingPostReviewCommit.set(pi, { ctx, pi });
-			notify(ctx, "will run /commit after the fix turn ends", "info");
-		}
-	}
+	// Chain into /commit. A fix turn is pending (we just queued it),
+	// so we install a one-shot agent_end listener instead of
+	// dispatching immediately.
+	await chainToCommit(ctx, pi, true);
 
 	return { ran: true, scopeLabel: rc.scopeLabel, findings };
+}
+
+/**
+ * Offer /commit on /review completion and — if the user accepts —
+ * either install a one-shot `agent_end` listener (when a fix turn
+ * is pending) or dispatch /commit immediately. Gated on
+ * `shouldOfferPostReviewCommit` so non-interactive runs and missing
+ * /commit installations stay silent.
+ */
+async function chainToCommit(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	fixesPending: boolean,
+): Promise<void> {
+	const commitInstalled = pi.getCommands().some((c) => c.name === "commit");
+	if (!shouldOfferPostReviewCommit({ hasUI: ctx.hasUI, commitInstalled })) {
+		return;
+	}
+
+	const title = fixesPending
+		? "Run /commit after the agent applies these fixes?"
+		: "Run /commit now?";
+	const message = fixesPending
+		? "Recommended. /commit will run once the next agent turn ends so the fixes are committed without needing to re-invoke it manually."
+		: "Recommended. The review didn't queue any agent work, so /commit can run immediately.";
+	const chain = await ctx.ui.confirm(title, message);
+	if (!chain) return;
+
+	if (fixesPending) {
+		ensurePostReviewCommitListener(pi);
+		pendingPostReviewCommit.set(pi, { ctx, pi });
+		notify(ctx, "will run /commit after the fix turn ends", "info");
+		return;
+	}
+
+	// No fix turn pending — dispatch /commit immediately. Mirrors
+	// /develop's post-loop picker dispatch shape.
+	try {
+		const mod = await import("pi-ext-commit/core");
+		await mod.runCommit({ ctx, pi, guidance: "" });
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		notify(ctx, `commit failed: ${msg}`, "error");
+	}
 }
