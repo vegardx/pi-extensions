@@ -128,28 +128,49 @@ a picker (only when there are concerns; if every step is `done` /
 ## Integration with `/develop`
 
 `/develop` runs an automated verify loop the moment its plan finishes
-executing (every step `[DONE:n]`). Coordination uses two
-session-state breadcrumb entries; neither extension imports the other.
+executing (every step `[DONE:n]`). It calls `runVerify(...)`
+**directly** (in-process, via dynamic `import("pi-ext-verify/core")`).
+This bypasses slash-command dispatch entirely —
+`pi.sendUserMessage("/cmd")` is hard-coded to skip slash expansion in
+pi-coding-agent ≤ 0.73.0 (`expandPromptTemplates: false`; see
+badlogic/pi-mono#2549/#2994/#3673), so a `dispatchSlashCommand("/verify")`
+approach would deliver `/verify` as literal user text instead of
+running the command.
 
-| Entry | Writer | Reader | Payload |
-|---|---|---|---|
-| `develop-verify-request` | `/develop` | `/verify` | `{ iteration, planText, branch, requestedAt }` |
-| `develop-verify-result`  | `/verify`  | `/develop` | `{ iteration, verdicts, errorCount, model, completedAt }` |
+### Public entry point
 
-**Auto mode.** When `/verify`'s `findAutoModeIteration` helper finds
-a request entry whose iteration is greater than the latest result
-entry's iteration, it runs in auto mode:
+```ts
+import { runVerify } from "pi-ext-verify/core";
 
-- Suppresses the post-result findings picker. `/develop` is driving;
-  the user shouldn't be asked anything.
-- Writes a structured `develop-verify-result` entry with the verdicts
-  and error count.
-- Dispatches `/develop-verify-resume` (a hidden command registered
-  by `/develop`) so the loop driver can consume the result and
-  decide retry / bail / clean-exit.
+await runVerify({
+  ctx,                  // ExtensionCommandContext (cwd / sessionManager / signal / ui)
+  pi,                   // ExtensionAPI
+  planText,             // pre-resolved plan text from /develop's state
+  autoMode: true,       // suppress findings picker, write audit-log entry
+  iteration: 1,         // recorded on the develop-verify-result entry
+});
+// → { ran: true, steps, verdicts, errors, model } | { ran: false, abortReason }
+```
 
-**Standalone mode.** No request entry, or all answered — `/verify`
-behaves exactly as before: report plus send/save/dismiss picker.
+When `autoMode` is true, `runVerify` writes a `develop-verify-result`
+session entry as an audit log; the caller does not need to. Standalone
+callers (the `/verify` slash command) leave `autoMode` unset.
+
+### Audit-log entries
+
+The `develop` <-> `verify` coordination still leaves a paper trail in
+the session for diagnostics and resume:
+
+| Entry | Writer | Payload |
+|---|---|---|
+| `develop-verify-request` | `/develop` | `{ iteration, planText, branch, requestedAt }` |
+| `develop-verify-result`  | `runVerify` (when `autoMode: true`) | `{ iteration, verdicts, errorCount, model, completedAt }` |
+
+Neither entry is consulted as a transport anymore. `/verify`'s
+`findAutoModeIteration` helper still exists (and is unit-tested) for
+diagnostic purposes — "is there an unanswered request entry?" — but
+the `/verify` command no longer auto-detects auto-mode from session
+state; the caller of `runVerify` decides.
 
 For the loop's bail conditions (cap=5, no-progress two iterations
 running) and the post-loop picker (review / commit / stay), see
@@ -157,15 +178,18 @@ running) and the post-loop picker (review / commit / stay), see
 
 ## Files
 
-- `index.ts` — extension factory, command handler, plan-source
-  resolution, auto-mode coordination (`findAutoModeIteration` is
-  exported for tests), fan-out, report rendering.
+- `core.ts` — `runVerify(opts)` plus the pure helpers (`extractPlanSteps`,
+  `parseVerdict`, `findAutoModeIteration`). Imported by both the slash
+  command handler and `/develop`'s auto-loop.
+- `index.ts` — thin extension factory: `declareExtension`,
+  `registerCommand("verify")` delegating to `runVerify`. Re-exports
+  the pure helpers so tests don't have to reach into `./core`.
 - `prompts/verify.md` — system prompt for the per-step verifier
   subagent. Defines the JSON output schema.
 - `__tests__/parser.test.ts` — tests for `extractPlanSteps` and
   `parseVerdict` (the pure helpers).
 - `__tests__/auto-mode.test.ts` — tests for `findAutoModeIteration`
-  (the request/result iteration comparison that drives auto mode).
+  (the request/result iteration comparison; now a diagnostic helper).
 
 The shared parallel-subagent infrastructure lives in
 [`packages/_shared/parallel-subagent.ts`](../_shared/parallel-subagent.ts).

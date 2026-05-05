@@ -11,12 +11,18 @@
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*",
-    "@vegardx/pi-extensions-shared": "*"
+    "@vegardx/pi-extensions-shared": "*",
+    "pi-ext-commit": "*",
+    "pi-ext-review": "*",
+    "pi-ext-verify": "*"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-ai": { "optional": true },
     "@mariozechner/pi-coding-agent": { "optional": true },
     "@sinclair/typebox": { "optional": true },
-    "@vegardx/pi-extensions-shared": { "optional": true }
+    "@vegardx/pi-extensions-shared": { "optional": true },
+    "pi-ext-commit": { "optional": true },
+    "pi-ext-review": { "optional": true },
+    "pi-ext-verify": { "optional": true }
   }
 }

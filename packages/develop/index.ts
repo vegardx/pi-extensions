@@ -283,33 +283,16 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Dispatch a registered slash command via the plain `prompt` path.
-	 *
-	 * Per pi-coding-agent docs/rpc.md (§§ steer / follow-up): only the
-	 * plain delivery (no `deliverAs`) expands `/<cmd>` into the
-	 * registered extension handler. `steer` and `followUp` deliver the
-	 * literal text and never dispatch — that's the trap the previous
-	 * `offerHandoff` fell into. We always use plain dispatch, but the
-	 * caller MUST guarantee pi has flipped idle, otherwise plain mode
-	 * throws ("streaming without deliverAs"). The standard pattern is
-	 * to call this from inside `runDetached` so the agent_end handler
-	 * returns first.
-	 */
-	function dispatchSlashCommand(command: string): void {
-		pi.sendUserMessage(command);
-	}
-
-	/**
 	 * Run an orchestration block detached from the current event
 	 * handler's awaited promise. Pi waits for handlers to resolve
-	 * before flipping the session to idle; if we await `ctx.ui.select`
-	 * or any long task inside agent_end, `ctx.isIdle()` stays false
-	 * and `dispatchSlashCommand` would throw.
+	 * before flipping the session to idle; awaiting long tasks (like
+	 * `ctx.ui.select` or in-process `runVerify` calls that themselves
+	 * trigger turns) inside `agent_end` would deadlock that flip.
 	 *
 	 * Detaching via `Promise.resolve().then` schedules `fn` as a
 	 * microtask after the current synchronous frame. The handler can
-	 * then return immediately, pi flips idle, and by the time `fn`
-	 * actually awaits something (or calls dispatch) the agent is idle.
+	 * then return immediately, pi flips idle, and `fn` runs against
+	 * an idle session.
 	 *
 	 * Errors are surfaced as toasts so detached work doesn't fail
 	 * silently — the previous design swallowed them entirely.
@@ -595,8 +578,9 @@ export default function (pi: ExtensionAPI) {
 	//
 	//   executing
 	//     ↓ (all [DONE:n])
-	//   verifying ——→ ["/verify" runs, writes result entry, dispatches
-	//                 /develop-verify-resume]
+	//   verifying ——→ [in-process await runVerify({ autoMode: true });
+	//                  immediately followed by consumeVerifyResult(...)
+	//                  on the same microtask]
 	//     ↓                                          ↑
 	//   decideLoopAction(...)                          |
 	//     ├ exit-clean        → loop-complete → picker |
@@ -604,42 +588,33 @@ export default function (pi: ExtensionAPI) {
 	//     └ retry             → awaiting-fix → host fixes → agent_end →
 	//                            verifying (iter+1) ────────────────┘
 	//
-	// Coordination with /verify happens via two session-state breadcrumb
-	// entries:
-	//   - VERIFY_REQUEST_ENTRY  (written by /develop) — tells /verify to
-	//     run in auto mode (suppress its own findings picker), carries
-	//     iteration counter and the plan text snapshot.
-	//   - VERIFY_RESULT_ENTRY   (written by /verify)  — carries the
-	//     structured verdicts and any errors. /develop reads the latest
-	//     entry whose iteration matches its outstanding request.
+	// /develop calls verify's `runVerify(...)` directly via dynamic
+	// import (`pi-ext-verify/core`). The session entries below are
+	// written for audit-log / session-resume purposes only — they are
+	// no longer used as a transport. We can't dispatch /verify as a
+	// slash command because `pi.sendUserMessage("/cmd")` is hard-coded
+	// to skip slash expansion in pi-coding-agent ≤ 0.73.0 (see
+	// badlogic/pi-mono#2549/#2994/#3673).
+	//
+	//   - VERIFY_REQUEST_ENTRY  (written by /develop) — iteration +
+	//     plan-text snapshot for each iteration, audit only.
+	//   - VERIFY_RESULT_ENTRY   (written by runVerify when autoMode)
+	//     — verdicts + errorCount, audit only.
 
-	/** Shape we read from `develop-verify-result`. Loose to survive verify
-	 *  evolving; missing fields default to safe values. */
-	interface VerifyResultEntry {
+	/** Shape we get back from `runVerify({ autoMode: true })`. Loose to
+	 *  survive verify evolving; missing fields default to safe values. */
+	interface VerifyResult {
 		iteration?: number;
 		verdicts?: VerifyVerdictLike[];
 		errorCount?: number;
 		model?: string;
 	}
 
-	/** Find the most recent develop-verify-result entry (any iteration). */
-	function getLatestVerifyResult(
-		ctx: ExtensionContext,
-	): VerifyResultEntry | null {
-		let latest: VerifyResultEntry | null = null;
-		for (const entry of ctx.sessionManager.getEntries()) {
-			if (entry.type === "custom" && entry.customType === VERIFY_RESULT_ENTRY) {
-				latest = entry.data as VerifyResultEntry;
-			}
-		}
-		return latest;
-	}
-
 	/**
 	 * Begin (or continue) the auto-verify loop: write a request entry
 	 * carrying the current iteration + plan, transition phase to
-	 * `verifying`, and dispatch `/verify` from a detached microtask so
-	 * pi can flip idle before plain dispatch fires.
+	 * `verifying`, and run verify in-process from a detached microtask
+	 * so pi can flip idle while the verifier subagents fan out.
 	 *
 	 * Caller is responsible for setting `state.verifyLoop.iteration`
 	 * before invoking us.
@@ -679,34 +654,75 @@ export default function (pi: ExtensionAPI) {
 
 		notify(
 			ctx,
-			`auto-verify iteration ${iteration}/${VERIFY_LOOP_CAP} — dispatching /verify…`,
+			`auto-verify iteration ${iteration}/${VERIFY_LOOP_CAP} — running verify…`,
 			"info",
 		);
-		runDetached("verify dispatch", ctx, async () => {
-			dispatchSlashCommand("/verify");
+		runDetached("verify run", ctx, async () => {
+			// Both error paths below need the same cleanup: pop the loop
+			// open into the post-loop picker so the user still gets the
+			// review/commit affordances. Hoist into a tiny closure so the
+			// two call sites stay obviously equivalent.
+			const bailToPostLoop = async () => {
+				if (!state) return;
+				state.phase = "loop-complete";
+				persist();
+				updateWidget(ctx);
+				await runPostLoopPicker(ctx);
+			};
+
+			let mod: typeof import("pi-ext-verify/core");
+			try {
+				mod = await import("pi-ext-verify/core");
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(
+					ctx,
+					`verify extension installed but its core module failed to load (${msg}); skipping auto-verify loop`,
+					"warning",
+				);
+				await bailToPostLoop();
+				return;
+			}
+			const result = await mod.runVerify({
+				ctx: ctx as ExtensionCommandContext,
+				pi,
+				planText,
+				autoMode: true,
+				iteration,
+			});
+			if (!result.ran) {
+				notify(
+					ctx,
+					`auto-verify aborted before fan-out (${result.abortReason ?? "unknown"}); ending loop`,
+					"warning",
+				);
+				await bailToPostLoop();
+				return;
+			}
+			await consumeVerifyResult(ctx, {
+				iteration,
+				verdicts: result.verdicts as VerifyVerdictLike[] | undefined,
+				errorCount: result.errors?.length ?? 0,
+				model: result.model,
+			});
 		});
 	}
 
 	/**
-	 * Consume the latest develop-verify-result entry and act on it.
-	 * Idempotent against stale entries via `lastSeenIteration`.
-	 * Called from the `/develop-verify-resume` command handler that
-	 * /verify dispatches when it finishes an auto-mode run.
+	 * Act on a fresh verify result. Idempotent against stale results
+	 * (the audit-log entry written by `runVerify` may carry an older
+	 * iteration on session resume) via `lastSeenIteration`.
 	 */
 	async function consumeVerifyResult(
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
+		result: VerifyResult,
 	): Promise<void> {
 		if (!state || !state.verifyLoop) return;
 		if (state.phase !== "verifying") return;
 
-		const result = getLatestVerifyResult(ctx);
-		if (!result) {
-			notify(ctx, "verify-resume: no result entry found", "warning");
-			return;
-		}
 		const resultIter = result.iteration ?? 0;
 		if (resultIter <= state.verifyLoop.lastSeenIteration) {
-			// Stale entry from a previous /develop dispatch — ignore.
+			// Stale result — ignore.
 			return;
 		}
 		state.verifyLoop.lastSeenIteration = resultIter;
@@ -779,8 +795,7 @@ export default function (pi: ExtensionAPI) {
 		persist();
 		updateWidget(ctx);
 
-		const result = getLatestVerifyResult(ctx);
-		const fullVerdicts = (result?.verdicts ?? verdicts) as Array<
+		const fullVerdicts = verdicts as ReadonlyArray<
 			VerifyVerdictLike & { reason?: string; suggestion?: string }
 		>;
 		const concernLines: string[] = [];
@@ -884,13 +899,34 @@ export default function (pi: ExtensionAPI) {
 
 		if (!choice || choice.startsWith("Stay")) return;
 
-		let command: string | undefined;
-		if (choice.startsWith("Run /review")) command = "/review";
-		else if (choice.startsWith("Run /commit")) command = "/commit";
-		if (!command) return;
-
-		dispatchSlashCommand(command);
-		notify(ctx, `dispatched ${command}`, "info");
+		// Inline dispatch: each branch checks the target extension is
+		// installed, then dynamic-imports its core entry point. We don't
+		// use slash dispatch — see the auto-verify loop comment for why.
+		if (choice.startsWith("Run /review")) {
+			if (!pi.getCommands().some((c) => c.name === "review")) {
+				notify(ctx, "review extension not installed", "warning");
+				return;
+			}
+			try {
+				const mod = await import("pi-ext-review/core");
+				await mod.runReview({ ctx, pi, arg: "" });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(ctx, `review failed: ${msg}`, "error");
+			}
+		} else if (choice.startsWith("Run /commit")) {
+			if (!pi.getCommands().some((c) => c.name === "commit")) {
+				notify(ctx, "commit extension not installed", "warning");
+				return;
+			}
+			try {
+				const mod = await import("pi-ext-commit/core");
+				await mod.runCommit({ ctx, pi, guidance: "" });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(ctx, `commit failed: ${msg}`, "error");
+			}
+		}
 	}
 
 	// ---- Implement path -------------------------------------------------
@@ -1356,10 +1392,10 @@ export default function (pi: ExtensionAPI) {
 					{ triggerTurn: false },
 				);
 				// Initialize loop bookkeeping and start iteration 1. We must
-				// detach: pi awaits agent_end handlers before flipping idle, and
-				// `dispatchSlashCommand` requires idle to dispatch via the plain
-				// path that expands `/verify` into the registered handler
-				// (steer/followUp don't — see docs/rpc.md).
+				// detach: pi awaits agent_end handlers before flipping idle,
+				// and `runVerify` triggers a turn via `pi.sendMessage` to
+				// render the report — that turn would deadlock against an
+				// agent_end handler still resolving its promise.
 				state.verifyLoop = {
 					iteration: 1,
 					lastSeenIteration: 0,
@@ -1680,16 +1716,6 @@ export default function (pi: ExtensionAPI) {
 				.join("\n");
 			notify(ctx, `plan (${state.phase}):\n${list}`, "info");
 		},
-	});
-
-	// Internal command: /verify dispatches this after writing a result
-	// entry in auto mode, handing control back to /develop's loop driver.
-	// Hidden in name (verbose) so users don't trip over it. Safe to call
-	// manually — idempotent against stale result entries.
-	pi.registerCommand("develop-verify-resume", {
-		description:
-			"Internal: /verify uses this to hand a result back to /develop's auto-loop. Not meant for direct use.",
-		handler: async (_args, ctx) => consumeVerifyResult(ctx),
 	});
 }
 

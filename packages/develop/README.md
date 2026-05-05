@@ -183,8 +183,8 @@ self-driving.
 ```
   executing
     ↓ (all [DONE:n])
-  verifying ——→ [/verify runs, writes result entry, dispatches
-                /develop-verify-resume]
+  verifying ——→ [in-process await runVerify({ autoMode: true });
+                  immediately followed by consumeVerifyResult(…)]
     ↓                                          ↑
   decideLoopAction(…)                          │
     ├ exit-clean         → loop-complete ───────→ picker (review | commit | stay)
@@ -211,38 +211,45 @@ work.
 
 ### Coordination with `/verify`
 
-Two session-state breadcrumb entries form a contract that doesn't
-require either extension to import the other:
+`/develop` calls `runVerify(...)` from `pi-ext-verify/core` directly
+via dynamic `import()`. The post-loop picker calls `runReview(...)`
+/ `runCommit(...)` from `pi-ext-review/core` and `pi-ext-commit/core`
+the same way. None of this uses slash-command dispatch.
 
-| Entry | Writer | Reader | Payload |
-|---|---|---|---|
-| `develop-verify-request` | `/develop` | `/verify` | `{ iteration, planText, branch, requestedAt }` |
-| `develop-verify-result`  | `/verify`  | `/develop` | `{ iteration, verdicts, errorCount, model, completedAt }` |
+Two session-state entries are still written, but as an **audit log**
+only — they are no longer used as a transport between extensions:
 
-`/verify` runs in **auto mode** when the latest request iteration is
-greater than the latest result iteration. In auto mode it suppresses
-its own findings picker, writes a structured result entry, and
-dispatches `/develop-verify-resume` so `/develop`'s loop driver
-picks up the result and decides what to do next. Standalone
-`/verify` (no request entry, or all answered) keeps its current UX:
-report plus send/save/dismiss picker.
+| Entry | Writer | Payload |
+|---|---|---|
+| `develop-verify-request` | `/develop` (`startVerifyIteration`) | `{ iteration, planText, branch, requestedAt }` |
+| `develop-verify-result`  | `runVerify` (when `autoMode: true`)  | `{ iteration, verdicts, errorCount, model, completedAt }` |
 
-### Dispatch correctness
+Each cross-package call is gated on `pi.getCommands()` so a missing
+extension falls through to the existing "not installed" branches
+instead of erroring on the dynamic import.
 
-The initial dispatch path used to break in a subtle way: pi waits for
-an `agent_end` handler's promise to resolve before flipping the
-session to idle, and `pi.sendUserMessage("/cmd")` requires idle to
-expand the slash command into a registered handler
-(`steer`/`followUp` deliver the literal text instead, per
-`docs/rpc.md`). The fix is two-part:
+### Dispatch correctness (why we don't use slash dispatch)
 
-1. **Always plain dispatch.** `dispatchSlashCommand` calls
-   `pi.sendUserMessage(command)` with no `deliverAs` and never falls
-   back to steer/followUp.
-2. **Detached orchestration.** `runDetached(label, ctx, fn)` schedules
-   `fn` via `Promise.resolve().then(...)` so the surrounding
-   `agent_end` handler returns immediately and pi can finish flipping
-   idle. Errors surface as toasts; the previous design swallowed them.
+Earlier drafts of this extension tried to chain follow-up commands
+via `pi.sendUserMessage("/verify")`, hoping pi would expand the
+string into the registered command handler. It does not. In
+pi-coding-agent ≤ 0.73.0, `sendUserMessage` calls the internal
+`prompt()` with `expandPromptTemplates: false` hard-coded, so
+`/verify` arrives at the LLM as literal user text and the registered
+handler is never invoked. Confirmed by upstream issues
+[badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549),
+[#2994](https://github.com/badlogic/pi-mono/issues/2994), and
+[#3673](https://github.com/badlogic/pi-mono/issues/3673) (which
+proposes a future `pi.runExtensionCommand(text)` API — not yet
+available).
+
+The in-process refactor sidesteps the entire problem: `/develop`
+imports the consumer extensions' `core.ts` modules and calls their
+`run<Name>(opts)` entry points directly. `runDetached(label, ctx, fn)`
+still schedules the cross-package work as a microtask after the
+current `agent_end` handler returns, so pi can finish flipping idle
+before any `pi.sendMessage(..., { triggerTurn: true })` calls inside
+`runVerify` / `runReview` / `runCommit` queue new turns.
 
 ## Configuration
 
