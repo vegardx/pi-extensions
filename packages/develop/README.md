@@ -5,8 +5,9 @@ Plan a change before you code it, with **plan-phase tool lockdown**,
 during execution. `/develop <description>` syncs you to the default
 branch, restricts tools to read-only exploration, drives plan-mode, then
 pops an Implement / Park / Continue-discussing picker the moment the plan
-is ready. No `/sync` needed — pass no arguments to `/develop` and it just
-syncs.
+is ready. With **thin or no arguments**, `/develop` first runs a short
+intake conversation so the agent can ask clarifying questions before it
+starts planning. `/sync` keeps the old fast-forward-only behavior.
 
 Ported from the `feature` + `sync` plugins in
 [awesome-agents](https://dnb.ghe.com/github/awesome-agents), with the
@@ -36,31 +37,42 @@ own `examples/extensions/plan-mode/`.
 
 | Command | Effect |
 |---|---|
-| `/develop` (no args) | Verify repo → dirty-tree guard → detect default branch → checkout + pull. Replaces `/sync`. |
-| `/develop <description>` | Same sync, then enter **plan phase**: restrict tools to `read`/`grep`/`find`/`ls` plus a read-only bash allowlist, and hand off a plan-mode follow-up message to the agent. After the agent finishes the plan, the extension extracts numbered steps and pops a picker. |
-| `/implement` | Create the feature branch, rename the session, restore full tools, enter **execution phase**. Works any time after `/develop <desc>`. |
+| `/develop` (no args, or thin args) | Sync to default branch, then enter **intake phase**: read-only tools plus a `develop_ready` sentinel tool. The agent asks focused clarifying questions until it understands the intent, then calls `develop_ready` and the extension transitions into plan phase automatically. |
+| `/develop <substantive description>` | Same sync, then skip intake and enter **plan phase** directly: restrict tools to `read`/`grep`/`find`/`ls` plus a read-only bash allowlist, and hand off a plan-mode follow-up message to the agent. After the agent finishes the plan, the extension extracts numbered steps and pops a picker. |
+| `/sync` | Verify repo → dirty-tree guard → detect default branch → checkout + pull. Equivalent to the pre-intake no-args `/develop` behavior. |
+| `/implement` | Create the feature branch, rename the session (inheriting the smart slug), restore full tools, enter **execution phase**. Works any time after `/develop <desc>`. |
 | `/park` | Scan the (snapshotted) plan for secrets, `gh issue create`, persist `branch.<name>.tracking-issue <N>` in git config. Works any time after `/develop <desc>`. |
 | `/develop-choose` | Re-open the three-way picker — useful if you dismissed it with ESC. |
 | `/develop-todos` | Show the current plan progress (non-blocking notification). |
 
+*Thin* means fewer than 5 alphanumeric tokens — enough to disambiguate `/develop add payment webhooks with idempotency` (skips intake) from `/develop fix bug` (enters intake).
+
 ## Phase lifecycle
 
 ```
-/develop <desc>  →  awaiting-plan  →  awaiting-choice  →  executing  →  consumed
-                    │                   │                 │
-                    │                   └─ Park ─────────→ consumed
-                    │                   └─ Continue ─────→ dormant
-                    │
-                    └─ tools: read/grep/find/ls + safe bash
-                       widget: "📋 planning <branch>"
-                                     │
-                    tools unchanged ──┤         tools: restored (edit/write back)
-                    widget: "📋 N-step plan"    widget: "⚙ 0/N (<branch>)"
-                                                [DONE:n] parsed live
-                                                on all-done: "Plan complete"
-                                                + handoff picker
+/develop (thin/empty)  →  awaiting-intake
+                         tools: read/grep/find/ls + safe bash + develop_ready
+                         widget: "❔ intake — gathering context"
+                                       │
+                                       │  agent calls develop_ready({description})
+                                       ↓
+/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  consumed
+                         │                   │                 │
+                         │                   └─ Park ─────────→ consumed
+                         │                   └─ Continue ─────→ dormant
+                         │
+                         └─ tools: read/grep/find/ls + safe bash
+                            widget: "📋 planning <branch>"
+                                          │
+                         tools unchanged ──┤         tools: restored (edit/write back)
+                         widget: "📋 N-step plan"    widget: "⚙ 0/N (<branch>)"
+                                                     [DONE:n] parsed live
+                                                     on all-done: "Plan complete"
+                                                     + handoff picker
 ```
 
+- **awaiting-intake** — agent is asking clarifying questions; tools
+  locked to read-only plus `develop_ready`. No branch picked yet.
 - **awaiting-plan** — agent is writing the plan; tools locked down.
 - **awaiting-choice** — plan done, todos extracted, picker armed.
 - **executing** — branch created, full tools, `[DONE:n]` parsing live.
@@ -68,6 +80,26 @@ own `examples/extensions/plan-mode/`.
   `/implement` / `/park` still work.
 - **consumed** — Implement finished (all steps marked done) or Park
   fired. Terminal state. `/develop <desc>` will clear it.
+
+## Intake phase
+
+When the description is thin (or empty), `/develop` enters intake instead
+of going straight to plan mode. The extension:
+
+1. Syncs to the default branch (same as before).
+2. Activates `INTAKE_PHASE_TOOLS = read/grep/find/ls + safe bash + develop_ready`.
+3. Sends a follow-up prompt instructing the agent to read just enough
+   of the repo to ask focused questions, ask the user one tight batch
+   at a time (max ~3 turns), and call `develop_ready({ description })`
+   when it understands the intent well enough to plan.
+4. The `develop_ready` tool handler validates non-empty input, derives
+   a smart branch name via `deriveBranchNameWithModel`, transitions
+   the phase to `awaiting-plan`, drops `develop_ready` from the active
+   set, and queues the standard plan-phase prompt as a follow-up.
+
+If the agent's input is already specific enough, the prompt tells it to
+skip the questions and call `develop_ready` immediately — no extra
+latency for clear inputs that fall under the heuristic threshold.
 
 ## Tool lockdown during plan phase
 
@@ -181,8 +213,10 @@ pi -e ./packages/develop
 
 Try:
 ```
-/develop                       # sync-only, replaces /sync
-/develop add payment webhooks  # plan + pick
+/sync                          # fast-forward to the default branch
+/develop                       # intake — agent asks what to build
+/develop fix bug               # intake — agent asks for specifics
+/develop add payment webhooks with idempotency  # skips intake
 /develop-todos                 # show progress mid-execution
 ```
 
@@ -205,14 +239,16 @@ Try:
   <desc>` clears any prior state, restoring tools first.
 - **No worktree mode.** Awesome-agents has `/implementer` for parallel
   worktrees; that's out of scope here.
-- **Branch + session naming is dumb.** `slugify()` in `helpers.ts` just
-  takes the first 3–5 alphanumeric tokens of the description, so
-  `/develop "I think we can just remove the example extension"` produces
-  `feat/i-think-we-can-just` and a session named the same thing.
-  Planned fix: send the description to a `fast`-tier background model
-  (root `README.md` “Background models” + `_shared/model-resolver.ts`)
-  and ask for a short kebab-case slug describing the *intent*; fall
-  back to the current token-truncation when no fast-tier model
-  resolves so the extension still works offline. Same suggestion
-  should drive `pi.setSessionName` in the Implement path. Tracked as a
-  TODO on `slugify()`.
+- **Intake quality depends on the agent.** The intake prompt asks for
+  tight, specific questions, but a chatty model can still drag the
+  conversation. Bail out with a fresh `/develop <substantive desc>`
+  if it gets in the way.
+- **Smart branch + session names depend on a fast-tier model.**
+  `slugifyWithModel` resolves a `fast`-tier background model via
+  `_shared/model-resolver.ts` (root `README.md` “Background models”).
+  Override per-session with `PI_DEVELOP_SLUG_MODEL="provider/id"`.
+  When no model resolves (offline, no auth, no config) it falls back
+  to the deterministic token-truncation `slugify()` so the extension
+  still works — the branch will just be the user's first words again.
+  One extra fast-tier call per `/develop` invocation; the same slug
+  drives `pi.setSessionName` in the Implement path.
