@@ -172,9 +172,13 @@ the widget, and pops a picker offering to dispatch a follow-up
 command. The picker lists `Run /verify`, `Run /review`, and
 `Run /commit` (only those that `pi.getCommands()` shows as
 installed), plus a "Stay here" option. Picking one calls
-`pi.sendUserMessage("/<cmd>", { deliverAs: "followUp" })`, queuing
-the command as a fresh user-message turn after the current one
-returns. Picking Stay leaves you in control — review, test, and
+`pi.sendUserMessage("/<cmd>")` (when the agent is idle, which is the
+normal case after `ctx.ui.select` resolves) so pi's slash-command
+parser routes the dispatch to the registered handler. If the agent
+is still streaming, the dispatch falls back to `deliverAs: "steer"`,
+which pi's RPC contract does not expand into a command — so the
+model receives the literal text and handles it as a regular user
+turn. Picking Stay leaves you in control — review, test, and
 commit by hand.
 
 ## Session resume
