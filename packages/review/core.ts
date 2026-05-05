@@ -34,6 +34,81 @@ import { parseScope, type ReviewScope } from "./scope.js";
 
 export const EXT_ID = "review";
 
+// ---- Post-/review /commit offer (in-process chain) ---------------------
+//
+// After /review queues accepted fixes for the agent (via
+// `pi.sendMessage(..., { triggerTurn: true })`), the agent runs a
+// turn applying them. The natural next step is `/commit`. Today the
+// chain `/commit → /review` exists (at the start of /commit) but
+// `/review → /commit` did not.
+//
+// We can't dispatch a slash command — `pi.sendUserMessage("/cmd")` is
+// hard-coded to skip slash expansion in pi-coding-agent ≤ 0.73.0
+// (badlogic/pi-mono#2549/#2994/#3673). Instead, when the user opts
+// into the offer, we register a flag-gated permanent `agent_end`
+// listener that fires exactly once: when the agent_end after the
+// queued fix turn arrives, we consume the pending offer slot,
+// dynamic-import `pi-ext-commit/core`, and call `runCommit` directly.
+//
+// `pi.on()` returns no unsubscribe handle, so the listener stays
+// registered for the lifetime of the extension. The flag-based
+// one-shot pattern keeps subsequent agent_end events as no-ops until
+// another /review run opts in.
+
+interface PendingPostReviewCommit {
+	ctx: ExtensionContext;
+	pi: ExtensionAPI;
+}
+
+const postReviewListenerInstalledFor = new WeakSet<object>();
+const pendingPostReviewCommit = new WeakMap<object, PendingPostReviewCommit>();
+
+function ensurePostReviewCommitListener(pi: ExtensionAPI): void {
+	if (postReviewListenerInstalledFor.has(pi)) return;
+	postReviewListenerInstalledFor.add(pi);
+	pi.on("agent_end", () => {
+		// Defer one microtask so any post-agent_end state propagation
+		// settles before we open a new turn via runCommit.
+		queueMicrotask(async () => {
+			const pending = pendingPostReviewCommit.get(pi);
+			if (!pending) return;
+			pendingPostReviewCommit.delete(pi);
+			const { ctx, pi: api } = pending;
+			if (!api.getCommands().some((c) => c.name === "commit")) {
+				notify(ctx, "commit extension not installed", "warning");
+				return;
+			}
+			try {
+				const mod = await import("pi-ext-commit/core");
+				await mod.runCommit({ ctx, pi: api, guidance: "" });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(ctx, `commit failed: ${msg}`, "error");
+			}
+		});
+	});
+}
+
+/**
+ * Pure decision: should /review offer to chain into /commit after the
+ * fix turn? Only when the user is interactive, the run actually
+ * queued fixes, and the commit extension is installed.
+ *
+ * Exported (and re-exported from `index.ts`) so unit tests can cover
+ * the four edge cases without mocking pi.
+ */
+export function shouldOfferPostReviewCommit(opts: {
+	acceptedCount: number;
+	explainCount: number;
+	hasUI: boolean;
+	commitInstalled: boolean;
+}): boolean {
+	if (!opts.hasUI) return false;
+	if (opts.acceptedCount + opts.explainCount === 0) return false;
+	if (!opts.commitInstalled) return false;
+	return true;
+}
+
 /**
  * The seven specialist reviewer roles. Every role receives the same scope
  * (diff or whole codebase) and decides for itself whether anything in its
@@ -591,5 +666,28 @@ export async function runReview(
 		`handed ${accepted.length} fix(es) and ${explainRequests.length} explain request(s) to the agent.`,
 		"info",
 	);
+
+	// Post-fix /commit offer: chain into /commit when the agent
+	// finishes applying the fixes we just queued.
+	const commitInstalled = pi.getCommands().some((c) => c.name === "commit");
+	if (
+		shouldOfferPostReviewCommit({
+			acceptedCount: accepted.length,
+			explainCount: explainRequests.length,
+			hasUI: ctx.hasUI,
+			commitInstalled,
+		})
+	) {
+		const chain = await ctx.ui.confirm(
+			"Run /commit after the agent applies these fixes?",
+			"Recommended. /commit will run once the next agent turn ends so the fixes are committed without needing to re-invoke it manually.",
+		);
+		if (chain) {
+			ensurePostReviewCommitListener(pi);
+			pendingPostReviewCommit.set(pi, { ctx, pi });
+			notify(ctx, "will run /commit after the fix turn ends", "info");
+		}
+	}
+
 	return { ran: true, scopeLabel: rc.scopeLabel, findings };
 }

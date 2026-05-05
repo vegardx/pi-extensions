@@ -538,33 +538,39 @@ export async function runCommit(
 		return { ran: false, abortReason: "user-cancelled" };
 	}
 	if (reviewChoice.startsWith("Run")) {
-		// Dispatch /review for the user. The command appears as a typed
-		// user message and triggers a fresh turn after this picker
-		// returns; same flow as the user typing it themselves, just one
-		// fewer keystroke. Gate only on the extension command — the
-		// standalone /skill:review path is a different UX (manual
-		// invocation) and dispatching to it from here would be
-		// surprising.
+		// Run /review in-process by dynamic-importing its core module.
+		// We don't dispatch a slash command — `pi.sendUserMessage("/cmd")`
+		// is hard-coded to skip slash expansion in pi-coding-agent
+		// ≤ 0.73.0 (see badlogic/pi-mono#2549/#2994/#3673), so a dispatch
+		// would deliver `/review` as literal user text and the registered
+		// handler would never run. Gate only on the extension command —
+		// the standalone /skill:review path is a different UX (manual
+		// invocation) and dispatching to it from here would be surprising.
 		const hasReview = pi.getCommands().some((c) => c.name === "review");
-		if (hasReview) {
-			pi.sendUserMessage("/review", { deliverAs: "followUp" });
+		if (!hasReview) {
 			notify(
 				ctx,
-				`running /review — re-invoke /commit when you're done walking findings${
+				`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; continuing to commit${
 					guidance ? ` ${guidance}` : ""
 				}`,
-				"info",
+				"warning",
 			);
 		} else {
-			notify(
-				ctx,
-				`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; re-invoke /commit when you're ready to commit${
-					guidance ? ` ${guidance}` : ""
-				}`,
-				"info",
-			);
+			notify(ctx, "running /review before committing…", "info");
+			try {
+				const mod = await import("pi-ext-review/core");
+				await mod.runReview({ ctx, pi, arg: "" });
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(ctx, `review failed: ${msg}; continuing to commit`, "warning");
+			}
 		}
-		return { ran: false, abortReason: "deferred-to-review" };
+		// Fall through into the commit-plan step. Note: `runReview` may
+		// have queued a fix-prompt to the agent and (when the post-review
+		// /commit offer landed) registered its own follow-up listener.
+		// Continuing here is still fine: we'll send our own commit-plan
+		// prompt below, await idle until the agent finishes whichever
+		// turn fires first, and proceed.
 	}
 
 	// ---- Step 3: ask agent for a commit plan --------------------

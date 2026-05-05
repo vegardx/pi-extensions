@@ -110,6 +110,19 @@ exist for explicit user invocation.
 8. Accepted fixes + Explain requests are packaged into a single
    `pi.sendMessage({ deliverAs: "followUp", triggerTurn: true })` to the
    main agent, which applies them and proposes a commit structure.
+9. **Chain into `/commit`** — when fixes were queued and `/commit` is
+   installed, the user is asked: "Run `/commit` after the agent
+   applies these fixes?". If yes, `/review` registers a one-shot
+   `agent_end` listener; when the next agent turn ends (i.e. the fix
+   turn the previous step kicked off), it dynamic-imports
+   `pi-ext-commit/core` and calls `runCommit(...)` directly. No slash
+   dispatch — same in-process pattern `/develop` and `/commit →
+   /review` use, for the same reason
+   ([badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549)
+   / [#2994](https://github.com/badlogic/pi-mono/issues/2994) /
+   [#3673](https://github.com/badlogic/pi-mono/issues/3673)). The
+   listener is flag-gated and one-shot per opt-in: subsequent
+   `agent_end` events are no-ops until another `/review` run opts in.
 
 ## Model
 
