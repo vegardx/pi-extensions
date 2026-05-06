@@ -620,6 +620,48 @@ describe("renderLines", () => {
 		const lines = renderLines(summary);
 		expect(lines).toContain("  model: (unset)");
 	});
+
+	it("renders bare default when schema has both default and fallbackChain", () => {
+		const summary: StartupSummary = {
+			declared: [
+				{
+					meta: { name: "verify", path: "/v.ts" },
+					commands: [],
+					tools: [],
+					configKeys: [
+						{
+							schema: {
+								key: "maxParallel",
+								type: "number",
+								default: 15,
+								fallbackChain:
+									"extensionConfig.verify.maxParallel → backgroundModels.primary.fast",
+								doc: "Max parallel.",
+							},
+							effective: {
+								value: 15,
+								source: "default",
+								isOverride: false,
+							},
+						},
+					],
+					backgroundModel: {
+						spec: { tier: "fast", set: "primary" },
+						resolvedTierValue: "radicalai/eu-haiku-4-5",
+						source: "global",
+					},
+				},
+			],
+			unrecognized: [],
+			layered: { global: {}, project: {}, merged: {} },
+		};
+		const lines = renderLines(summary);
+		// literal default wins — must NOT render (via primary.fast)
+		expect(lines).toContain("  maxParallel: 15");
+		expect(lines).not.toContain(
+			"  maxParallel: radicalai/eu-haiku-4-5 (via primary.fast)",
+		);
+	});
 });
 
 // --- declareExtension is wired in defaults --------------------------------

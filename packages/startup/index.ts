@@ -251,7 +251,11 @@ function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 	if (k.effective.isOverride) {
 		return `  ${key}: ${formatValue(k.effective.value)} (${k.effective.source})`;
 	}
-	if (k.schema.fallbackChain) {
+	// A literal `default` takes precedence over fallback-chain display even
+	// when both are set on the schema (ConfigKeySchema: "default wins for the
+	// literal value displayed"). Only enter the via/unset branch when there
+	// is no concrete default to show.
+	if (k.schema.fallbackChain && k.schema.default === undefined) {
 		const bm = ext.backgroundModel;
 		if (bm?.resolvedTierValue) {
 			return `  ${key}: ${bm.resolvedTierValue} (via ${bm.spec.set}.${bm.spec.tier})`;
