@@ -28,6 +28,33 @@ describe("parseReviewerOutput", () => {
 		expect(out).toHaveLength(1);
 	});
 
+	it("tolerates prose before a code fence", () => {
+		const json = [
+			"Here are the findings I identified:",
+			"",
+			"```json",
+			JSON.stringify([
+				{ severity: "NOTE", file: "a.ts", title: "t", description: "d" },
+			]),
+			"```",
+		].join("\n");
+		const out = parseReviewerOutput(json);
+		expect(out).toHaveLength(1);
+		expect(out?.[0]?.file).toBe("a.ts");
+	});
+
+	it("tolerates prose before a bare JSON array (no fence)", () => {
+		const json = [
+			"After reviewing the diff I found the following:",
+			JSON.stringify([
+				{ severity: "IMPORTANT", file: "b.ts", title: "u", description: "e" },
+			]),
+		].join("\n");
+		const out = parseReviewerOutput(json);
+		expect(out).toHaveLength(1);
+		expect(out?.[0]?.file).toBe("b.ts");
+	});
+
 	it("accepts a {findings: [...]} wrapper", () => {
 		const json = JSON.stringify({
 			findings: [

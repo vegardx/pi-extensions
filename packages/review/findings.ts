@@ -59,11 +59,42 @@ export interface Finding extends RawFinding {
 export type BackgroundTier = "primary" | "secondary";
 
 /**
- * Parse a reviewer's stdout into a list of RawFindings. Accepts either:
+ * Return candidate JSON payload strings to try, in priority order:
+ *   1. Whole trimmed text.
+ *   2. Content of the first code fence found anywhere in the text.
+ *   3. Text from the first `[` onward (prose-then-array).
+ *   4. Text from the first `{` onward (prose-then-object).
+ *
+ * Deduplicates so the same string is never tried twice.
+ */
+function candidatePayloads(raw: string): string[] {
+	const trimmed = raw.trim();
+	const seen = new Set<string>();
+	const out: string[] = [];
+	const push = (s: string) => {
+		const t = s.trim();
+		if (t && !seen.has(t)) {
+			seen.add(t);
+			out.push(t);
+		}
+	};
+	push(trimmed);
+	const fence = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+	if (fence?.[1]) push(fence[1]);
+	const bracketIdx = trimmed.indexOf("[");
+	if (bracketIdx > 0) push(trimmed.slice(bracketIdx));
+	const braceIdx = trimmed.indexOf("{");
+	if (braceIdx > 0) push(trimmed.slice(braceIdx));
+	return out;
+}
+
+/**
+ * Parse a reviewer's stdout into a list of RawFindings. Accepts:
  *   - A bare JSON array: `[{...}, {...}]`
- *   - JSON wrapped in a ```json fence (the reviewer ignored the "no fence"
- *     rule, but we recover)
- *   - An object with a top-level `findings` array
+ *   - JSON wrapped in a ```json fence anywhere in the response.
+ *   - An object with a top-level `findings` array.
+ *   - Prose before/after any of the above (models occasionally prefix
+ *     an explanation sentence before emitting the JSON).
  *
  * Returns an empty array for anything that parses to "no findings" and
  * `null` for output that is not recoverable as JSON — callers can then
@@ -71,31 +102,29 @@ export type BackgroundTier = "primary" | "secondary";
  */
 export function parseReviewerOutput(raw: string): RawFinding[] | null {
 	if (!raw || raw.trim().length === 0) return [];
-	// Strip a leading code fence if present.
-	const fence = raw.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-	const payload = (fence ? fence[1] : raw).trim();
-	if (payload.length === 0) return [];
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(payload);
-	} catch {
-		return null;
+	for (const candidate of candidatePayloads(raw)) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		const arr: unknown = Array.isArray(parsed)
+			? parsed
+			: typeof parsed === "object" &&
+					parsed !== null &&
+					Array.isArray((parsed as { findings?: unknown }).findings)
+				? (parsed as { findings: unknown[] }).findings
+				: null;
+		if (!Array.isArray(arr)) continue;
+		const out: RawFinding[] = [];
+		for (const item of arr) {
+			const normalized = normalizeFinding(item);
+			if (normalized) out.push(normalized);
+		}
+		return out;
 	}
-	const arr: unknown = Array.isArray(parsed)
-		? parsed
-		: typeof parsed === "object" &&
-				parsed !== null &&
-				Array.isArray((parsed as { findings?: unknown }).findings)
-			? (parsed as { findings: unknown[] }).findings
-			: null;
-	if (!Array.isArray(arr)) return null;
-
-	const out: RawFinding[] = [];
-	for (const item of arr) {
-		const normalized = normalizeFinding(item);
-		if (normalized) out.push(normalized);
-	}
-	return out;
+	return null;
 }
 
 function normalizeFinding(raw: unknown): RawFinding | null {

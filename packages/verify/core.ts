@@ -286,34 +286,74 @@ function coerceVerdict(parsed: unknown): VerifierVerdict | null {
 	return null;
 }
 
+/**
+ * Return candidate JSON payload strings to try parsing, in priority order:
+ *   1. Whole trimmed text (fast path — well-behaved models emit bare JSON).
+ *   2. Content of the first code fence found *anywhere* in the text
+ *      (some models wrap in ```json despite being told not to).
+ *   3. Text from the first `[` onward — handles prose-then-array without
+ *      a fence, which is the most common misbehaviour we observe.
+ *   4. Text from the first `{` onward — same for objects.
+ *
+ * Deduplicates so the same string is never tried twice. The first
+ * candidate that parses successfully wins; no candidate is guaranteed
+ * to produce valid JSON.
+ */
+function candidatePayloads(trimmed: string): string[] {
+	const seen = new Set<string>();
+	const out: string[] = [];
+	const push = (s: string) => {
+		const t = s.trim();
+		if (t && !seen.has(t)) {
+			seen.add(t);
+			out.push(t);
+		}
+	};
+	push(trimmed);
+	// Fence anywhere in the response (no ^ / $ anchors).
+	const fence = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+	if (fence?.[1]) push(fence[1]);
+	// Prose before a bare array.
+	const bracketIdx = trimmed.indexOf("[");
+	if (bracketIdx > 0) push(trimmed.slice(bracketIdx));
+	// Prose before a bare object.
+	const braceIdx = trimmed.indexOf("{");
+	if (braceIdx > 0) push(trimmed.slice(braceIdx));
+	return out;
+}
+
 export function parseVerdict(rawText: string): VerifierVerdict | null {
 	const trimmed = rawText.trim();
 	if (!trimmed) return null;
 
-	const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
-	const payload = fence ? (fence[1] ?? "").trim() : trimmed;
-
-	try {
-		const parsed = JSON.parse(payload);
-		return coerceVerdict(parsed);
-	} catch {
-		return null;
+	for (const candidate of candidatePayloads(trimmed)) {
+		try {
+			const parsed = JSON.parse(candidate);
+			const v = coerceVerdict(parsed);
+			if (v) return v;
+		} catch {
+			// try next candidate
+		}
 	}
+	return null;
 }
 
 /**
  * Parse the single-subagent batch output: a JSON array of verdict
- * objects, one per plan step. Tolerates code-fence wrapping (the
- * system prompt forbids it, but models occasionally still wrap).
+ * objects, one per plan step. Tolerates:
+ *   - Bare JSON arrays (ideal).
+ *   - JSON wrapped in a ```json fence anywhere in the response.
+ *   - Prose before/after the JSON array (models occasionally prefix
+ *     a sentence like "Here are the verdicts:" before the array).
  *
  * Invalid elements are dropped silently — callers cross-check the
  * returned `step` numbers against the expected plan and surface
  * any missing steps as verifier errors.
  *
- * Returns `null` when the response can't be parsed as a JSON array
- * at all (the host treats this as a hard failure that errors every
- * step). Returns an empty array `[]` when the model legitimately
- * had no input to verify.
+ * Returns `null` when no extraction strategy yields a JSON array
+ * (the host treats this as a hard failure that errors every step).
+ * Returns an empty array `[]` when the model legitimately had no
+ * input to verify.
  */
 export function parseVerdictArray(
 	rawText: string,
@@ -321,23 +361,22 @@ export function parseVerdictArray(
 	const trimmed = rawText.trim();
 	if (!trimmed) return null;
 
-	const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)```$/);
-	const payload = fence ? (fence[1] ?? "").trim() : trimmed;
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(payload);
-	} catch {
-		return null;
+	for (const candidate of candidatePayloads(trimmed)) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+		const out: VerifierVerdict[] = [];
+		for (const entry of parsed) {
+			const v = coerceVerdict(entry);
+			if (v) out.push(v);
+		}
+		return out;
 	}
-	if (!Array.isArray(parsed)) return null;
-
-	const out: VerifierVerdict[] = [];
-	for (const entry of parsed) {
-		const v = coerceVerdict(entry);
-		if (v) out.push(v);
-	}
-	return out;
+	return null;
 }
 
 // ---- Report rendering ---------------------------------------------------
