@@ -353,8 +353,11 @@ function extractRecentContext(
 		return "";
 	}
 	const parts: Array<{ role: string; text: string }> = [];
-	for (const entry of branch) {
-		if (entry.type !== "message") continue;
+	// Walk backwards and stop early once we have enough — O(maxMessages)
+	// instead of O(full history length) on long sessions.
+	for (let i = branch.length - 1; i >= 0 && parts.length < maxMessages; i--) {
+		const entry = branch[i];
+		if (!entry || entry.type !== "message") continue;
 		const msg = entry.message;
 		if (!msg || typeof msg !== "object" || !("role" in msg)) continue;
 		if (msg.role !== "user" && msg.role !== "assistant") continue;
@@ -362,8 +365,9 @@ function extractRecentContext(
 		if (!text) continue;
 		parts.push({ role: msg.role as string, text });
 	}
+	// Collected newest-first; reverse to restore chronological order.
 	return parts
-		.slice(-maxMessages)
+		.reverse()
 		.map((p) => `${p.role === "user" ? "User" : "Assistant"}: ${p.text}`)
 		.join("\n\n");
 }
@@ -1304,12 +1308,12 @@ export default function (pi: ExtensionAPI) {
 		autoTitleState.sawToolCall = true;
 	});
 
-	pi.on("turn_end", async (_event, ctx) => {
+	pi.on("turn_end", (_event, ctx) => {
 		if (autoTitleState.status === "idle") {
 			maybeTriggerAutoTitle(ctx);
 		} else if (autoTitleState.status === "done") {
 			autoTitleState.turnsSinceLastTitle++;
-			await maybeRetitle(ctx);
+			void maybeRetitle(ctx);
 		}
 	});
 

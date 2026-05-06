@@ -250,7 +250,7 @@ export function formatConversationContext(
 		if (m.role !== "user" && m.role !== "assistant") continue;
 		const text = extractText(m.content).slice(0, maxCharsPerMessage).trim();
 		if (!text) continue;
-		const label = m.role === "user" ? "User" : "Assistant";
+		const label = m.role === "user" ? "Developer" : "Agent";
 		turns.unshift(`${label}: ${text}`);
 	}
 	return { formatted: turns.join("\n\n"), turnCount: turns.length };
