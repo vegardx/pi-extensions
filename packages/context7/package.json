@@ -1,0 +1,10 @@
+{
+	"name": "pi-ext-context7",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Context7 library documentation lookup skill for pi. Resolves up-to-date library docs on demand via the Context7 REST API — no MCP server required.",
+	"pi": {
+		"skills": ["./skills/"]
+	}
+}
