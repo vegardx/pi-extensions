@@ -238,7 +238,7 @@ function getGitOrgRepo(): string | undefined {
 			cachedGitOrgRepo = null;
 			return undefined;
 		}
-		cachedGitOrgRepo = `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+		cachedGitOrgRepo = `${parts.at(-2)}/${parts.at(-1)}`;
 		return cachedGitOrgRepo;
 	} catch {
 		cachedGitOrgRepo = null;
@@ -348,7 +348,7 @@ function buildAutoTitlePrompt(
 	const clipped =
 		trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}\u2026` : trimmed;
 	const repoNote = orgRepo
-		? `The session is in the repository "${orgRepo}". Do NOT repeat the repo name in the title; focus on the task only.`
+		? `The session is in the repository "${orgRepo.replace(/[^A-Za-z0-9._/-]/g, "")}". Do NOT repeat the repo name in the title; focus on the task only.`
 		: "";
 	return [
 		"You are naming a coding-agent session so a user can tell it apart from other sessions at a glance.",
