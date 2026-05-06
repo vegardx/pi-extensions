@@ -69,8 +69,9 @@ pi-ext-dev/
 ├── vitest.config.ts
 ├── Makefile                  install / test / lint / check / new-ext
 └── packages/
-    ├── _shared/              shared helpers (settings, model resolver, …)
+    ├── _shared/              shared helpers (settings, model resolver, caffeinate, …)
     ├── startup/              first-party extension — reports what pi loaded
+    ├── caffeinate/           macOS keep-awake helper used by long-running extensions
     └── …                     one directory per extension; see each README
 ```
 
