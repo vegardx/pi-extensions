@@ -384,6 +384,76 @@ describe("caffeinate (shared)", () => {
 		});
 	});
 
+	it("respawns the child if it unexpectedly exits while holders are alive", () => {
+		__setPlatformForTests("darwin");
+		const spawner = makeRecordingSpawner();
+		__setSpawnerForTests(spawner.fn);
+
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					extensionConfig: { caffeinate: { enabled: true } },
+				});
+				const lock = acquireKeepAwake("long-run", ctxFor(cwd));
+				const first = spawner.last;
+				expect(first).not.toBeNull();
+				expect(spawner.calls).toHaveLength(1);
+
+				// Simulate `pkill caffeinate` mid-run: child exits without
+				// emitting `error` first. Our holder is still alive so the
+				// helper must respawn rather than silently leaving the
+				// laptop unprotected for the rest of the run.
+				first?.emit("exit", 0, null);
+
+				expect(spawner.calls).toHaveLength(2);
+				expect(spawner.calls[1]?.args).toEqual(spawner.calls[0]?.args);
+				expect(__getChildForTests()).not.toBeNull();
+				expect(getKeepAwakeState().active).toBe(true);
+
+				lock.release();
+				expect(__getChildForTests()).toBeNull();
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
+	it("does not respawn after a spawn 'error' — avoids ENOENT loops", () => {
+		__setPlatformForTests("darwin");
+		const spawner = makeRecordingSpawner();
+		__setSpawnerForTests(spawner.fn);
+
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				writeProjectSettings(cwd, {
+					extensionConfig: { caffeinate: { enabled: true } },
+				});
+				const lock = acquireKeepAwake("test", ctxFor(cwd));
+				const child = spawner.last;
+				expect(spawner.calls).toHaveLength(1);
+
+				// Spawn fails (binary missing). Subsequent `exit` event
+				// must not trigger a respawn or we'd loop forever.
+				child?.emit("error", new Error("ENOENT"));
+				child?.emit("exit", 1, null);
+				expect(spawner.calls).toHaveLength(1);
+				expect(__getChildForTests()).toBeNull();
+
+				// After releasing and re-acquiring, the helper retries
+				// once — the spawnFailed flag is session-scoped to the
+				// current refcount window.
+				lock.release();
+				const retry = acquireKeepAwake("test", ctxFor(cwd));
+				expect(spawner.calls).toHaveLength(2);
+				retry.release();
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
 	it("getKeepAwakeState(ctx) reads enabled from settings even with no holders", () => {
 		__setPlatformForTests("darwin");
 		__setSpawnerForTests(makeRecordingSpawner().fn);
