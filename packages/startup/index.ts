@@ -226,12 +226,7 @@ export function countOverrides(
 /** Short one-liner for the `session_start` toast. */
 export function renderHeadline(summary: StartupSummary): string {
 	const exts = summary.declared.length;
-	const overrides = countOverrides(summary.declared);
-	const parts = [
-		`${exts} ${exts === 1 ? "extension" : "extensions"}`,
-		`${overrides} override${overrides === 1 ? "" : "s"}`,
-	];
-	return `pi-ext-startup: ${parts.join(" · ")} · /extensions for details`;
+	return `pi-ext-startup: ${exts} ${exts === 1 ? "extension" : "extensions"} · /extensions for details`;
 }
 
 function formatValue(v: unknown): string {
@@ -241,10 +236,33 @@ function formatValue(v: unknown): string {
 	return JSON.stringify(v);
 }
 
-function formatDefault(schema: ConfigKeySchema): string {
-	if (schema.default !== undefined) return formatValue(schema.default);
-	if (schema.fallbackChain) return schema.fallbackChain;
-	return "(unset)";
+/**
+ * Render one config key line for the lean `/extensions` format.
+ *
+ * Rules:
+ *   - User override (project/global)  →  `key: value (project)` / `key: value (global)`
+ *   - Fallback-chain key, not overridden  →  `key: value (via set.tier)` using
+ *     the parent extension's `backgroundModel.resolvedTierValue`; falls back to
+ *     `(unset)` when nothing could be resolved.
+ *   - Literal default, not overridden  →  `key: value` (no annotation)
+ */
+function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
+	const key = k.schema.key;
+	if (k.effective.isOverride) {
+		return `  ${key}: ${formatValue(k.effective.value)} (${k.effective.source})`;
+	}
+	// A literal `default` takes precedence over fallback-chain display even
+	// when both are set on the schema (ConfigKeySchema: "default wins for the
+	// literal value displayed"). Only enter the via/unset branch when there
+	// is no concrete default to show.
+	if (k.schema.fallbackChain && k.schema.default === undefined) {
+		const bm = ext.backgroundModel;
+		if (bm?.resolvedTierValue) {
+			return `  ${key}: ${bm.resolvedTierValue} (via ${bm.spec.set}.${bm.spec.tier})`;
+		}
+		return `  ${key}: (unset)`;
+	}
+	return `  ${key}: ${formatValue(k.effective.value)}`;
 }
 
 /**
@@ -260,79 +278,32 @@ export function renderLines(summary: StartupSummary): string[] {
 	);
 
 	const bg = summary.layered.merged.backgroundModels;
-	const tierLine = (
-		label: string,
+	const tierStr = (
 		tiers: { fast?: string; normal?: string; heavy?: string } | undefined,
-	) => {
+	): string => {
 		if (!tiers || (!tiers.fast && !tiers.normal && !tiers.heavy)) {
-			return `${label}: (not configured)`;
+			return "(not configured)";
 		}
 		const bits: string[] = [];
 		if (tiers.fast) bits.push(`fast=${tiers.fast}`);
 		if (tiers.normal) bits.push(`normal=${tiers.normal}`);
 		if (tiers.heavy) bits.push(`heavy=${tiers.heavy}`);
-		return `${label}: ${bits.join(", ")}`;
+		return bits.join(", ");
 	};
-	lines.push(tierLine("Background primary", bg?.primary));
-	lines.push(tierLine("Background secondary", bg?.secondary));
+	lines.push("");
+	lines.push("Background models:");
+	lines.push(`  primary:   ${tierStr(bg?.primary)}`);
+	lines.push(`  secondary: ${tierStr(bg?.secondary)}`);
 
-	if (summary.declared.length === 0) {
-		lines.push("No declared extensions.");
-	} else {
-		lines.push(`Declared extensions (${summary.declared.length}):`);
-		for (const ext of summary.declared) {
-			lines.push(`  ${ext.meta.name}  [${ext.meta.path}]`);
-			if (ext.meta.doc) lines.push(`    doc: ${ext.meta.doc}`);
-			lines.push(
-				`    commands: ${ext.commands.length ? ext.commands.map((c) => `/${c}`).join(", ") : "(none)"}`,
-			);
-			lines.push(
-				`    tools: ${ext.tools.length ? ext.tools.join(", ") : "(none)"}`,
-			);
-
-			if (ext.configKeys.length === 0) {
-				lines.push("    config: (no declared keys)");
-			} else {
-				lines.push("    config:");
-				for (const k of ext.configKeys) {
-					const value = formatValue(k.effective.value);
-					const def = formatDefault(k.schema);
-					const sourceLabel = k.effective.isOverride
-						? k.effective.source
-						: "default";
-					lines.push(
-						`      ${k.schema.key}: ${value} (source: ${sourceLabel}; default: ${def}) — ${k.schema.doc}`,
-					);
-				}
+	for (const ext of summary.declared) {
+		lines.push("");
+		lines.push(`${ext.meta.name}:`);
+		if (ext.configKeys.length === 0) {
+			lines.push("  (no config)");
+		} else {
+			for (const k of ext.configKeys) {
+				lines.push(renderConfigKey(k, ext));
 			}
-
-			if (ext.backgroundModel) {
-				const { spec, resolvedTierValue, source } = ext.backgroundModel;
-				const valueText = resolvedTierValue
-					? `${resolvedTierValue} (source: ${source})`
-					: "(unset; falls back to ctx.model at call time)";
-				const note = spec.explanation ? ` — ${spec.explanation}` : "";
-				lines.push(
-					`    background model: ${spec.set}.${spec.tier} = ${valueText}${note}`,
-				);
-			}
-		}
-	}
-
-	if (summary.unrecognized.length > 0) {
-		lines.push(
-			`Unrecognized extensions (${summary.unrecognized.length}; registered commands/tools but did not call declareExtension):`,
-		);
-		for (const ext of summary.unrecognized) {
-			const cmds = ext.commands.length
-				? `commands: ${ext.commands.map((c) => `/${c}`).join(", ")}`
-				: "commands: (none)";
-			const tools = ext.tools.length
-				? `tools: ${ext.tools.join(", ")}`
-				: "tools: (none)";
-			lines.push(`  ${ext.path}`);
-			lines.push(`    ${cmds}`);
-			lines.push(`    ${tools}`);
 		}
 	}
 
