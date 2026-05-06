@@ -1,6 +1,6 @@
 ---
 name: context7
-description: Look up up-to-date library documentation using Context7. Use when you need API references, usage patterns, or examples for a specific library or framework (e.g. React, Next.js, Supabase, Prisma, tRPC). Fetches docs directly from the Context7 REST API — no MCP server required.
+description: Fetches current, version-accurate documentation for libraries and frameworks using the Context7 API. Use when the task involves coding with a specific library and current API references, method signatures, or usage examples are needed. Covers requests like "how do I use X", "show me docs for", "API reference for", "examples of X", or "how does X work" for libraries including React, Next.js, Supabase, Prisma, tRPC, Vue, Svelte, Drizzle, and thousands more.
 ---
 
 # Context7
