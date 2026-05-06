@@ -12,6 +12,7 @@ import {
 	renderStatusLine,
 	renderStatusReport,
 	setEnabledInProjectSettings,
+	statusPill,
 } from "../index.js";
 
 function state(over: Partial<KeepAwakeState>): KeepAwakeState {
@@ -85,6 +86,57 @@ describe("renderStatusLine", () => {
 				}),
 			),
 		).toBe("caffeinate: active (develop)");
+	});
+});
+
+describe("statusPill", () => {
+	it("returns undefined when unsupported (non-darwin)", () => {
+		expect(statusPill(state({ supported: false }))).toBeUndefined();
+	});
+
+	it("returns undefined when supported but not enabled", () => {
+		expect(
+			statusPill(state({ supported: true, enabled: false })),
+		).toBeUndefined();
+	});
+
+	it("returns 'inactive' string when enabled but idle", () => {
+		expect(
+			statusPill(
+				state({ supported: true, enabled: true, active: false, holders: 0 }),
+			),
+		).toBe("caffeinate: inactive");
+	});
+
+	it("returns 'active' with reasons when enabled and active", () => {
+		expect(
+			statusPill(
+				state({
+					supported: true,
+					enabled: true,
+					active: true,
+					holders: 1,
+					reasons: ["develop"],
+				}),
+			),
+		).toBe("caffeinate: active (develop)");
+	});
+
+	it("returns undefined when enabled flipped off mid-hold (treats !enabled as hide)", () => {
+		// Unlike renderStatusLine (used by /caffeinate status), the pill
+		// respects the settings toggle: if the user just ran `/caffeinate off`
+		// the pill disappears even if holders haven't released yet.
+		expect(
+			statusPill(
+				state({
+					supported: true,
+					enabled: false,
+					active: true,
+					holders: 1,
+					reasons: ["develop"],
+				}),
+			),
+		).toBeUndefined();
 	});
 });
 
