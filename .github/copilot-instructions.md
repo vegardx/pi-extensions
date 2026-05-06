@@ -36,7 +36,7 @@ not flag. When in doubt, read those.
   `index.ts`.
 - **Verification before PR**: `make check` (lint + typecheck + test).
 - **Commits**: conventional-commit style, scope = extension name, e.g.
-  `feat(verify): add plan-step verifier`. Subject ≤ 72 chars.
+  `feat(review): add implementation-checker reviewer`. Subject ≤ 72 chars.
 - **Background models**: extensions that call an LLM for side tasks
   (ghost text, auto-title, subagent review) must not hard-code a
   provider/model id. Use `packages/_shared/model-resolver.ts` — call

@@ -13,8 +13,7 @@
     "@sinclair/typebox": "*",
     "@vegardx/pi-extensions-shared": "*",
     "pi-ext-commit": "*",
-    "pi-ext-review": "*",
-    "pi-ext-verify": "*"
+    "pi-ext-review": "*"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-ai": { "optional": true },
@@ -22,7 +21,6 @@
     "@sinclair/typebox": { "optional": true },
     "@vegardx/pi-extensions-shared": { "optional": true },
     "pi-ext-commit": { "optional": true },
-    "pi-ext-review": { "optional": true },
-    "pi-ext-verify": { "optional": true }
+    "pi-ext-review": { "optional": true }
   }
 }

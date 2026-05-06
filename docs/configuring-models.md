@@ -4,8 +4,6 @@ Several extensions in this monorepo call an LLM on a side task:
 
 - `prompt-suggestion` predicts the next message after every turn.
 - `session-title` names the session for your terminal tab / tmux window.
-- `verify` runs one read-only subagent that walks a plan and returns
-  per-step verdicts.
 - `develop` derives a kebab-case branch slug from a free-form description.
 - `/develop`'s auto-review pass (in `pi-ext-review/auto-review`) runs
   the `code-reviewer` and `code-simplifier` lanes twice each — once
@@ -67,7 +65,7 @@ Two top-level keys this monorepo's extensions read from pi's
   user to fully configure both sets.
 - **`extensionConfig.<name>.model`** — per-extension override. Wins
   over the (set, tier) lookup. Use it when one extension should run on
-  something different than your general tier choice (e.g. `verify`
+  something different than your general tier choice (e.g. `prompt-suggestion`
   on a gateway, but the rest on direct Anthropic).
 
 Any other keys in `settings.json` belong to pi and are ignored by
@@ -107,7 +105,7 @@ treat `{ ok: true, apiKey: undefined }` results as unusable via
 [resolver source](../packages/_shared/model-resolver.ts) for details.
 Other consumers accept headers-only auth because they hand the model
 spec off to something that does its own auth (the subagent RPC
-clients in `/review` and `/verify`, prompt-suggestion's `Predictor`).
+clients in `/review`, prompt-suggestion's `Predictor`).
 
 ## Per-extension tier and set assignments
 
@@ -115,7 +113,6 @@ clients in `/review` and `/verify`, prompt-suggestion's `Predictor`).
 |---|---|---|---|---|
 | `prompt-suggestion` | `primary` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
 | `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
-| `verify` | `primary` | `fast` | Single-subagent plan verifier. JSON-array structured output, runs up to 5× per `/develop` plan via the auto-loop. | `extensionConfig.verify.model` |
 | `develop` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves. | `$PI_DEVELOP_SLUG_MODEL` (session), `extensionConfig.develop.model` |
 | `/develop` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.develop.autoReview: false` to disable; both heavy tiers must resolve or the pass is skipped. |
 
@@ -227,13 +224,13 @@ Mix per-extension with the tier defaults:
     }
   },
   "extensionConfig": {
-    "verify": { "model": "openrouter/anthropic/claude-sonnet-4.5" }
+    "prompt-suggestion": { "model": "openrouter/anthropic/claude-haiku-4.5" }
   }
 }
 ```
 
-`verify` reaches for openrouter, prompt-suggestion and session-title
-stay on direct Anthropic.
+`prompt-suggestion` reaches for openrouter, session-title
+stays on direct Anthropic.
 
 ### Local model (Ollama, LM Studio, etc.)
 
@@ -254,7 +251,7 @@ can target it like any other:
 
 Local models cost nothing per call but tend to be slower and less
 capable. Good fit for `fast`-tier extensions (short outputs) such as
-`prompt-suggestion`, `session-title`, and `verify`. The `/develop`
+`prompt-suggestion` and `session-title`. The `/develop`
 auto-review pass (`heavy`) is only viable on a local model sharp
 enough to read diffs and produce structured JSON — expect to wire
 it up against a hosted model in practice.
@@ -280,8 +277,7 @@ tiers, just set `backgroundModels.primary.fast`:
 ```
 
 Covers both prompt-suggestion and session-title (`fast`-tier consumers).
-`verify` is also `fast`-tier and so picks up the same setting. The
-`/develop` auto-review pass (`heavy`-tier across both `primary` and
+The `/develop` auto-review pass (`heavy`-tier across both `primary` and
 `secondary`) stays skipped until you configure `primary.heavy` and
 `secondary.heavy` — it's strictly opt-in.
 
@@ -318,8 +314,6 @@ Quick checks:
 
 - `/suggest-status` dumps prompt-suggestion's current resolved model,
   auth status, gate reasons, and the last few predict attempts.
-- `/verify` (when run) reports the resolved model in its TUI report
-  header.
 - session-title auto-title runs at most once per session and writes
   its status to the session's auto-title state; re-run with `/retitle`
   to force a fresh attempt.
@@ -341,8 +335,8 @@ top-to-bottom against your current state:
 
 If a higher-priority candidate isn't in the registry or has no auth,
 the resolver skips it and continues. That's why a typo'd
-`extensionConfig.verify.model` can produce "huh, it's using my
-session model, not the thing I configured" — verify's override
+`extensionConfig.prompt-suggestion.model` can produce "huh, it's using my
+session model, not the thing I configured" — the override
 didn't resolve, so step 3 won.
 
 ### Settings changes aren't being picked up
@@ -401,13 +395,12 @@ A second model family is useful for cross-checking. Run a reviewer
 lane on your primary stack, and run it again on the secondary stack —
 if both flag the same finding, high confidence; if only one does, the
 finding is dropped. That's exactly what `/develop`'s auto-review pass
-does between the auto-verify loop and the post-loop picker.
+does between its auto-review pass and the post-loop picker.
 
 Most users will configure only `primary`. The `secondary` set exists
 for users who want cross-model checking and have credentials for a
 second provider. The `/develop` auto-review pass requires both heavy
-tiers to resolve; if one doesn't, the pass is skipped (the verify
-loop result still drives the post-loop picker). Other `secondary`
+tiers to resolve; if one doesn't, the pass is skipped. Other `secondary`
 consumers — should any be added later — fall back to `primary` cleanly
 when `secondary` isn't configured, so the schema isn't a tax on
 users who don't care.

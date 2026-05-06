@@ -4,8 +4,8 @@ import { RpcClient } from "@mariozechner/pi-coding-agent";
  * Shared "spawn a one-shot read-only subagent, send it a task, collect
  * its reply, tear it down" primitive.
  *
- * Used by `/review`'s seven-specialist fan-out and `/verify`'s
- * per-step fan-out. Both want the same lifecycle:
+ * Used by `/review`'s eight-specialist fan-out. Both `/review` and
+ * future callers want the same lifecycle:
  *
  *   - Start an RPC pi instance with `--mode rpc --no-session`.
  *   - Restrict its tool set to read-only (the subagent observes;
@@ -25,7 +25,7 @@ import { RpcClient } from "@mariozechner/pi-coding-agent";
 export interface SubagentTask<Tag = string> {
 	/**
 	 * Caller-defined identifier carried through to the result. Used by
-	 * `/review` for `ReviewerRole`, by `/verify` for plan-step numbers.
+	 * `/review` for `ReviewerRole`.
 	 */
 	tag: Tag;
 	/** Pre-assembled markdown payload sent to the subagent. */
@@ -145,10 +145,9 @@ export async function runSubagent<Tag>(
  * Returns outcomes in the same order as inputs. If `maxParallel` is
  * undefined or `>= inputs.length`, all subagents run simultaneously.
  *
- * Used by `/verify` to bound the fan-out cost on long plans (default
- * cap 15 in `/verify`'s settings). `/review` runs all seven reviewers
- * in parallel via this helper too — the cap just isn't reached for
- * `/review`'s fixed 7-reviewer set.
+ * Used by callers that want to bound fan-out cost on large input sets.
+ * `/review` runs all eight reviewers in parallel via this helper —
+ * the cap is available for future consumers with variable-length inputs.
  */
 export async function runSubagentsParallel<Tag>(
 	inputs: readonly SubagentTask<Tag>[],
@@ -191,7 +190,8 @@ async function tryStop(client: RpcClient): Promise<void> {
 // Extracted so callers can unit-test that `runSubagent` actually
 // forwards their `timeoutMs` into `RpcClient.waitForIdle`. A typo or
 // refactor accident that dropped the argument here would silently
-// re-introduce the post-PR-#27 60s timeout regression on `/verify`.
+// re-introduce the post-PR-#27 60s timeout regression on long-running
+// review subagents.
 //
 // Loose on the input shape — takes a minimal `{ waitForIdle }`
 // surface so tests can pass a spy without constructing a real

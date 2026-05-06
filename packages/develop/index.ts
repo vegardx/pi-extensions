@@ -1300,9 +1300,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		// Detach the picker so pi can finish flipping idle. Awaiting
-		// `ctx.ui.select` inside agent_end was the bug that made the
-		// post-implementation /verify dispatch land as plain text instead
-		// of expanding the slash command.
+		// `ctx.ui.select` inside agent_end blocks pi from flipping idle
+		// and causes subsequent slash-command dispatches to land as plain
+		// text instead of expanding.
 		runDetached("plan picker", ctx, () =>
 			runPicker(ctx as ExtensionCommandContext),
 		);

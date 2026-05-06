@@ -149,7 +149,7 @@ Rules:
   for something the user didn't agree to.
 - When every step is marked done, the extension shows a "Plan
   complete" message, clears its widget, and pops a picker offering
-  to dispatch a follow-up command (`/review`, `/commit`, `/verify`
+  to dispatch a follow-up command (`/review`, `/commit`
   — whichever are installed). Picking one queues the command as a
   fresh user-message turn after this one returns. Picking "Stay
   here" leaves you in control. At that point: wrap up (run full
