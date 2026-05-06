@@ -64,7 +64,12 @@ import type {
 	Tier,
 } from "./extension-settings.js";
 
-export type ConfigKeyType = "string" | "number" | "boolean" | "enum";
+export type ConfigKeyType =
+	| "string"
+	| "string[]"
+	| "number"
+	| "boolean"
+	| "enum";
 
 /**
  * One configurable knob under `extensionConfig.<name>.<key>` in

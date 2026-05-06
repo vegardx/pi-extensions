@@ -15,8 +15,10 @@ import {
 	resolveEffectiveValue,
 } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
+	getExtensionConfigBoolean,
 	type LayeredRelevantSettings,
 	type RelevantSettings,
+	readRelevantSettings,
 	readRelevantSettingsLayered,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 
@@ -233,6 +235,10 @@ function formatValue(v: unknown): string {
 	if (v === undefined) return "(unset)";
 	if (v === null) return "null";
 	if (typeof v === "string") return v;
+	if (Array.isArray(v)) {
+		if (v.length === 0) return "[]";
+		return `[${v.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join(", ")}]`;
+	}
 	return JSON.stringify(v);
 }
 
@@ -352,6 +358,13 @@ export default function (pi: ExtensionAPI) {
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Reports loaded extensions, their declared config knobs, and effective values.",
+		configSchema: [
+			{
+				key: "enabled",
+				type: "boolean",
+				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /extensions command still works). Default: true.",
+			},
+		],
 	});
 
 	// One multi-line notify, not many. pi's interactive-mode `showStatus`
@@ -368,6 +381,14 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	pi.on("session_start", (_event, ctx) => {
+		const settings = readRelevantSettings(ctx.cwd);
+		const enabled = getExtensionConfigBoolean(
+			settings,
+			EXT_ID,
+			"enabled",
+			true,
+		);
+		if (!enabled) return;
 		emitReport(ctx);
 	});
 
