@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	getExtensionConfigBoolean,
+	getExtensionConfigString,
+	getExtensionConfigStringArray,
 	getExtensionModelOverride,
 	getTierModel,
 	readRelevantSettings,
@@ -359,6 +361,121 @@ describe("helpers", () => {
 				true,
 			),
 		).toBe(true);
+	});
+});
+
+describe("getExtensionConfigString", () => {
+	it("returns the default when nothing is set", () => {
+		expect(
+			getExtensionConfigString(
+				{},
+				"develop",
+				"autoReviewRoles",
+				"code-reviewer",
+			),
+		).toBe("code-reviewer");
+	});
+
+	it("reads a string value", () => {
+		expect(
+			getExtensionConfigString(
+				{
+					extensionConfig: {
+						develop: { autoReviewRoles: "architect,code-reviewer" },
+					},
+				},
+				"develop",
+				"autoReviewRoles",
+				"code-reviewer",
+			),
+		).toBe("architect,code-reviewer");
+	});
+
+	it("falls back to default for non-string values (no coercion)", () => {
+		expect(
+			getExtensionConfigString(
+				{ extensionConfig: { develop: { autoReviewRoles: true } } },
+				"develop",
+				"autoReviewRoles",
+				"code-reviewer",
+			),
+		).toBe("code-reviewer");
+		expect(
+			getExtensionConfigString(
+				{ extensionConfig: { develop: { autoReviewRoles: 42 } } },
+				"develop",
+				"autoReviewRoles",
+				"code-reviewer",
+			),
+		).toBe("code-reviewer");
+	});
+});
+
+describe("getExtensionConfigStringArray", () => {
+	const DEFAULT = ["code-reviewer", "code-simplifier"];
+
+	it("returns the default when nothing is set", () => {
+		expect(
+			getExtensionConfigStringArray({}, "develop", "autoReviewRoles", DEFAULT),
+		).toEqual(DEFAULT);
+	});
+
+	it("reads a string array value", () => {
+		expect(
+			getExtensionConfigStringArray(
+				{
+					extensionConfig: {
+						develop: {
+							autoReviewRoles: ["architect", "security-analyst"],
+						},
+					},
+				},
+				"develop",
+				"autoReviewRoles",
+				DEFAULT,
+			),
+		).toEqual(["architect", "security-analyst"]);
+	});
+
+	it("falls back to default for a plain string (not an array)", () => {
+		expect(
+			getExtensionConfigStringArray(
+				{
+					extensionConfig: {
+						develop: { autoReviewRoles: "code-reviewer,code-simplifier" },
+					},
+				},
+				"develop",
+				"autoReviewRoles",
+				DEFAULT,
+			),
+		).toEqual(DEFAULT);
+	});
+
+	it("falls back to default when any element is not a string (fails closed)", () => {
+		expect(
+			getExtensionConfigStringArray(
+				{
+					extensionConfig: {
+						develop: { autoReviewRoles: ["code-reviewer", 42] },
+					},
+				},
+				"develop",
+				"autoReviewRoles",
+				DEFAULT,
+			),
+		).toEqual(DEFAULT);
+	});
+
+	it("accepts an empty array", () => {
+		expect(
+			getExtensionConfigStringArray(
+				{ extensionConfig: { develop: { autoReviewRoles: [] } } },
+				"develop",
+				"autoReviewRoles",
+				DEFAULT,
+			),
+		).toEqual([]);
 	});
 });
 
