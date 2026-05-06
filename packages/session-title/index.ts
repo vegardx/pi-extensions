@@ -103,8 +103,13 @@ const ENV_POSITION = "PI_SESSION_TITLE_POSITION";
 const ENV_AUTO_TITLE = "PI_SESSION_AUTO_TITLE"; // 0/off/false/no disables
 const ENV_AUTO_TITLE_MODEL = "PI_SESSION_AUTO_TITLE_MODEL"; // "provider/id" override; see README
 const ENV_AUTO_TITLE_THRESHOLD = "PI_SESSION_AUTO_TITLE_THRESHOLD_CHARS";
+const ENV_AUTO_RETITLE_TURNS = "PI_SESSION_AUTO_RETITLE_TURNS";
+const ENV_AUTO_TITLE_CONTEXT_MESSAGES =
+	"PI_SESSION_AUTO_TITLE_CONTEXT_MESSAGES";
 
 const DEFAULT_AUTO_TITLE_THRESHOLD_CHARS = 500;
+const DEFAULT_AUTO_RETITLE_TURNS = 3;
+const DEFAULT_AUTO_TITLE_CONTEXT_MESSAGES = 3;
 const AUTO_TITLE_MAX_TOKENS = 40;
 const AUTO_TITLE_MAX_VISIBLE_WIDTH = 60;
 
@@ -206,6 +211,30 @@ function parseAutoTitleThreshold(): number {
 }
 
 /**
+ * How many turns between automatic title re-evaluations once an initial
+ * title has been set. 0 disables retitling. Configurable via
+ * $PI_SESSION_AUTO_RETITLE_TURNS (default: 3).
+ */
+function parseAutoRetitleTurns(): number {
+	const raw = process.env[ENV_AUTO_RETITLE_TURNS];
+	if (!raw) return DEFAULT_AUTO_RETITLE_TURNS;
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n >= 0 ? n : DEFAULT_AUTO_RETITLE_TURNS;
+}
+
+/**
+ * Number of recent user+assistant messages to include as context when
+ * re-evaluating the title. Configurable via
+ * $PI_SESSION_AUTO_TITLE_CONTEXT_MESSAGES (default: 3).
+ */
+function parseContextMessages(): number {
+	const raw = process.env[ENV_AUTO_TITLE_CONTEXT_MESSAGES];
+	if (!raw) return DEFAULT_AUTO_TITLE_CONTEXT_MESSAGES;
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_AUTO_TITLE_CONTEXT_MESSAGES;
+}
+
+/**
  * Sum the length of all `TextContent` parts in an AgentMessage's content.
  * Mirrors the extractor in the SDK's summarize.ts example, deliberately
  * ignoring image/tool-call parts so they don't inflate the char count and
@@ -294,6 +323,87 @@ function buildAutoTitlePrompt(
 	].join("\n");
 }
 
+/** Extract ALL text blocks from a message content blob, joined together. */
+function extractAllText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const part of content) {
+		if (part && typeof part === "object") {
+			const p = part as { type?: string; text?: string };
+			if (p.type === "text" && typeof p.text === "string" && p.text.length > 0)
+				parts.push(p.text);
+		}
+	}
+	return parts.join("\n");
+}
+
+/**
+ * Pull the last `maxMessages` user/assistant turns from the live session
+ * branch and format them as a conversation excerpt for the retitle prompt.
+ */
+function extractRecentContext(
+	ctx: ExtensionContext,
+	maxMessages: number,
+): string {
+	let branch: ReturnType<typeof ctx.sessionManager.getBranch>;
+	try {
+		branch = ctx.sessionManager.getBranch();
+	} catch {
+		return "";
+	}
+	const parts: Array<{ role: string; text: string }> = [];
+	// Walk backwards and stop early once we have enough — O(maxMessages)
+	// instead of O(full history length) on long sessions.
+	for (let i = branch.length - 1; i >= 0 && parts.length < maxMessages; i--) {
+		const entry = branch[i];
+		if (!entry || entry.type !== "message") continue;
+		const msg = entry.message;
+		if (!msg || typeof msg !== "object" || !("role" in msg)) continue;
+		if (msg.role !== "user" && msg.role !== "assistant") continue;
+		const text = extractAllText(msg.content).slice(0, 800).trim();
+		if (!text) continue;
+		parts.push({ role: msg.role as string, text });
+	}
+	// Collected newest-first; reverse to restore chronological order.
+	return parts
+		.reverse()
+		.map((p) => `${p.role === "user" ? "User" : "Assistant"}: ${p.text}`)
+		.join("\n\n");
+}
+
+/**
+ * Prompt for re-evaluating an existing session title after N turns.
+ * The model should reply KEEP if the current title is still accurate,
+ * or a new title (same format rules) if the conversation focus has shifted.
+ */
+function buildRetitlePrompt(
+	recentContext: string,
+	currentTitle: string,
+	sawToolCall: boolean,
+): string {
+	return [
+		"You are re-evaluating a coding-agent session title after new conversation turns.",
+		"",
+		`Current title: "${currentTitle}"`,
+		"",
+		"If the current title still accurately reflects the session's main focus, reply ONLY with: KEEP",
+		"",
+		"Otherwise provide a replacement title following these rules:",
+		"- 2 to 5 words, Title Case, no punctuation, no emoji.",
+		'- Prefer the concrete task ("Fix Login Redirect") over the medium ("Python Help").',
+		"- Only replace if the focus has meaningfully shifted \u2014 not just rephrasing.",
+		"",
+		"Reply with either KEEP or the new title on a single line. Nothing else.",
+		"",
+		"<recent-context>",
+		recentContext,
+		"</recent-context>",
+		"",
+		`<tool-usage>${sawToolCall ? "tool calls observed" : "no tool calls yet"}</tool-usage>`,
+	].join("\n");
+}
+
 type AutoTitleStatus = "idle" | "pending" | "done" | "disabled" | "skipped";
 
 interface AutoTitleState {
@@ -302,6 +412,10 @@ interface AutoTitleState {
 	sawToolCall: boolean;
 	firstPrompt?: string;
 	result?: string;
+	/** Turns elapsed since the last successful auto-title. Drives retitling. */
+	turnsSinceLastTitle: number;
+	/** True while a retitle LLM call is in-flight, to prevent double-firing. */
+	retitling: boolean;
 }
 
 function resetAutoTitleState(state: AutoTitleState): void {
@@ -310,6 +424,8 @@ function resetAutoTitleState(state: AutoTitleState): void {
 	state.sawToolCall = false;
 	state.firstPrompt = undefined;
 	state.result = undefined;
+	state.turnsSinceLastTitle = 0;
+	state.retitling = false;
 }
 
 function defaultPosition(): Surface[] {
@@ -703,6 +819,8 @@ export default function (pi: ExtensionAPI) {
 		status: "idle",
 		userChars: 0,
 		sawToolCall: false,
+		turnsSinceLastTitle: 0,
+		retitling: false,
 	};
 
 	// Shared state the divider proxy reads on every render. Mutating these
@@ -1009,6 +1127,7 @@ export default function (pi: ExtensionAPI) {
 			// don't repaint now — their title wins via resolveTitle().
 			autoTitle = sanitized;
 			autoTitleState.status = "done";
+			autoTitleState.turnsSinceLastTitle = 0;
 			autoTitleState.result = sanitized;
 			applyTitle(ctx);
 		} catch {
@@ -1041,6 +1160,82 @@ export default function (pi: ExtensionAPI) {
 		if (!autoTitleState.sawToolCall && autoTitleState.userChars < threshold)
 			return;
 		void generateAutoTitle(ctx);
+	}
+
+	/**
+	 * Called after each turn when an auto-title has already been set.
+	 * Increments the per-turn counter and, when it reaches the configured
+	 * interval, asks the model to re-evaluate the title against recent
+	 * context. The model returns KEEP (no change) or a replacement title.
+	 */
+	async function maybeRetitle(ctx: ExtensionContext): Promise<void> {
+		if (autoTitleState.retitling) return;
+		if (!ctx.hasUI) return;
+		if (isAutoTitleDisabled()) return;
+		if (hasExplicitTitle()) return;
+		const retitleEvery = parseAutoRetitleTurns();
+		if (retitleEvery === 0) return;
+		if (autoTitleState.turnsSinceLastTitle < retitleEvery) return;
+
+		autoTitleState.turnsSinceLastTitle = 0;
+		autoTitleState.retitling = true;
+		try {
+			const picked = await pickAutoTitleModel(ctx);
+			if (!picked) return;
+
+			const contextMessages = parseContextMessages();
+			const recentContext = extractRecentContext(ctx, contextMessages);
+			if (!recentContext) return;
+
+			const currentTitle = resolveTitle();
+			const response = await completeSimple(
+				picked.model,
+				{
+					messages: [
+						{
+							role: "user" as const,
+							content: [
+								{
+									type: "text" as const,
+									text: buildRetitlePrompt(
+										recentContext,
+										currentTitle,
+										autoTitleState.sawToolCall,
+									),
+								},
+							],
+							timestamp: Date.now(),
+						},
+					],
+				},
+				{
+					apiKey: picked.apiKey,
+					headers: picked.headers,
+					maxTokens: AUTO_TITLE_MAX_TOKENS,
+					reasoning: "minimal",
+					signal: ctx.signal,
+				},
+			);
+
+			const raw = response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("\n");
+
+			const firstLine = (raw.trim().split("\n")[0] ?? "").trim();
+			if (/^keep$/i.test(firstLine)) return;
+
+			const sanitized = sanitizeAutoTitle(firstLine);
+			if (!sanitized) return;
+
+			autoTitle = sanitized;
+			autoTitleState.result = sanitized;
+			applyTitle(ctx);
+		} catch {
+			// Silent — retitling is quality-of-life.
+		} finally {
+			autoTitleState.retitling = false;
+		}
 	}
 
 	/** Seed userChars / sawToolCall / firstPrompt from replayed session history. */
@@ -1108,12 +1303,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("tool_execution_start", async () => {
-		if (autoTitleState.status !== "idle") return;
+		// Track tool usage regardless of title state — sawToolCall is used
+		// both for the initial title and for subsequent retitles.
 		autoTitleState.sawToolCall = true;
 	});
 
-	pi.on("turn_end", async (_event, ctx) => {
-		maybeTriggerAutoTitle(ctx);
+	pi.on("turn_end", (_event, ctx) => {
+		if (autoTitleState.status === "idle") {
+			maybeTriggerAutoTitle(ctx);
+		} else if (autoTitleState.status === "done") {
+			autoTitleState.turnsSinceLastTitle++;
+			void maybeRetitle(ctx);
+		}
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -1206,6 +1407,8 @@ export default function (pi: ExtensionAPI) {
 			autoTitle = undefined;
 			autoTitleState.status = "idle";
 			autoTitleState.result = undefined;
+			autoTitleState.turnsSinceLastTitle = 0;
+			autoTitleState.retitling = false;
 			ctx.ui.notify("Regenerating title...", "info");
 			await generateAutoTitle(ctx);
 			// Widen through a cast: TS narrows `autoTitleState.status` based
