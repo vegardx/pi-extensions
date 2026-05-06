@@ -19,18 +19,13 @@ jobs:
   check:
     name: lint + typecheck + test
     runs-on: ubuntu-latest
-    container: node:22-slim
     steps:
       - uses: actions/checkout@v4
-      - name: Cache npm
-        uses: actions/cache@v4
+      - uses: actions/setup-node@v4
         with:
-          path: ~/.npm
-          key: npm-${{ hashFiles('package-lock.json') }}
-          restore-keys: npm-
-      - name: Install make and git
-        run: apt-get update -qq && apt-get install -y --no-install-recommends make git
+          node-version: 24
+          cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: make check
-        run: make check
+      - name: npm run check
+        run: npm run check
