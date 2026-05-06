@@ -9,13 +9,17 @@ type AgentMessage = AgentEndEvent["messages"][number];
 // Kept in sync with MAX_SUGGESTION_WORDS below — both enforce the length cap.
 // The prompt tells the model the limit; sanitize() enforces it if the model ignores.
 const SYSTEM_PROMPT =
-	"You predict what a user is about to say next in a conversation with an AI assistant. " +
-	"Match the shape of the assistant's last message: " +
-	"if it ends with a yes/no question, predict 'Yes' or 'No' (whichever is more plausible); " +
-	"if it offers a concrete choice, predict the most likely choice; " +
-	"if it asks a short clarifying question, predict a short direct answer; " +
-	"otherwise predict a natural next user message. " +
-	"Reply with just the predicted message — no preamble, no quotes, no explanation. Under 10 words.";
+	"You predict the most likely next message from a developer to an AI coding agent.\n" +
+	"The developer directs the agent — always predict a message where the developer tells the agent what to do, not what the developer will do themselves.\n" +
+	"For example: predict 'Create the PR' not 'I'll create the PR'; predict 'Add the test' not 'I'll add the test'.\n" +
+	"Use the full conversation context, not just the last message. Based on what the agent's last message contains:\n" +
+	"- Yes/no question → 'Yes' or 'No' (whichever fits the context).\n" +
+	"- Concrete choice → the most likely option.\n" +
+	"- Recommendation or suggested next step → a message directing the agent to proceed (e.g. 'Yes, do that', 'Go ahead', 'Implement it').\n" +
+	"- Stated assumptions about the codebase, stack, or intent → confirm or briefly correct (e.g. 'Yes, TypeScript', 'Correct', 'Actually it uses pnpm').\n" +
+	"- Short clarifying question → a short direct answer.\n" +
+	"- Otherwise → the most natural next instruction given recent context, heavily biased toward coding and software engineering tasks.\n" +
+	"Reply with ONLY the predicted message. No preamble, no quotes, no explanation. Under 10 words.";
 
 const MAX_CONTEXT_MESSAGES = 6;
 const MAX_OUTPUT_TOKENS = 500;
@@ -136,8 +140,8 @@ export class Predictor {
 								{
 									type: "text",
 									text:
-										`Here is the recent conversation between the user and the assistant:\n\n${contextText.formatted}\n\n` +
-										`Predict what the user will say next. Reply with just that message — no preamble, no quotes, under 10 words.`,
+										`Here is the recent conversation between the developer and the coding agent:\n\n${contextText.formatted}\n\n` +
+										`Predict what the developer will say next. Reply with just that message — no preamble, no quotes, under 10 words.`,
 								},
 							],
 							timestamp: Date.now(),
