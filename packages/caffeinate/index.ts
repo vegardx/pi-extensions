@@ -157,10 +157,14 @@ export default function (pi: ExtensionAPI) {
 			unsubscribe();
 			unsubscribe = null;
 		}
-		unsubscribe = subscribeKeepAwake((state) => {
-			// Re-render the pill on every refcount/state change. The
-			// shared helper hands us a fresh snapshot; we render pure.
-			ctx.ui.setStatus(EXT_ID, renderStatusLine(state));
+		unsubscribe = subscribeKeepAwake(() => {
+			// Re-render the pill on every refcount/state change. We
+			// re-read state via ctx so `enabled` reflects the live
+			// settings value — the snapshot passed by the shared helper
+			// has no ctx and falls back to `enabled: holders > 0`, which
+			// would show "disabled" after the last holder releases even
+			// when the user opted in.
+			ctx.ui.setStatus(EXT_ID, renderStatusLine(getKeepAwakeState(ctx)));
 		});
 		refresh(ctx);
 	});

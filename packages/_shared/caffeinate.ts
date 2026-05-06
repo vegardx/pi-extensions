@@ -379,6 +379,7 @@ export function __resetForTests(): void {
 	internals.platform = process.platform;
 	internals.lastFlags = null;
 	internals.spawnFailed = false;
+	internals.exitListenerInstalled = false;
 }
 
 /**
