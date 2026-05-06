@@ -1,8 +1,5 @@
 import type { SlashCommandInfo, ToolInfo } from "@mariozechner/pi-coding-agent";
-import {
-	clearDeclaredExtensions,
-	declareExtension,
-} from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { clearDeclaredExtensions } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
 	buildDeclaredView,
 	countOverrides,
@@ -388,30 +385,25 @@ describe("renderHeadline", () => {
 
 	it("pluralises correctly for empty input and points to /extensions", () => {
 		expect(renderHeadline(empty)).toBe(
-			"pi-ext-startup: 0 extensions · 0 overrides · /extensions for details",
+			"pi-ext-startup: 0 extensions · /extensions for details",
 		);
 	});
 
-	it("uses singular forms for counts of one", () => {
+	it("uses singular form for a count of one", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
 					meta: { name: "verify", path: "/v.ts" },
 					commands: [],
 					tools: [],
-					configKeys: [
-						{
-							schema: { key: "model", type: "string", doc: "" },
-							effective: { value: "p/m", source: "project", isOverride: true },
-						},
-					],
+					configKeys: [],
 				},
 			],
 			unrecognized: [],
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		expect(renderHeadline(summary)).toBe(
-			"pi-ext-startup: 1 extension · 1 override · /extensions for details",
+			"pi-ext-startup: 1 extension · /extensions for details",
 		);
 	});
 });
@@ -419,16 +411,23 @@ describe("renderHeadline", () => {
 // --- renderLines ------------------------------------------------------------
 
 describe("renderLines", () => {
-	it("reports (not configured) and an empty-declared message", () => {
+	it("renders background models block and nothing else for empty declared list", () => {
 		const lines = renderLines({
 			declared: [],
 			unrecognized: [],
 			layered: { global: {}, project: {}, merged: {} },
 		});
 		expect(lines).toContain("Active model: (none — pi has no model bound)");
-		expect(lines).toContain("Background primary: (not configured)");
-		expect(lines).toContain("Background secondary: (not configured)");
-		expect(lines).toContain("No declared extensions.");
+		expect(lines).toContain("Background models:");
+		expect(lines).toContain("  primary:   (not configured)");
+		expect(lines).toContain("  secondary: (not configured)");
+		// No extension blocks expected
+		expect(
+			lines.some(
+				(l) =>
+					l.endsWith(":") && !l.startsWith(" ") && l !== "Background models:",
+			),
+		).toBe(false);
 	});
 
 	it("renders declared extensions with effective values, sources, and tier", () => {
@@ -496,30 +495,26 @@ describe("renderLines", () => {
 		const lines = renderLines(summary);
 
 		expect(lines).toContain("Active model: anthropic/claude-sonnet-4-5");
+		expect(lines).toContain("Background models:");
+		expect(lines).toContain("  primary:   fast=anthropic/claude-haiku-4-5");
 		expect(lines).toContain(
-			"Background primary: fast=anthropic/claude-haiku-4-5",
+			"  secondary: normal=openrouter/anthropic/claude-sonnet-4.5",
 		);
+		// Extension header
+		expect(lines).toContain("verify:");
+		// maxParallel has a literal default and no override → bare value
+		expect(lines).toContain("  maxParallel: 15");
+		// model is overridden at project level → annotated with source
 		expect(lines).toContain(
-			"Background secondary: normal=openrouter/anthropic/claude-sonnet-4.5",
+			"  model: openrouter/anthropic/claude-sonnet-4.5 (project)",
 		);
-		expect(lines).toContain("Declared extensions (1):");
-		expect(lines).toContain("  verify  [/repo/packages/verify/index.ts]");
-		expect(lines).toContain("    doc: Verify a plan.");
-		expect(lines).toContain("    commands: /verify");
-		expect(lines).toContain("    tools: verify_step");
-		expect(lines).toContain("    config:");
-		expect(lines).toContain(
-			"      maxParallel: 15 (source: default; default: 15) — Max concurrent verifier subagents.",
-		);
-		expect(lines).toContain(
-			"      model: openrouter/anthropic/claude-sonnet-4.5 (source: project; default: extensionConfig.verify.model → …) — Override verifier model.",
-		);
-		expect(lines).toContain(
-			"    background model: secondary.normal = openrouter/anthropic/claude-sonnet-4.5 (source: project) — subagent",
-		);
+		// Old verbose lines must not appear
+		expect(lines).not.toContain("  verify  [/repo/packages/verify/index.ts]");
+		expect(lines).not.toContain("    commands: /verify");
+		expect(lines).not.toContain("    doc: Verify a plan.");
 	});
 
-	it("renders the unrecognized bucket when a loaded extension didn't declare", () => {
+	it("unrecognized extensions are not rendered", () => {
 		const summary: StartupSummary = {
 			declared: [],
 			unrecognized: [
@@ -528,15 +523,11 @@ describe("renderLines", () => {
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		const lines = renderLines(summary);
-		expect(lines).toContain(
-			"Unrecognized extensions (1; registered commands/tools but did not call declareExtension):",
-		);
-		expect(lines).toContain("  /external/foo/index.ts");
-		expect(lines).toContain("    commands: /foo");
-		expect(lines).toContain("    tools: foo_tool");
+		expect(lines).not.toContain("/external/foo/index.ts");
+		expect(lines).not.toContain("    commands: /foo");
 	});
 
-	it("shows '(no declared keys)' for declared extensions without configSchema", () => {
+	it("shows '(no config)' for declared extensions without configSchema", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
@@ -550,7 +541,84 @@ describe("renderLines", () => {
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		const lines = renderLines(summary);
-		expect(lines).toContain("    config: (no declared keys)");
+		expect(lines).toContain("commit:");
+		expect(lines).toContain("  (no config)");
+	});
+
+	it("renders fallback-chain key as resolved value with (via set.tier)", () => {
+		const summary: StartupSummary = {
+			declared: [
+				{
+					meta: { name: "verify", path: "/v.ts" },
+					commands: [],
+					tools: [],
+					configKeys: [
+						{
+							schema: {
+								key: "model",
+								type: "string",
+								fallbackChain:
+									"extensionConfig.verify.model → backgroundModels.primary.fast → ctx.model",
+								doc: "Override verifier model.",
+							},
+							effective: {
+								value: undefined,
+								source: "default",
+								isOverride: false,
+							},
+						},
+					],
+					backgroundModel: {
+						spec: { tier: "fast", set: "primary" },
+						resolvedTierValue: "radicalai/eu-haiku-4-5",
+						source: "global",
+					},
+				},
+			],
+			unrecognized: [],
+			layered: { global: {}, project: {}, merged: {} },
+		};
+		const lines = renderLines(summary);
+		expect(lines).toContain(
+			"  model: radicalai/eu-haiku-4-5 (via primary.fast)",
+		);
+	});
+
+	it("renders fallback-chain key as (unset) when backgroundModel has no resolvedTierValue", () => {
+		const summary: StartupSummary = {
+			declared: [
+				{
+					meta: { name: "verify", path: "/v.ts" },
+					commands: [],
+					tools: [],
+					configKeys: [
+						{
+							schema: {
+								key: "model",
+								type: "string",
+								fallbackChain:
+									"extensionConfig.verify.model → backgroundModels.primary.fast → ctx.model",
+								doc: "Override verifier model.",
+							},
+							effective: {
+								value: undefined,
+								source: "default",
+								isOverride: false,
+							},
+						},
+					],
+					backgroundModel: {
+						spec: { tier: "fast", set: "primary" },
+						resolvedTierValue: undefined,
+						source: "default",
+					},
+				},
+			],
+			unrecognized: [],
+			layered: { global: {}, project: {}, merged: {} },
+		};
+		const lines = renderLines(summary);
+		expect(lines).toContain("  model: (unset)");
 	});
 });
 
