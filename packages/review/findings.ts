@@ -48,6 +48,13 @@ export interface Finding extends RawFinding {
 	 * gate for auto-applying a fix without user confirmation.
 	 */
 	crossModelConsensus?: boolean;
+	/**
+	 * True iff this finding reached cross-model consensus via the
+	 * challenge phase (the non-detecting tier was explicitly asked and
+	 * agreed), rather than both tiers independently flagging it.
+	 * Only meaningful when `crossModelConsensus` is true.
+	 */
+	challengedConsensus?: boolean;
 }
 
 /**

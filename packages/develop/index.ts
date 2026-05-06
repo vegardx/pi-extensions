@@ -738,14 +738,17 @@ export default function (pi: ExtensionAPI) {
 		if (state.autoReview) {
 			state.autoReview.primaryModel = result.primaryModel;
 			state.autoReview.secondaryModel = result.secondaryModel;
-			state.autoReview.appliedCount = result.autoApplied?.length ?? 0;
+			state.autoReview.appliedCount =
+				(result.autoApplied?.length ?? 0) + (result.surfaced?.length ?? 0);
 		}
 		persist();
 
 		const applied = result.autoApplied?.length ?? 0;
+		const surfacedCount = result.surfaced?.length ?? 0;
 		const nextAction = decideAutoReviewNextAction({
 			ran: result.ran,
 			appliedCount: applied,
+			surfacedCount,
 		});
 		if (nextAction === "skip-to-picker") {
 			await restoreExecPhaseAfterAutoReview();
@@ -756,9 +759,13 @@ export default function (pi: ExtensionAPI) {
 		state.phase = "awaiting-auto-review-fix";
 		persist();
 		updateWidget(ctx);
+		const pendingParts: string[] = [];
+		if (applied > 0) pendingParts.push(`${applied} fix(es) queued`);
+		if (surfacedCount > 0)
+			pendingParts.push(`${surfacedCount} finding(s) for discussion`);
 		notify(
 			ctx,
-			`auto-review queued ${applied} consensus fix(es) — waiting for the host agent`,
+			`auto-review: ${pendingParts.join(", ")} — waiting for the host agent`,
 			"info",
 		);
 	}
@@ -1209,7 +1216,8 @@ export default function (pi: ExtensionAPI) {
 					ct !== CUSTOM_PLAN_CONTEXT &&
 					ct !== CUSTOM_EXEC_CONTEXT &&
 					ct !== CUSTOM_FIX_CONTEXT &&
-					ct !== "auto-review-followup"
+					ct !== "auto-review-followup" &&
+					ct !== "auto-review-discussion"
 				);
 			}),
 		};
