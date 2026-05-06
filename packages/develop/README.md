@@ -56,7 +56,7 @@ own `examples/extensions/plan-mode/`.
                                        │
                                        │  agent calls develop_ready({description})
                                        ↓
-/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  verifying ⇄ awaiting-fix →  loop-complete | loop-bailed  →  auto-reviewing  →  awaiting-auto-review-fix  →  consumed
+/develop <desc>          awaiting-plan  →  awaiting-choice  →  executing  →  exec-complete  →  auto-reviewing  →  awaiting-auto-review-fix  →  consumed
                          │                   │                                       │
                          │                   ├─ Park ──────────────────────────────────────→ consumed
                          │                   └─ Continue ────────────────────────────────→ dormant
@@ -70,23 +70,15 @@ own `examples/extensions/plan-mode/`.
 - **awaiting-plan** — agent is writing the plan; tools locked down.
 - **awaiting-choice** — plan done, todos extracted, picker armed.
 - **executing** — branch created, full tools, `[DONE:n]` parsing live.
-- **verifying** — auto-verify loop iteration in flight; `/verify` is
-  scanning the working tree against the plan.
-- **awaiting-fix** — verifier flagged concerns; the host agent has
-  been handed a structured "please address these" prompt and is
-  fixing. Next `agent_end` bumps iteration and re-runs `/verify`.
-- **loop-complete** — every step came back `done` or `unverifiable`.
-  Post-loop picker (`/review`, `/commit`, `Stay here`) is armed.
-- **loop-bailed** — hit cap=5 or no-progress (same step stuck two
-  iterations running). Same picker, with `/commit` annotated to show
-  the unresolved-concern count.
-- **auto-reviewing** — cross-model code-reviewer + code-simplifier
-  pass running against `primary.heavy` + `secondary.heavy`. No user
-  prompt; transitions to `awaiting-auto-review-fix` (when consensus
-  findings were queued) or directly to the post-loop picker (no
-  consensus, or pass skipped).
+- **exec-complete** — all todos marked done; auto-review pass fires
+  (or is skipped) and the post-execution picker opens.
+- **auto-reviewing** — configured reviewer roles running against the
+  configured model tier(s). No user prompt; transitions to
+  `awaiting-auto-review-fix` (when findings were queued for the agent)
+  or directly to the post-execution picker (nothing to apply).
 - **awaiting-auto-review-fix** — host agent is applying the auto-review
-  consensus fixes. Next `agent_end` fires the post-loop picker.
+  fixes or discussing findings with the user. Next `agent_end` fires
+  the post-execution picker.
 - **dormant** — user chose "Continue discussing"; lockdown lifted but
   `/implement` / `/park` still work.
 - **consumed** — post-loop picker resolved (or Park fired). Terminal
@@ -178,138 +170,83 @@ On every `turn_end`, the extension reads the assistant text, runs
 `markCompletedSteps(text, todos)`, updates the widget, and persists.
 
 When `todos.every(t => t.completed)`, the extension emits a "Plan
-complete" message and **automatically kicks off the auto-verify loop**
+complete" message and **automatically kicks off the auto-review pass**
 (see below) instead of asking the user what to do next.
 
-## Auto-verify loop (ralph-style)
+## Auto-review pass (post-execution, cross-model consensus)
 
-Once execution finishes, `/develop` runs an automated verify loop
-backed by `/verify`. The user is not prompted; the loop is
-self-driving.
-
-```
-  executing
-    ↓ (all [DONE:n])
-  verifying ——→ [in-process await runVerify({ autoMode: true });
-                  immediately followed by consumeVerifyResult(…)]
-    ↓                                          ↑
-  decideLoopAction(…)                          │
-    ├ exit-clean         → loop-complete ───────→ picker (review | commit | stay)
-    ├ bail-cap | no-progress → loop-bailed ──→ picker (annotated /commit)
-    └ retry              → awaiting-fix → host fixes → agent_end →
-                            verifying (iter+1) ────────────────┘
-```
-
-### Bail conditions
-
-Both fire whichever trips first:
-
-- **`cap`** — hard cap of 5 iterations. After the 5th run, if any
-  concerns remain, the loop bails.
-- **`no-progress`** — at least one step that was `partial`/`missing`
-  in the previous iteration is still `partial`/`missing` in the
-  current one. Other shifts (one heals, another newly breaks) count
-  as progress; the cap covers eternal regressions.
-
-When the loop bails, the post-loop picker still fires — you can
-still `/review`, `/commit`, or stay. `Run /commit` is annotated with
-the unresolved-concern count so you don't blindly commit half-done
-work.
-
-### Coordination with `/verify`
-
-`/develop` calls `runVerify(...)` from `pi-ext-verify/core` directly
-via dynamic `import()`. The post-loop picker calls `runReview(...)`
-/ `runCommit(...)` from `pi-ext-review/core` and `pi-ext-commit/core`
-the same way. None of this uses slash-command dispatch.
-
-Two session-state entries are still written, but as an **audit log**
-only — they are no longer used as a transport between extensions:
-
-| Entry | Writer | Payload |
-|---|---|---|
-| `develop-verify-request` | `/develop` (`startVerifyIteration`) | `{ iteration, planText, branch, requestedAt }` |
-| `develop-verify-result`  | `runVerify` (when `autoMode: true`)  | `{ iteration, verdicts, errorCount, model, completedAt }` |
-
-Each cross-package call is gated on `pi.getCommands()` so a missing
-extension falls through to the existing "not installed" branches
-instead of erroring on the dynamic import.
-
-### Dispatch correctness (why we don't use slash dispatch)
-
-Earlier drafts of this extension tried to chain follow-up commands
-via `pi.sendUserMessage("/verify")`, hoping pi would expand the
-string into the registered command handler. It does not. In
-pi-coding-agent ≤ 0.73.0, `sendUserMessage` calls the internal
-`prompt()` with `expandPromptTemplates: false` hard-coded, so
-`/verify` arrives at the LLM as literal user text and the registered
-handler is never invoked. Confirmed by upstream issues
-[badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549),
-[#2994](https://github.com/badlogic/pi-mono/issues/2994), and
-[#3673](https://github.com/badlogic/pi-mono/issues/3673) (which
-proposes a future `pi.runExtensionCommand(text)` API — not yet
-available).
-
-The in-process refactor sidesteps the entire problem: `/develop`
-imports the consumer extensions' `core.ts` modules and calls their
-`run<Name>(opts)` entry points directly. `runDetached(label, ctx, fn)`
-still schedules the cross-package work as a microtask after the
-current `agent_end` handler returns, so pi can finish flipping idle
-before any `pi.sendMessage(..., { triggerTurn: true })` calls inside
-`runVerify` / `runReview` / `runCommit` queue new turns.
-
-## Auto-review pass (post-verify, cross-model consensus)
-
-Once the auto-verify loop settles (clean or bailed), `/develop` runs a
-focused **auto-review pass** before the post-loop picker. Two reviewer
-lanes — `code-reviewer` and `code-simplifier` — each run **twice**: once
-against `backgroundModels.primary.heavy`, once against
-`backgroundModels.secondary.heavy`. Findings the two model tiers
-**independently agree on** (cross-model consensus) and that carry a
-concrete `suggestedAction` are queued for the host agent automatically;
-everything else is dropped (run `/review` manually for the broader pass).
+Once execution finishes, `/develop` transitions to `exec-complete` and
+then runs a configurable **auto-review pass** before the post-execution
+picker. The pass uses the reviewer lanes and model mode configured in
+`extensionConfig.develop`.
 
 ```
- loop-complete | loop-bailed
+  executing (all [DONE:n])
         ↓
- auto-reviewing            — 4 subagents (2 lanes × 2 models) in flight
+  exec-complete
         ↓
- awaiting-auto-review-fix  — host agent applies the consensus fixes
+  auto-reviewing        — reviewer subagents fan out in parallel
+        ↓
+  awaiting-auto-review-fix  (when findings were queued)
         ↓  next agent_end
- runPostLoopPicker         — same picker as before, with /commit still
-                              annotated when the verify loop bailed
+  exec-complete → runPostExecutionPicker
+
+  … or directly exec-complete → runPostExecutionPicker when no
+  findings or the pass is skipped.
 ```
 
-If either model tier is unresolvable (no `backgroundModels.primary.heavy`
-or `backgroundModels.secondary.heavy`, or auth fails), or no consensus
-findings surface, the pass is skipped and the post-loop picker fires
-directly. The verify-loop bail annotation on `/commit` is preserved
-across the auto-review intermission.
+There is no verify loop. The pass fires once, results are applied
+(or surfaced for discussion), and then the picker opens.
 
-Disable per-project / globally with:
+### Challenge phase (cross-model, CRITICAL findings only)
+
+When `autoReviewMultiModel` is true (default), after the primary
+fan-out `/develop` runs a second-pass **challenge** for every CRITICAL
+finding that only one model tier flagged. Non-determinism means a real
+bug found by primary may not appear in secondary's output — not because
+they disagree, but because sampling varies. The challenger evaluates
+the specific finding against the diff and responds with agree/disagree.
+Agreed findings are promoted to cross-model consensus (annotated with
+† in the report).
+
+### Findings routing
+
+- **Consensus + `suggestedAction`** — auto-applied: queued for the
+  host agent as a fix prompt.
+- **Consensus + no `suggestedAction`** — surfaced: host agent is asked
+  to present the finding to the user (fix / investigate / skip).
+- **Single-tier, not challenged (IMPORTANT/NOTE or challenge disagreed)** — dropped.
+  Run `/review` for the full seven-lane interactive pass.
+
+## Configuration
+
+All auto-review knobs are under `extensionConfig.develop`:
+
+| Key | Default | Effect |
+|---|---|---|
+| `autoReview` | `true` | Enable/disable the auto-review pass entirely. |
+| `autoReviewRoles` | `["code-reviewer","code-simplifier"]` | Which reviewer lanes to run. Valid values: `architect`, `code-reviewer`, `scope-analyst`, `security-analyst`, `code-simplifier`, `doc-reviewer`, `dependency-checker`. |
+| `autoReviewMultiModel` | `true` | When `true`, each role runs against `primary.heavy` + `secondary.heavy` and only cross-model consensus findings are acted on. When `false`, only `primary.heavy` is used and all findings with a `suggestedAction` are applied. |
 
 ```jsonc
 {
+  "backgroundModels": {
+    "primary":   { "heavy": "anthropic/claude-opus-4" },
+    "secondary": { "heavy": "openai/gpt-4-turbo" }
+  },
   "extensionConfig": {
-    "develop": { "autoReview": false }
+    "develop": {
+      "autoReview": true,
+      "autoReviewRoles": ["code-reviewer", "code-simplifier"],
+      "autoReviewMultiModel": true
+    }
   }
 }
 ```
 
-## Configuration
-
-The loop cap is currently a constant (`VERIFY_LOOP_CAP = 5`); make it
-a settings knob if you start hitting it routinely. The verifier model
-is selected entirely by `/verify`'s configuration (see
-`packages/verify/README.md`).
-
-The auto-review pass uses `backgroundModels.primary.heavy` and
-`backgroundModels.secondary.heavy` (resolved via `_shared/model-resolver.ts`).
-Set both to two different model families if you want the cross-check
-to be meaningful — if both point at the same model, every finding
-becomes "consensus" trivially. Override per-extension with
-`extensionConfig.develop.model` (legacy override, applied to both
-tiers) if you really need the same model on both sides.
+Set `primary` and `secondary` to two different model families for the
+cross-model challenge to be meaningful. If both point at the same model
+every finding becomes consensus trivially.
 
 ## Session resume
 
