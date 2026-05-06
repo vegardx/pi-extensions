@@ -331,7 +331,7 @@ export function sanitize(raw: string): string {
 	// Belt-and-braces character cap. Trim trailing whitespace before appending the
 	// ellipsis so we don't render "foo   …" when the slice lands on whitespace.
 	if (s.length > MAX_SUGGESTION_CHARS) {
-		s = s.slice(0, MAX_SUGGESTION_CHARS).trimEnd() + "…";
+		s = `${s.slice(0, MAX_SUGGESTION_CHARS).trimEnd()}…`;
 	}
 	return s;
 }

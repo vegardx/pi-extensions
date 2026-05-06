@@ -125,7 +125,7 @@ describe("sanitize", () => {
 
 	it("caps output at the character limit with an ellipsis", () => {
 		const out = sanitize("a".repeat(200));
-		expect(out).toBe("a".repeat(120) + "\u2026");
+		expect(out).toBe(`${"a".repeat(120)}\u2026`);
 		expect(out.length).toBe(121);
 	});
 
@@ -133,8 +133,8 @@ describe("sanitize", () => {
 		// After word-capping this is 119 'a's + single space + 'b' = 121 chars.
 		// Slicing at 120 lands on the space; trimEnd() must drop it so we don't
 		// render 'aaa… …' with a visible space before the ellipsis.
-		const out = sanitize("a".repeat(119) + " b");
-		expect(out).toBe("a".repeat(119) + "\u2026");
+		const out = sanitize(`${"a".repeat(119)} b`);
+		expect(out).toBe(`${"a".repeat(119)}\u2026`);
 		expect(out.length).toBe(120);
 	});
 

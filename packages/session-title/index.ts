@@ -83,11 +83,11 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
-// The editor factory type, derived from the public getEditorComponent API.
+// The editor factory type, derived from the setEditorComponent parameter.
 // EditorFactory is not re-exported from @mariozechner/pi-coding-agent so we
 // infer it here to keep innerEditorFactory type-safe without extra imports.
 type EditorFactory = NonNullable<
-	ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
+	Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0]
 >;
 
 // ---------------------------------------------------------------------------
@@ -832,6 +832,9 @@ export default function (pi: ExtensionAPI) {
 	// The editor factory that was active before we installed our proxy wrapper.
 	// Restored when the divider surface is deactivated.
 	let innerEditorFactory: EditorFactory | undefined;
+	// Guard flag: true while we are making our own setEditorComponent calls so
+	// the session_start interceptor can let them pass through without tracking.
+	let installingSelf = false;
 
 	function requestEditorRerender(): void {
 		editorTui?.requestRender();
@@ -958,22 +961,24 @@ export default function (pi: ExtensionAPI) {
 			titleState.title = title;
 
 			if (!titledEditorInstalled) {
-				const existingFactory = ctx.ui.getEditorComponent();
-				innerEditorFactory = existingFactory;
+				installingSelf = true;
 				ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 					editorTui = tui;
-					const inner: EditorComponent = existingFactory
-						? existingFactory(tui, editorTheme, keybindings)
+					const inner: EditorComponent = innerEditorFactory
+						? innerEditorFactory(tui, editorTheme, keybindings)
 						: new CustomEditor(tui, editorTheme, keybindings);
 					return wrapWithDivider(inner, titleState);
 				});
+				installingSelf = false;
 				titledEditorInstalled = true;
 			} else {
 				requestEditorRerender();
 			}
 		} else if (titledEditorInstalled) {
 			// Restore the inner factory (e.g. GhostEditor) without our wrapper.
+			installingSelf = true;
 			ctx.ui.setEditorComponent(innerEditorFactory);
+			installingSelf = false;
 			titledEditorInstalled = false;
 			editorTui = undefined;
 			innerEditorFactory = undefined;
@@ -1273,6 +1278,33 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (event, ctx) => {
+		// Intercept setEditorComponent to track the factory installed by other
+		// extensions (e.g. GhostEditor from prompt-suggestion). This replaces
+		// the ctx.ui.getEditorComponent() getter that was removed from the API.
+		const origSet = ctx.ui.setEditorComponent.bind(ctx.ui);
+		ctx.ui.setEditorComponent = (factory) => {
+			if (installingSelf) {
+				// Our own install / restore / clear — pass through without tracking.
+				origSet(factory);
+				return;
+			}
+			innerEditorFactory = factory as EditorFactory | undefined;
+			if (titledEditorInstalled) {
+				// Another extension changed the factory while our wrapper is
+				// active. Re-wrap around the new inner factory.
+				installingSelf = true;
+				ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
+					editorTui = tui;
+					const inner: EditorComponent = innerEditorFactory
+						? innerEditorFactory(tui, editorTheme, keybindings)
+						: new CustomEditor(tui, editorTheme, keybindings);
+					return wrapWithDivider(inner, titleState);
+				});
+				installingSelf = false;
+			} else {
+				origSet(factory);
+			}
+		};
 		applyTitle(ctx);
 		// On resume/fork the branch already has history; seed from it so the
 		// threshold fires on the next turn instead of requiring fresh
@@ -1321,7 +1353,9 @@ export default function (pi: ExtensionAPI) {
 		// Restore terminal state before pi tears everything down.
 		tearDownSticky();
 		if (titledEditorInstalled && ctx?.hasUI) {
+			installingSelf = true;
 			ctx.ui.setEditorComponent(undefined);
+			installingSelf = false;
 			titledEditorInstalled = false;
 			editorTui = undefined;
 			innerEditorFactory = undefined;

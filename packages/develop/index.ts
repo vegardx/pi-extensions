@@ -71,7 +71,7 @@ const CUSTOM_FIX_CONTEXT = "develop-fix-context";
 // read/write these via `ctx.sessionManager.getEntries()` + `pi.appendEntry`,
 // so neither needs to import from the other.
 const VERIFY_REQUEST_ENTRY = "develop-verify-request";
-const VERIFY_RESULT_ENTRY = "develop-verify-result";
+const _VERIFY_RESULT_ENTRY = "develop-verify-result";
 
 /** Hard cap on auto-verify iterations before bailing with current findings. */
 const VERIFY_LOOP_CAP = 5;
@@ -823,7 +823,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		result: VerifyResult,
 	): Promise<void> {
-		if (!state || !state.verifyLoop) return;
+		if (!state?.verifyLoop) return;
 		if (state.phase !== "verifying") return;
 
 		const resultIter = result.iteration ?? 0;
@@ -896,7 +896,7 @@ export default function (pi: ExtensionAPI) {
 		verdicts: readonly VerifyVerdictLike[],
 		errorCount: number,
 	): Promise<void> {
-		if (!state || !state.verifyLoop) return;
+		if (!state?.verifyLoop) return;
 		state.phase = "awaiting-fix";
 		persist();
 		updateWidget(ctx);
