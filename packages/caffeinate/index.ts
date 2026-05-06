@@ -54,16 +54,16 @@ export function renderStatusLine(state: KeepAwakeState): string {
 
 /**
  * Returns the pill string for the footer when the extension is enabled and
- * the platform is supported, or `undefined` to clear the pill when the user
- * has not opted in (or the platform can't support it).
+ * the platform is supported and caffeinate is active, or `undefined` to clear
+ * the pill otherwise.
  *
- * The pill is intentionally absent when disabled/unsupported so the footer
- * stays clean by default — it only appears when there is something useful
- * to say ("active" / "inactive").
+ * The pill is intentionally absent when disabled/unsupported/inactive so the
+ * footer stays clean — it only appears when there is something useful to say
+ * ("active (develop, review)").
  */
 export function statusPill(state: KeepAwakeState): string | undefined {
 	if (!state.supported || !state.enabled) return undefined;
-	if (!state.active) return "caffeinate: inactive";
+	if (!state.active) return undefined;
 	const reasons = state.reasons.length ? ` (${state.reasons.join(", ")})` : "";
 	return `caffeinate: active${reasons}`;
 }

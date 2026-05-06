@@ -100,12 +100,12 @@ describe("statusPill", () => {
 		).toBeUndefined();
 	});
 
-	it("returns 'inactive' string when enabled but idle", () => {
+	it("returns undefined when enabled but idle", () => {
 		expect(
 			statusPill(
 				state({ supported: true, enabled: true, active: false, holders: 0 }),
 			),
-		).toBe("caffeinate: inactive");
+		).toBeUndefined();
 	});
 
 	it("returns 'active' with reasons when enabled and active", () => {
