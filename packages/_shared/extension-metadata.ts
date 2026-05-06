@@ -16,6 +16,15 @@
  * `declareExtension(...)`, so startup can iterate the registry and
  * trust it as the source of truth.
  *
+ * NOTE: The registry is anchored on `globalThis` (key
+ * `__pi_ext_metadata_registry__`) rather than a bare module-level `Map`
+ * so it survives pi loading each extension with a separate jiti module
+ * context. With per-extension contexts the module cache is not shared,
+ * which means a plain `new Map()` would create a fresh instance per
+ * extension and startup would never see other extensions' declarations.
+ * `globalThis` has exactly one instance per process regardless of how
+ * many times the module is evaluated.
+ *
  * Skill-only packages (no factory, e.g. `pi-ext-gh`) cannot self-declare
  * and remain invisible to `/extensions`. Documented in startup's README.
  *
@@ -115,7 +124,19 @@ export interface ExtensionMetadata {
 	backgroundModelUse?: BackgroundModelUseSpec;
 }
 
-const registry = new Map<string, ExtensionMetadata>();
+// Use a globalThis-anchored Map so the registry is shared even when pi
+// loads each extension with a separate jiti module context (separate module
+// caches → separate Map instances if stored at module level).
+const REGISTRY_KEY = "__pi_ext_metadata_registry__";
+if (!(globalThis as Record<string, unknown>)[REGISTRY_KEY]) {
+	(globalThis as Record<string, unknown>)[REGISTRY_KEY] = new Map<
+		string,
+		ExtensionMetadata
+	>();
+}
+const registry = (globalThis as Record<string, unknown>)[
+	REGISTRY_KEY
+] as Map<string, ExtensionMetadata>;
 
 /**
  * Register an extension's metadata. Re-declaring the same `name`
