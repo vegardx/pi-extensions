@@ -108,7 +108,7 @@ const ENV_AUTO_TITLE_CONTEXT_MESSAGES =
 	"PI_SESSION_AUTO_TITLE_CONTEXT_MESSAGES";
 
 const DEFAULT_AUTO_TITLE_THRESHOLD_CHARS = 500;
-const DEFAULT_AUTO_RETITLE_TURNS = 3;
+const DEFAULT_AUTO_RETITLE_AGENTS = 3;
 const DEFAULT_AUTO_TITLE_CONTEXT_MESSAGES = 3;
 const AUTO_TITLE_MAX_TOKENS = 40;
 const AUTO_TITLE_MAX_VISIBLE_WIDTH = 60;
@@ -203,6 +203,49 @@ function getGitBranch(): string | undefined {
 	}
 }
 
+/**
+ * Cached `owner/repo` parsed from `git remote get-url origin`. Same
+ * lifetime rules as `cachedGitBranch` — cleared on `session_shutdown`.
+ * `null` = checked, not a git repo or no origin remote.
+ */
+let cachedGitOrgRepo: string | null | undefined;
+
+/**
+ * Return `"owner/repo"` extracted from the origin remote URL, or
+ * `undefined` when not resolvable. Handles both HTTPS and SSH forms:
+ *   https://github.com/owner/repo.git  →  owner/repo
+ *   git@github.com:owner/repo.git      →  owner/repo
+ */
+function getGitOrgRepo(): string | undefined {
+	if (cachedGitOrgRepo !== undefined) return cachedGitOrgRepo ?? undefined;
+	try {
+		const url = execFileSync("git", ["remote", "get-url", "origin"], {
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 500,
+			encoding: "utf8",
+		}).trim();
+		if (!url) {
+			cachedGitOrgRepo = null;
+			return undefined;
+		}
+		// SSH:   git@github.com:owner/repo.git
+		// HTTPS: https://github.com/owner/repo.git
+		// Both end with optional .git; the last two slash-separated segments
+		// (after resolving the colon in SSH form) are owner/repo.
+		const normalised = url.replace(/\.git$/, "").replace(/^[^:]+:/, "/");
+		const parts = normalised.split("/").filter(Boolean);
+		if (parts.length < 2) {
+			cachedGitOrgRepo = null;
+			return undefined;
+		}
+		cachedGitOrgRepo = `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+		return cachedGitOrgRepo;
+	} catch {
+		cachedGitOrgRepo = null;
+		return undefined;
+	}
+}
+
 function parseAutoTitleThreshold(): number {
 	const raw = process.env[ENV_AUTO_TITLE_THRESHOLD];
 	if (!raw) return DEFAULT_AUTO_TITLE_THRESHOLD_CHARS;
@@ -211,15 +254,15 @@ function parseAutoTitleThreshold(): number {
 }
 
 /**
- * How many turns between automatic title re-evaluations once an initial
- * title has been set. 0 disables retitling. Configurable via
- * $PI_SESSION_AUTO_RETITLE_TURNS (default: 3).
+ * How many completed agent runs between automatic title re-evaluations once
+ * an initial title has been set. 0 disables retitling. Configurable via
+ * $PI_SESSION_AUTO_RETITLE_TURNS (default: 3 agent completions).
  */
-function parseAutoRetitleTurns(): number {
+function parseAutoRetitleAgents(): number {
 	const raw = process.env[ENV_AUTO_RETITLE_TURNS];
-	if (!raw) return DEFAULT_AUTO_RETITLE_TURNS;
+	if (!raw) return DEFAULT_AUTO_RETITLE_AGENTS;
 	const n = Number.parseInt(raw, 10);
-	return Number.isFinite(n) && n >= 0 ? n : DEFAULT_AUTO_RETITLE_TURNS;
+	return Number.isFinite(n) && n >= 0 ? n : DEFAULT_AUTO_RETITLE_AGENTS;
 }
 
 /**
@@ -297,12 +340,16 @@ function sanitizeAutoTitle(raw: string): string | undefined {
 function buildAutoTitlePrompt(
 	firstPrompt: string | undefined,
 	sawToolCall: boolean,
+	orgRepo?: string,
 ): string {
 	const trimmed = (firstPrompt ?? "").trim();
 	// Hard cap the prompt we feed in — we only need the gist, and some
 	// providers are miserly about context on nano-tier models.
 	const clipped =
 		trimmed.length > 2000 ? `${trimmed.slice(0, 2000)}\u2026` : trimmed;
+	const repoNote = orgRepo
+		? `The session is in the repository "${orgRepo}". Do NOT repeat the repo name in the title; focus on the task only.`
+		: "";
 	return [
 		"You are naming a coding-agent session so a user can tell it apart from other sessions at a glance.",
 		"",
@@ -312,6 +359,7 @@ function buildAutoTitlePrompt(
 		"- No quotes, no trailing punctuation, no emoji.",
 		'- Prefer the concrete task ("Fix Login Redirect") over the medium ("Python Help").',
 		"- If the input is vague, return a one-word topic in Title Case.",
+		...(repoNote ? ["", repoNote] : []),
 		"",
 		"Output ONLY the title on a single line.",
 		"",
@@ -412,8 +460,8 @@ interface AutoTitleState {
 	sawToolCall: boolean;
 	firstPrompt?: string;
 	result?: string;
-	/** Turns elapsed since the last successful auto-title. Drives retitling. */
-	turnsSinceLastTitle: number;
+	/** Agent runs elapsed since the last successful auto-title. Drives retitling. */
+	agentsSinceLastTitle: number;
 	/** True while a retitle LLM call is in-flight, to prevent double-firing. */
 	retitling: boolean;
 }
@@ -424,7 +472,7 @@ function resetAutoTitleState(state: AutoTitleState): void {
 	state.sawToolCall = false;
 	state.firstPrompt = undefined;
 	state.result = undefined;
-	state.turnsSinceLastTitle = 0;
+	state.agentsSinceLastTitle = 0;
 	state.retitling = false;
 }
 
@@ -819,7 +867,7 @@ export default function (pi: ExtensionAPI) {
 		status: "idle",
 		userChars: 0,
 		sawToolCall: false,
-		turnsSinceLastTitle: 0,
+		agentsSinceLastTitle: 0,
 		retitling: false,
 	};
 
@@ -1099,6 +1147,7 @@ export default function (pi: ExtensionAPI) {
 									text: buildAutoTitlePrompt(
 										autoTitleState.firstPrompt,
 										autoTitleState.sawToolCall,
+										getGitOrgRepo(),
 									),
 								},
 							],
@@ -1127,13 +1176,15 @@ export default function (pi: ExtensionAPI) {
 				autoTitleState.status = "skipped";
 				return;
 			}
+			const orgRepo = getGitOrgRepo();
+			const titled = orgRepo ? `${orgRepo}: ${sanitized}` : sanitized;
 			// If the user set an explicit title while we were in-flight, defer
 			// to them: still record the result for a later `/title` clear, but
 			// don't repaint now — their title wins via resolveTitle().
-			autoTitle = sanitized;
+			autoTitle = titled;
 			autoTitleState.status = "done";
-			autoTitleState.turnsSinceLastTitle = 0;
-			autoTitleState.result = sanitized;
+			autoTitleState.agentsSinceLastTitle = 0;
+			autoTitleState.result = titled;
 			applyTitle(ctx);
 		} catch {
 			// Silent: auto-title is quality-of-life. Next session may pick a
@@ -1178,11 +1229,11 @@ export default function (pi: ExtensionAPI) {
 		if (!ctx.hasUI) return;
 		if (isAutoTitleDisabled()) return;
 		if (hasExplicitTitle()) return;
-		const retitleEvery = parseAutoRetitleTurns();
+		const retitleEvery = parseAutoRetitleAgents();
 		if (retitleEvery === 0) return;
-		if (autoTitleState.turnsSinceLastTitle < retitleEvery) return;
+		if (autoTitleState.agentsSinceLastTitle < retitleEvery) return;
 
-		autoTitleState.turnsSinceLastTitle = 0;
+		autoTitleState.agentsSinceLastTitle = 0;
 		autoTitleState.retitling = true;
 		try {
 			const picked = await pickAutoTitleModel(ctx);
@@ -1233,8 +1284,10 @@ export default function (pi: ExtensionAPI) {
 			const sanitized = sanitizeAutoTitle(firstLine);
 			if (!sanitized) return;
 
-			autoTitle = sanitized;
-			autoTitleState.result = sanitized;
+			const orgRepo = getGitOrgRepo();
+			const titled = orgRepo ? `${orgRepo}: ${sanitized}` : sanitized;
+			autoTitle = titled;
+			autoTitleState.result = titled;
 			applyTitle(ctx);
 		} catch {
 			// Silent — retitling is quality-of-life.
@@ -1341,10 +1394,18 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("turn_end", (_event, ctx) => {
+		// Initial title generation: fire as soon as threshold is met.
 		if (autoTitleState.status === "idle") {
 			maybeTriggerAutoTitle(ctx);
-		} else if (autoTitleState.status === "done") {
-			autoTitleState.turnsSinceLastTitle++;
+		}
+	});
+
+	pi.on("agent_end", (_event, ctx) => {
+		// Retitling is tied to completed agent runs (one per user prompt /
+		// workflow) rather than individual LLM turns, so each `/develop` or
+		// `/review` completion counts as one opportunity, not 10+.
+		if (autoTitleState.status === "done") {
+			autoTitleState.agentsSinceLastTitle++;
 			void maybeRetitle(ctx);
 		}
 	});
@@ -1369,6 +1430,7 @@ export default function (pi: ExtensionAPI) {
 		autoTitle = undefined;
 		resetAutoTitleState(autoTitleState);
 		cachedGitBranch = undefined;
+		cachedGitOrgRepo = undefined;
 	});
 
 	// ---- runtime commands -------------------------------------------------
@@ -1441,7 +1503,7 @@ export default function (pi: ExtensionAPI) {
 			autoTitle = undefined;
 			autoTitleState.status = "idle";
 			autoTitleState.result = undefined;
-			autoTitleState.turnsSinceLastTitle = 0;
+			autoTitleState.agentsSinceLastTitle = 0;
 			autoTitleState.retitling = false;
 			ctx.ui.notify("Regenerating title...", "info");
 			await generateAutoTitle(ctx);
