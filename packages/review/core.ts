@@ -30,7 +30,7 @@ import {
 	isGitRepo,
 	listTrackedFiles,
 } from "./git.js";
-import { runReviewer } from "./reviewer-client.js";
+import { reviewTimeoutMs, runReviewer } from "./reviewer-client.js";
 import { parseScope, type ReviewScope } from "./scope.js";
 
 export const EXT_ID = "review";
@@ -358,6 +358,7 @@ async function runAllReviewers(
 				model: model.id,
 				cwd: ctx.cwd,
 				signal: ctx.signal,
+				timeoutMs: reviewTimeoutMs(rc.diff.length),
 			});
 			completed++;
 			roleStatus.set(role, "done");

@@ -45,7 +45,7 @@ import {
 	getWorkingDiff,
 	isGitRepo,
 } from "./git.js";
-import { runReviewer } from "./reviewer-client.js";
+import { reviewTimeoutMs, runReviewer } from "./reviewer-client.js";
 
 /**
  * The two reviewer roles the auto-review covers. Deliberately narrow:
@@ -430,6 +430,7 @@ export async function runAutoReview(
 					model: inv.modelId,
 					cwd: ctx.cwd,
 					signal: ctx.signal,
+					timeoutMs: reviewTimeoutMs(rc.diff.length),
 				});
 				completed++;
 				status.set(`${inv.role}|${inv.tier}`, "done");
