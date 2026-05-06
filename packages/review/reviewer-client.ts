@@ -15,9 +15,6 @@ function promptFileFor(role: ReviewerRole): string {
 
 // ---- Reviewer timeout heuristic --------------------------------------
 //
-// `/verify` fixed the same 60s default-timeout bug (see the PR #27
-// comment in verify/core.ts). The review path was never updated.
-//
 // Each reviewer subagent reads a diff in full; heavy models on a
 // non-trivial diff routinely need 2-5 minutes. We scale the budget
 // with the diff byte-count so small changesets stay fast and large

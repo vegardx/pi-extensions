@@ -131,6 +131,7 @@ export const ALL_ROLES: readonly ReviewerRole[] = [
 	"code-simplifier",
 	"doc-reviewer",
 	"dependency-checker",
+	"implementation-checker",
 ] as const;
 
 interface ReviewContext {

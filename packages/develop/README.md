@@ -195,7 +195,7 @@ picker. The pass uses the reviewer lanes and model mode configured in
   findings or the pass is skipped.
 ```
 
-There is no verify loop. The pass fires once, results are applied
+There is no retry loop. The pass fires once, results are applied
 (or surfaced for discussion), and then the picker opens.
 
 ### Challenge phase (cross-model, CRITICAL findings only)

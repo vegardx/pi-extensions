@@ -13,7 +13,8 @@ export type ReviewerRole =
 	| "security-analyst"
 	| "code-simplifier"
 	| "doc-reviewer"
-	| "dependency-checker";
+	| "dependency-checker"
+	| "implementation-checker";
 
 /**
  * Shape each reviewer emits (as JSON). Kept permissive: `line` is optional

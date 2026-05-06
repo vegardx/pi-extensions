@@ -17,13 +17,13 @@ import { awaitIdleOrAbort } from "../parallel-subagent.js";
 //   2. The extracted `awaitIdleOrAbort` helper actually forwards the
 //      `timeoutMs` argument to `client.waitForIdle`. A regression
 //      that drops or rewrites this argument re-introduces the
-//      post-PR-#27 60s timeout cliff on `/verify`.
+//      post-PR-#27 60s timeout cliff on long-running review subagents.
 //
 // Together the two layers cover the chain `caller → SubagentTask →
 // runSubagent → awaitIdleOrAbort → RpcClient.waitForIdle`.
 
 describe("SubagentTask interface", () => {
-	it("accepts an optional timeoutMs field (used by /verify to scale waitForIdle)", () => {
+	it("accepts an optional timeoutMs field (used to scale waitForIdle for long-running subagents)", () => {
 		const task: SubagentTask<number> = {
 			tag: 1,
 			task: "noop",
@@ -90,7 +90,7 @@ describe("awaitIdleOrAbort", () => {
 		expect(calls).toEqual([255_000]);
 	});
 
-	it("passes undefined through (so RpcClient's 60s default still applies for non-/verify callers)", async () => {
+	it("passes undefined through (so RpcClient's 60s default still applies when no timeout is set)", async () => {
 		const { client, calls } = makeSpy();
 		await awaitIdleOrAbort(client, undefined, neverAborted);
 		expect(calls).toEqual([undefined]);

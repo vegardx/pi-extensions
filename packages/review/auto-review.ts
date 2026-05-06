@@ -1,5 +1,5 @@
 /**
- * Auto-review pass — used by `/develop` after auto-verify completes.
+ * Auto-review pass — used by `/develop` after the implement phase completes.
  *
  * Unlike interactive `/review`, the auto-review:
  *   - Runs ONLY the `code-reviewer` and `code-simplifier` lanes.
