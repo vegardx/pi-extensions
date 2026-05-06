@@ -60,6 +60,17 @@ export const AUTO_REVIEW_ROLES: readonly ReviewerRole[] = [
 	"code-simplifier",
 ] as const;
 
+/** Allowlist used to validate user-supplied role strings at runtime. */
+const VALID_REVIEWER_ROLES = new Set<ReviewerRole>([
+	"architect",
+	"code-reviewer",
+	"scope-analyst",
+	"security-analyst",
+	"code-simplifier",
+	"doc-reviewer",
+	"dependency-checker",
+]);
+
 /** Fixed tier this pass uses on both `primary` and `secondary` sets. */
 const AUTO_REVIEW_TIER: Tier = "heavy";
 
@@ -115,6 +126,7 @@ export type AutoReviewAbortReason =
 	| "no-diff"
 	| "no-primary-model"
 	| "no-secondary-model"
+	| "no-valid-roles"
 	| "fanout-error";
 
 export interface RunAutoReviewResult {
@@ -232,6 +244,13 @@ function buildTaskFor(role: ReviewerRole, rc: AutoReviewContext): string {
 // findings are left as-is — the challenge overhead is only justified
 // for the highest-stakes findings.
 
+interface ChallengePromotion {
+	/** The finding to promote to cross-model consensus. */
+	finding: Finding;
+	/** Challenger's suggested fix, if better than the original. */
+	suggestedAction?: string;
+}
+
 interface ChallengeOutcome {
 	finding: Finding;
 	agree: boolean;
@@ -295,7 +314,11 @@ async function runChallengePhase(opts: {
 	extensionName: string;
 	ctx: ExtensionContext;
 	signal?: AbortSignal;
-}): Promise<{ challenged: number; agreed: number }> {
+}): Promise<{
+	challenged: number;
+	agreed: number;
+	promotions: ChallengePromotion[];
+}> {
 	const { findings, rc, primary, secondary, extensionName, ctx } = opts;
 
 	const targets = findings.filter(
@@ -305,7 +328,7 @@ async function runChallengePhase(opts: {
 			(f.flaggedByTier?.length ?? 0) === 1,
 	);
 
-	if (targets.length === 0) return { challenged: 0, agreed: 0 };
+	if (targets.length === 0) return { challenged: 0, agreed: 0, promotions: [] };
 
 	notify(
 		ctx,
@@ -337,6 +360,7 @@ async function runChallengePhase(opts: {
 				model: challenger.modelId,
 				cwd: ctx.cwd,
 				signal: opts.signal,
+				timeoutMs: reviewTimeoutMs(rc.diff.length),
 			});
 
 			completedChallenges++;
@@ -376,6 +400,7 @@ async function runChallengePhase(opts: {
 	}
 
 	let agreed = 0;
+	const promotions: ChallengePromotion[] = [];
 	for (const outcome of outcomes) {
 		if (outcome.error) {
 			notify(
@@ -387,27 +412,14 @@ async function runChallengePhase(opts: {
 		}
 		if (!outcome.agree) continue;
 
-		const existing = outcome.finding.flaggedByTier ?? [];
-		const flaggedTier = existing[0];
-		const challengerTier: BackgroundTier =
-			flaggedTier === "primary" ? "secondary" : "primary";
-		if (!existing.includes(challengerTier)) {
-			outcome.finding.flaggedByTier = [...existing, challengerTier];
-		}
-		outcome.finding.crossModelConsensus = true;
-		outcome.finding.challengedConsensus = true;
-
-		if (
-			outcome.suggestedAction &&
-			(!outcome.finding.suggestedAction ||
-				outcome.suggestedAction.length > outcome.finding.suggestedAction.length)
-		) {
-			outcome.finding.suggestedAction = outcome.suggestedAction;
-		}
+		promotions.push({
+			finding: outcome.finding,
+			suggestedAction: outcome.suggestedAction,
+		});
 		agreed++;
 	}
 
-	return { challenged: targets.length, agreed };
+	return { challenged: targets.length, agreed, promotions };
 }
 
 interface ReviewerInvocationKey {
@@ -609,6 +621,20 @@ export function buildAutoReviewReport(opts: {
 	return lines.join("\n");
 }
 
+/**
+ * Build the host-agent prompt for consensus findings that have no concrete
+ * `suggestedAction`. Asks the agent to surface each finding to the user
+ * and collect their decision (fix / investigate further / accept the risk).
+ *
+ * @param surfaced    Consensus findings without a concrete fix.
+ * @param primaryModel   The primary-tier model spec used in the pass.
+ * @param secondaryModel The secondary-tier model spec, or `undefined` when
+ *                       running in single-model mode. Controls the intro
+ *                       sentence phrasing ("two reviewers agreed" vs
+ *                       "the primary reviewer flagged").
+ *
+ * Callers should pass `primary.spec` and `secondary?.spec` from `runAutoReview`.
+ */
 export function buildAutoReviewDiscussionPrompt(
 	surfaced: readonly Finding[],
 	primaryModel: string,
@@ -670,9 +696,29 @@ export async function runAutoReview(
 		return { ran: false, abortReason: "no-diff" };
 	}
 
-	const roles = (
-		opts.roles?.length ? opts.roles : AUTO_REVIEW_ROLES
-	) as ReviewerRole[];
+	const rawRoles = opts.roles?.length
+		? opts.roles
+		: (AUTO_REVIEW_ROLES as string[]);
+	const roles: ReviewerRole[] = [];
+	for (const r of rawRoles) {
+		if (VALID_REVIEWER_ROLES.has(r as ReviewerRole)) {
+			roles.push(r as ReviewerRole);
+		} else {
+			notify(
+				ctx,
+				`unknown reviewer role "${r}" in autoReviewRoles — skipping`,
+				"warning",
+			);
+		}
+	}
+	if (roles.length === 0) {
+		notify(
+			ctx,
+			"no valid roles remain after filtering autoReviewRoles — aborting auto-review",
+			"warning",
+		);
+		return { ran: false, abortReason: "no-valid-roles" };
+	}
 	const multiModel = opts.multiModel ?? true;
 
 	const primary = await resolveTierModel(ctx, extensionName, "primary");
@@ -813,7 +859,7 @@ export async function runAutoReview(
 	let challengedCount = 0;
 	let challengedAgreedCount = 0;
 	if (multiModel && secondary) {
-		const stats = await runChallengePhase({
+		const { challenged, agreed, promotions } = await runChallengePhase({
 			findings,
 			rc,
 			primary,
@@ -822,8 +868,29 @@ export async function runAutoReview(
 			ctx,
 			signal: ctx.signal,
 		});
-		challengedCount = stats.challenged;
-		challengedAgreedCount = stats.agreed;
+		challengedCount = challenged;
+		challengedAgreedCount = agreed;
+		// Apply promotions here — after runChallengePhase returns and
+		// before the consensus split — so callers see a clean pipeline
+		// where mutations happen at a single, explicit point.
+		for (const { finding, suggestedAction } of promotions) {
+			const existing = finding.flaggedByTier ?? [];
+			const flaggedTier = existing[0];
+			const challengerTier: BackgroundTier =
+				flaggedTier === "primary" ? "secondary" : "primary";
+			if (!existing.includes(challengerTier)) {
+				finding.flaggedByTier = [...existing, challengerTier];
+			}
+			finding.crossModelConsensus = true;
+			finding.challengedConsensus = true;
+			if (
+				suggestedAction &&
+				(!finding.suggestedAction ||
+					suggestedAction.length > finding.suggestedAction.length)
+			) {
+				finding.suggestedAction = suggestedAction;
+			}
+		}
 	}
 
 	// ---- Split consensus into auto-apply and surface-to-user -------------
