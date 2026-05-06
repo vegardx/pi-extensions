@@ -121,6 +121,20 @@ describe("parseVerdict", () => {
 		expect(v?.status).toBe("missing");
 	});
 
+	it("tolerates prose before a code-fence (model prefixes explanation)", () => {
+		const v = parseVerdict(
+			'Here is the verdict:\n\n```json\n{"step":1,"status":"done","reason":"ok"}\n```',
+		);
+		expect(v?.status).toBe("done");
+	});
+
+	it("tolerates prose before a bare JSON object (no fence)", () => {
+		const v = parseVerdict(
+			'Based on my review:\n{"step":2,"status":"partial","reason":"halfway"}',
+		);
+		expect(v?.status).toBe("partial");
+	});
+
 	it("returns null for empty input", () => {
 		expect(parseVerdict("")).toBeNull();
 		expect(parseVerdict("   \n  ")).toBeNull();
@@ -211,6 +225,35 @@ describe("parseVerdictArray", () => {
 			reason: "x",
 			suggestion: undefined,
 		});
+	});
+
+	it("tolerates prose before a code-fence (the real failure mode)", () => {
+		// This is the exact pattern that caused 'subagent output was not a
+		// JSON array' errors: eu-haiku-4-5 prefixed a sentence before the
+		// ```json block despite being instructed to emit JSON only.
+		const fenced = [
+			"Based on my verification of the working tree, here are the verdicts:",
+			"",
+			"```json",
+			JSON.stringify([{ step: 1, status: "done", reason: "x" }]),
+			"```",
+		].join("\n");
+		const result = parseVerdictArray(fenced);
+		expect(result).toHaveLength(1);
+		expect(result?.[0]?.status).toBe("done");
+	});
+
+	it("tolerates prose before a bare JSON array (no fence)", () => {
+		const input = [
+			"I have all the information I need. Here are the verdicts:",
+			JSON.stringify([
+				{ step: 1, status: "done", reason: "first" },
+				{ step: 2, status: "missing", reason: "second" },
+			]),
+		].join("\n");
+		const result = parseVerdictArray(input);
+		expect(result).toHaveLength(2);
+		expect(result?.map((v) => v.step)).toEqual([1, 2]);
 	});
 
 	it("drops malformed elements but keeps the rest", () => {
