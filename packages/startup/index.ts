@@ -225,7 +225,7 @@ export function countOverrides(
 
 /** Short one-liner for the `session_start` toast. */
 export function renderHeadline(summary: StartupSummary): string {
-	const exts = summary.declared.length;
+	const exts = summary.declared.length + summary.unrecognized.length;
 	return `pi-ext-startup: ${exts} ${exts === 1 ? "extension" : "extensions"} · /extensions for details`;
 }
 
@@ -303,6 +303,21 @@ export function renderLines(summary: StartupSummary): string[] {
 		} else {
 			for (const k of ext.configKeys) {
 				lines.push(renderConfigKey(k, ext));
+			}
+		}
+	}
+
+	if (summary.unrecognized.length > 0) {
+		lines.push("");
+		lines.push("Unrecognized extensions (no metadata):");
+		for (const ext of summary.unrecognized) {
+			lines.push("");
+			lines.push(`  ${ext.path}:`);
+			if (ext.commands.length > 0) {
+				lines.push(`    commands: ${ext.commands.join(", ")}`);
+			}
+			if (ext.tools.length > 0) {
+				lines.push(`    tools: ${ext.tools.join(", ")}`);
 			}
 		}
 	}
