@@ -26,7 +26,7 @@ const BASE_URL = "https://context7.com/api/v1";
 // Build shared request headers — include Authorization only when a key is set.
 const apiKey = process.env.CONTEXT7_API_KEY;
 const HEADERS = {
-	Accept: "application/json",
+	Accept: "application/json, text/plain, */*",
 	...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
 };
 
@@ -106,7 +106,7 @@ if (command === "search") {
 			console.log(`ID:          ${r.id}`);
 			if (r.description) console.log(`Description: ${r.description}`);
 			if (r.stars != null) console.log(`Stars:       ${r.stars}`);
-			if (r.lastUpdated) console.log(`Updated:     ${r.lastUpdated}`);
+			if (r.lastUpdateDate) console.log(`Updated:     ${r.lastUpdateDate.slice(0, 10)}`);
 			if (r.version) console.log(`Version:     ${r.version}`);
 			console.log();
 		}
@@ -163,24 +163,14 @@ if (command === "docs") {
 			process.exit(1);
 		}
 
-		const data = await res.json();
+		const content = await res.text();
 
-		// Print metadata header
-		if (data.title) console.log(`# ${data.title}`);
-		if (data.description) console.log(`\n${data.description}`);
-		if (data.version) console.log(`\nVersion: ${data.version}`);
+		// Print a small header so the agent knows what it's reading
+		const idPath2 = libraryId.startsWith("/") ? libraryId : `/${libraryId}`;
+		console.log(`# Context7 docs: ${idPath2}`);
 		if (topic) console.log(`Topic: ${topic}`);
 		console.log(`Tokens: ~${tokens}\n`);
 		console.log("---\n");
-
-		// The documentation content lives in different fields depending on
-		// the Context7 response shape.
-		const content =
-			data.content ??
-			data.documentation ??
-			data.text ??
-			data.sections?.map((s) => `## ${s.title}\n\n${s.content}`).join("\n\n") ??
-			JSON.stringify(data, null, 2);
 
 		console.log(content);
 	} catch (err) {
