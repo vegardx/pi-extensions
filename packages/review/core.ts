@@ -9,6 +9,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { acquireKeepAwake } from "@vegardx/pi-extensions-shared/caffeinate.js";
 import {
 	countBySeverity,
 	dedupeFindings,
@@ -597,6 +598,24 @@ export interface RunReviewResult {
 }
 
 export async function runReview(
+	opts: RunReviewOptions,
+): Promise<RunReviewResult> {
+	const { ctx, pi, arg = "" } = opts;
+
+	// Hold a keep-awake lock for the duration of the run — the
+	// seven-reviewer fan-out plus the user's findings walkthrough can
+	// take several minutes on a big diff. The shared helper is a no-op
+	// when the user hasn't opted in or isn't on macOS, so this is safe
+	// to call unconditionally.
+	const keepAwake = acquireKeepAwake(EXT_ID, ctx);
+	try {
+		return await runReviewInner(opts);
+	} finally {
+		keepAwake.release();
+	}
+}
+
+async function runReviewInner(
 	opts: RunReviewOptions,
 ): Promise<RunReviewResult> {
 	const { ctx, pi, arg = "" } = opts;

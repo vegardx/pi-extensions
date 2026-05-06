@@ -8,6 +8,10 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
+import {
+	acquireKeepAwake,
+	type KeepAwakeHandle,
+} from "@vegardx/pi-extensions-shared/caffeinate.js";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
 	getExtensionConfigBoolean,
@@ -303,6 +307,41 @@ export default function (pi: ExtensionAPI) {
 
 	let state: DevelopState | null = null;
 
+	// ---- Keep-awake (caffeinate) ---------------------------------------
+	// Hold a single shared keep-awake lock for the entire automated
+	// portion of a /develop dispatch. The shared helper is a no-op on
+	// non-darwin and when the user hasn't set
+	// `extensionConfig.caffeinate.enabled = true` in settings.json, so
+	// this code path is safe to run unconditionally.
+	//
+	// We acquire/release purely as a side effect of `syncKeepAwake`,
+	// which is called from `updateWidget` (already invoked at every
+	// phase transition) and from `session_shutdown`. Phases that wait
+	// on the user (`awaiting-intake`, `awaiting-choice`, the post-loop
+	// pickers via `loop-complete` / `loop-bailed`, the terminal
+	// `dormant`/`consumed`) don't hold the lock — sleep is fine while
+	// the user is the bottleneck. Phases that grind unattended
+	// (`awaiting-plan`, `executing`, `verifying`, `awaiting-fix`,
+	// `auto-reviewing`, `awaiting-auto-review-fix`) do.
+	let keepAwakeLock: KeepAwakeHandle | null = null;
+	const KEEP_AWAKE_PHASES: ReadonlySet<DevelopState["phase"]> = new Set([
+		"awaiting-plan",
+		"executing",
+		"verifying",
+		"awaiting-fix",
+		"auto-reviewing",
+		"awaiting-auto-review-fix",
+	]);
+	function syncKeepAwake(ctx: ExtensionContext): void {
+		const shouldHold = state !== null && KEEP_AWAKE_PHASES.has(state.phase);
+		if (shouldHold && !keepAwakeLock) {
+			keepAwakeLock = acquireKeepAwake(EXT_ID, ctx);
+		} else if (!shouldHold && keepAwakeLock) {
+			keepAwakeLock.release();
+			keepAwakeLock = null;
+		}
+	}
+
 	// ---- Persistence ----------------------------------------------------
 	function persist(): void {
 		if (!state) return;
@@ -357,6 +396,9 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function updateWidget(ctx: ExtensionContext): void {
+		// Keep-awake follows phase transitions regardless of whether the
+		// session has a TUI — non-interactive runs benefit too.
+		syncKeepAwake(ctx);
 		if (!ctx.hasUI) return;
 		if (!state) {
 			ctx.ui.setStatus(EXT_ID, undefined);
@@ -1678,8 +1720,17 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", () => {
-		// Nothing to do — pi persists session entries for us and widgets
-		// vanish when the UI tears down. Left as a hook for future cleanup.
+		// Release the keep-awake lock if we still hold one. The shared
+		// helper's refcount survives session replacement (Node module
+		// cache), so leaking a token here would keep caffeinate alive
+		// across `/new` / `/resume` / `/fork` even though this dispatch
+		// is gone.
+		if (keepAwakeLock) {
+			keepAwakeLock.release();
+			keepAwakeLock = null;
+		}
+		// Nothing else to do — pi persists session entries for us and
+		// widgets vanish when the UI tears down.
 	});
 
 	// ---- Intake sentinel tool ------------------------------------------
