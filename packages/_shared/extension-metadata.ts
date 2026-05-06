@@ -134,9 +134,10 @@ if (!(globalThis as Record<string, unknown>)[REGISTRY_KEY]) {
 		ExtensionMetadata
 	>();
 }
-const registry = (globalThis as Record<string, unknown>)[
-	REGISTRY_KEY
-] as Map<string, ExtensionMetadata>;
+const registry = (globalThis as Record<string, unknown>)[REGISTRY_KEY] as Map<
+	string,
+	ExtensionMetadata
+>;
 
 /**
  * Register an extension's metadata. Re-declaring the same `name`

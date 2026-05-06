@@ -169,7 +169,9 @@ export async function runSubagentsParallel<Tag>(
 		while (true) {
 			const i = next++;
 			if (i >= inputs.length) return;
-			results[i] = await runSubagent(inputs[i]!);
+			const input = inputs[i];
+			if (input === undefined) return;
+			results[i] = await runSubagent(input);
 		}
 	}
 	await Promise.all(Array.from({ length: cap }, () => worker()));
