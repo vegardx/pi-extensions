@@ -86,6 +86,19 @@ export interface RunAutoReviewOptions {
 	/** Extension name used for per-extension model overrides. Defaults
 	 *  to "develop" because that's where the call site lives. */
 	extensionName?: string;
+	/**
+	 * Reviewer roles to run. Defaults to `AUTO_REVIEW_ROLES`.
+	 * Strings are cast to `ReviewerRole`; unknown values are silently
+	 * dropped by the role-not-found path in `buildTaskFor`.
+	 */
+	roles?: string[];
+	/**
+	 * When true (default), run each role on both `primary.heavy` and
+	 * `secondary.heavy` and require cross-model consensus before
+	 * auto-applying. When false, run only `primary.heavy` and apply
+	 * any finding that has a `suggestedAction`.
+	 */
+	multiModel?: boolean;
 }
 
 export type AutoReviewAbortReason =
@@ -201,13 +214,12 @@ function renderProgress(
 	let done = 0;
 	for (const v of status.values()) if (v === "done") done++;
 	lines.push(`🤖 auto-review (${done}/${total} reviewers done)`);
-	for (const role of AUTO_REVIEW_ROLES) {
-		for (const tier of ["primary", "secondary"] as const) {
-			const key = `${role}|${tier}`;
-			const s = status.get(key);
-			const glyph = s === "done" ? "✓" : "⏳";
-			lines.push(`  ${glyph} ${role} (${tier})`);
-		}
+	for (const [key, s] of status) {
+		const barIdx = key.indexOf("|");
+		const role = barIdx >= 0 ? key.slice(0, barIdx) : key;
+		const tier = barIdx >= 0 ? key.slice(barIdx + 1) : "";
+		const glyph = s === "done" ? "✓" : "⏳";
+		lines.push(`  ${glyph} ${role}${tier ? ` (${tier})` : ""}`);
 	}
 	return lines;
 }
@@ -250,16 +262,17 @@ async function resolveTierModel(
 export function buildAutoReviewFixPrompt(
 	accepted: readonly Finding[],
 	primaryModel: string,
-	secondaryModel: string,
+	secondaryModel?: string,
 ): string {
+	const reviewerDesc = secondaryModel
+		? `Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`) independently flagged the following findings on the same file/line/title. Apply the suggested fixes directly.`
+		: `The reviewer (\`${primaryModel}\`) flagged the following findings with concrete fix suggestions. Apply them directly.`;
 	const lines: string[] = [
-		"[/develop auto-review — cross-model consensus]",
+		"[/develop auto-review]",
 		"",
-		`Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`)`,
-		"independently flagged the following findings on the same",
-		"file/line/title. Apply the suggested fixes directly. Group",
-		"related fixes into cohesive commits, but do not commit until",
-		"the user says so.",
+		reviewerDesc,
+		"Group related fixes into cohesive commits, but do not commit",
+		"until the user says so.",
 		"",
 	];
 	accepted.forEach((f, idx) => {
@@ -288,8 +301,10 @@ export function buildAutoReviewFixPrompt(
  */
 export function buildAutoReviewReport(opts: {
 	scopeLabel: string;
+	roles: readonly string[];
+	multiModel: boolean;
 	primaryModel: string;
-	secondaryModel: string;
+	secondaryModel?: string;
 	findings: readonly Finding[];
 	autoApplied: readonly Finding[];
 	errors: ReadonlyArray<{
@@ -302,16 +317,28 @@ export function buildAutoReviewReport(opts: {
 	lines.push("## Auto-review report");
 	lines.push("");
 	lines.push(`**Scope**: ${opts.scopeLabel}`);
-	lines.push(`**Roles**: ${AUTO_REVIEW_ROLES.join(", ")}`);
-	lines.push(`**Primary model**: \`${opts.primaryModel}\``);
-	lines.push(`**Secondary model**: \`${opts.secondaryModel}\``);
+	lines.push(`**Roles**: ${opts.roles.join(", ")}`);
+	if (opts.multiModel && opts.secondaryModel) {
+		lines.push(`**Primary model**: \`${opts.primaryModel}\``);
+		lines.push(`**Secondary model**: \`${opts.secondaryModel}\``);
+		lines.push(`**Mode**: cross-model consensus (both must agree)`);
+	} else {
+		lines.push(`**Model**: \`${opts.primaryModel}\``);
+		lines.push(`**Mode**: single-model`);
+	}
 	lines.push("");
 	const totalFindings = opts.findings.length;
 	const agreed = opts.autoApplied.length;
 	const disagreed = totalFindings - agreed;
-	lines.push(
-		`**Findings**: ${totalFindings} total · ${agreed} cross-model agreed · ${disagreed} flagged by only one tier (dropped)`,
-	);
+	if (opts.multiModel) {
+		lines.push(
+			`**Findings**: ${totalFindings} total · ${agreed} cross-model agreed · ${disagreed} flagged by only one tier (dropped)`,
+		);
+	} else {
+		lines.push(
+			`**Findings**: ${totalFindings} total · ${agreed} with concrete fix (auto-applying) · ${disagreed} without fix suggestion (dropped)`,
+		);
+	}
 	if (opts.errors.length > 0) {
 		lines.push(
 			`**Reviewer errors**: ${opts.errors.length} (the affected lane was treated as empty)`,
@@ -319,11 +346,18 @@ export function buildAutoReviewReport(opts: {
 	}
 	if (agreed === 0) {
 		lines.push("");
-		lines.push(
-			"No cross-model consensus findings. Nothing to auto-apply.",
-			"Run `/review` for the full seven-lane interactive walk-through if",
-			"you want to look at the per-tier flags individually.",
-		);
+		if (opts.multiModel) {
+			lines.push(
+				"No cross-model consensus findings. Nothing to auto-apply.",
+				"Run `/review` for the full seven-lane interactive walk-through if",
+				"you want to look at the per-tier flags individually.",
+			);
+		} else {
+			lines.push(
+				"No findings with concrete fix suggestions. Nothing to auto-apply.",
+				"Run `/review` for the full seven-lane interactive walk-through.",
+			);
+		}
 		return lines.join("\n");
 	}
 	lines.push("");
@@ -366,6 +400,11 @@ export async function runAutoReview(
 		return { ran: false, abortReason: "no-diff" };
 	}
 
+	const roles = (
+		opts.roles?.length ? opts.roles : AUTO_REVIEW_ROLES
+	) as ReviewerRole[];
+	const multiModel = opts.multiModel ?? true;
+
 	const primary = await resolveTierModel(ctx, extensionName, "primary");
 	if (!primary) {
 		notify(
@@ -379,32 +418,36 @@ export async function runAutoReview(
 			scopeLabel: rc.scopeLabel,
 		};
 	}
-	const secondary = await resolveTierModel(ctx, extensionName, "secondary");
-	if (!secondary) {
-		notify(
-			ctx,
-			"no usable secondary heavy model (set backgroundModels.secondary.heavy)",
-			"warning",
-		);
-		return {
-			ran: false,
-			abortReason: "no-secondary-model",
-			scopeLabel: rc.scopeLabel,
-			primaryModel: primary.spec,
-		};
+	let secondary: ResolvedTierModel | null = null;
+	if (multiModel) {
+		secondary = await resolveTierModel(ctx, extensionName, "secondary");
+		if (!secondary) {
+			notify(
+				ctx,
+				"no usable secondary heavy model (set backgroundModels.secondary.heavy)",
+				"warning",
+			);
+			return {
+				ran: false,
+				abortReason: "no-secondary-model",
+				scopeLabel: rc.scopeLabel,
+				primaryModel: primary.spec,
+			};
+		}
 	}
 
+	const tierModels = multiModel && secondary ? [primary, secondary] : [primary];
 	notify(
 		ctx,
-		`${rc.scopeLabel}: ${rc.changedFiles} file(s), fanning out ${AUTO_REVIEW_ROLES.length * 2} reviewers (${primary.spec} + ${secondary.spec})`,
+		`${rc.scopeLabel}: ${rc.changedFiles} file(s), fanning out ${roles.length * tierModels.length} reviewers (${primary.spec}${secondary ? ` + ${secondary.spec}` : ""})`,
 		"info",
 	);
 
 	const status = new Map<string, "running" | "done">();
 	const invocations: Array<ReviewerInvocationKey & ResolvedTierModel> = [];
-	for (const role of AUTO_REVIEW_ROLES) {
-		for (const tierModel of [primary, secondary]) {
-			invocations.push({ role, ...tierModel });
+	for (const role of roles) {
+		for (const tierModel of tierModels) {
+			invocations.push({ role: role as ReviewerRole, ...tierModel });
 			status.set(`${role}|${tierModel.tier}`, "running");
 		}
 	}
@@ -460,7 +503,7 @@ export async function runAutoReview(
 			abortReason: "fanout-error",
 			scopeLabel: rc.scopeLabel,
 			primaryModel: primary.spec,
-			secondaryModel: secondary.spec,
+			...(secondary ? { secondaryModel: secondary.spec } : {}),
 		};
 	}
 
@@ -490,21 +533,24 @@ export async function runAutoReview(
 		tier: o.tier,
 	}));
 	const findings = dedupeFindings(bundles);
-	// Auto-apply requires both cross-model consensus AND a concrete
-	// fix description. Findings without a `suggestedAction` need a
-	// human in the loop — there's nothing for the host agent to apply
-	// mechanically.
-	const autoApplied = crossModelConsensus(findings).filter(
-		(f) => f.suggestedAction !== undefined && f.suggestedAction.trim() !== "",
-	);
+	// Auto-apply: in multi-model mode, require cross-model consensus.
+	// In single-model mode, apply any finding with a concrete fix.
+	const withFix = (f: Finding) =>
+		f.suggestedAction !== undefined && f.suggestedAction.trim() !== "";
+	const autoApplied = multiModel
+		? crossModelConsensus(findings).filter(withFix)
+		: findings.filter(withFix);
 
+	const secondarySpec = secondary?.spec;
 	pi.sendMessage(
 		{
 			customType: "auto-review-report",
 			content: buildAutoReviewReport({
 				scopeLabel: rc.scopeLabel,
+				roles: roles as readonly string[],
+				multiModel,
 				primaryModel: primary.spec,
-				secondaryModel: secondary.spec,
+				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				findings,
 				autoApplied,
 				errors,
@@ -515,7 +561,7 @@ export async function runAutoReview(
 				totalFindings: findings.length,
 				autoApplied: autoApplied.length,
 				primaryModel: primary.spec,
-				secondaryModel: secondary.spec,
+				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				errorCount: errors.length,
 			},
 		},
@@ -529,24 +575,26 @@ export async function runAutoReview(
 				content: buildAutoReviewFixPrompt(
 					autoApplied,
 					primary.spec,
-					secondary.spec,
+					secondarySpec,
 				),
 				display: false,
 				details: {
 					autoApplied: autoApplied.length,
 					primaryModel: primary.spec,
-					secondaryModel: secondary.spec,
+					...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				},
 			},
 			{ deliverAs: "followUp", triggerTurn: true },
 		);
-		notify(
-			ctx,
-			`${autoApplied.length} cross-model agreed finding(s) handed to the host agent`,
-			"info",
-		);
+		const howMany = multiModel
+			? `${autoApplied.length} cross-model agreed finding(s)`
+			: `${autoApplied.length} finding(s) with suggested fix(es)`;
+		notify(ctx, `${howMany} handed to the host agent`, "info");
 	} else {
-		notify(ctx, "no cross-model consensus — nothing to apply", "info");
+		const msg = multiModel
+			? "no cross-model consensus — nothing to apply"
+			: "no findings with suggested fixes — nothing to apply";
+		notify(ctx, msg, "info");
 	}
 
 	return {
@@ -555,7 +603,7 @@ export async function runAutoReview(
 		findings,
 		autoApplied,
 		primaryModel: primary.spec,
-		secondaryModel: secondary.spec,
+		...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 		errors,
 	};
 }

@@ -248,6 +248,41 @@ export function getExtensionConfigBoolean(
 }
 
 /**
+ * Get a typed string-array value under `extensionConfig.<name>.<key>`.
+ * Accepts a JSON array of strings; returns `defaultValue` when the key
+ * is unset, not an array, or contains any non-string element. Falls
+ * closed on partial matches so typos in settings.json don't silently
+ * drop individual entries.
+ */
+export function getExtensionConfigStringArray(
+	settings: RelevantSettings,
+	extensionName: string,
+	key: string,
+	defaultValue: string[],
+): string[] {
+	const raw = settings.extensionConfig?.[extensionName]?.[key];
+	if (!Array.isArray(raw)) return defaultValue;
+	if (raw.some((v) => typeof v !== "string")) return defaultValue;
+	return raw as string[];
+}
+
+/**
+ * Get a typed string value under `extensionConfig.<name>.<key>`. Returns
+ * `defaultValue` both when the key is unset and when the value is not a
+ * string — we deliberately do NOT coerce non-strings so a typo in
+ * settings.json fails closed (back to the extension's default).
+ */
+export function getExtensionConfigString(
+	settings: RelevantSettings,
+	extensionName: string,
+	key: string,
+	defaultValue: string,
+): string {
+	const raw = settings.extensionConfig?.[extensionName]?.[key];
+	return typeof raw === "string" ? raw : defaultValue;
+}
+
+/**
  * Get the configured model for a background tier under the requested
  * set. If the tier isn't set under `secondary`, falls back to the same
  * tier under `primary` — the resolver's "secondary uses primary as a
