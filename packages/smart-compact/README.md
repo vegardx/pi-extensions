@@ -16,7 +16,7 @@ Hooks `session_before_compact`. When auto-compaction triggers (or you run `/comp
 2. A single LLM call is made with a prompt that asks the model to identify the current task and write a continuity-focused summary.
 3. The result replaces what default compaction would have produced. The same recent-message tail is kept (controlled by `keepRecentTokens` in settings).
 4. `<read-files>` and `<modified-files>` sections are appended to the summary directly from pi's tracked file operations (`fileOps`), not inferred from the conversation text. This keeps the file lists accurate and saves the model from scanning the entire history for paths.
-5. Falls back to default compaction silently on any error.
+5. Falls back to default compaction on any error. A one-time warning is shown if no model/auth is configured; runtime failures surface an error notification.
 
 ## Configuration
 

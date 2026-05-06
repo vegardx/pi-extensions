@@ -29,6 +29,8 @@ import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-se
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
 const MAX_SUMMARY_TOKENS = 8192;
+// Cap file lists so large sessions don't produce bloated summaries.
+const MAX_FILE_LIST_ENTRIES = 50;
 
 /**
  * Neutralise a closing XML-like tag in embedded content to prevent
@@ -40,13 +42,27 @@ function escapeClosingTag(content: string, tag: string): string {
 }
 
 function buildFileSections(fileOps: FileOperations): string {
-	const read = [...fileOps.read].sort();
-	const modified = [...new Set([...fileOps.written, ...fileOps.edited])].sort();
+	const readAll = [...fileOps.read].sort();
+	const modifiedAll = [
+		...new Set([...fileOps.written, ...fileOps.edited]),
+	].sort();
+
+	function cap(list: string[], max: number): string {
+		if (list.length === 0) return "";
+		const shown = list.slice(0, max);
+		const omitted = list.length - shown.length;
+		return (
+			shown.join("\n") + (omitted > 0 ? `\n(${omitted} more not shown)` : "")
+		);
+	}
+
 	const readSection =
-		read.length > 0 ? `\n<read-files>\n${read.join("\n")}\n</read-files>` : "";
+		readAll.length > 0
+			? `\n<read-files>\n${cap(readAll, MAX_FILE_LIST_ENTRIES)}\n</read-files>`
+			: "";
 	const modifiedSection =
-		modified.length > 0
-			? `\n<modified-files>\n${modified.join("\n")}\n</modified-files>`
+		modifiedAll.length > 0
+			? `\n<modified-files>\n${cap(modifiedAll, MAX_FILE_LIST_ENTRIES)}\n</modified-files>`
 			: "";
 	return readSection + modifiedSection;
 }
@@ -174,6 +190,8 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	const notifiedOnce = new Set<string>();
+
 	pi.on("session_before_compact", async (event, ctx) => {
 		const { preparation, signal, customInstructions } = event;
 		const {
@@ -192,10 +210,13 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		if (!resolved?.apiKey) {
-			ctx.ui.notify(
-				"smart-compact: no model/auth available, using default compaction",
-				"warning",
-			);
+			if (!notifiedOnce.has("no-model")) {
+				notifiedOnce.add("no-model");
+				ctx.ui.notify(
+					"smart-compact: no model/auth available, using default compaction",
+					"warning",
+				);
+			}
 			return;
 		}
 
@@ -204,11 +225,6 @@ export default function (pi: ExtensionAPI) {
 		if (allMessages.length === 0) {
 			return; // nothing to summarise, let default handle it
 		}
-
-		ctx.ui.notify(
-			`smart-compact: summarising ${allMessages.length} messages (${tokensBefore.toLocaleString()} tokens) with ${resolved.model.id}…`,
-			"info",
-		);
 
 		const conversationText = serializeConversation(convertToLlm(allMessages));
 		const prompt = buildPrompt(
