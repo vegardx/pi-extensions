@@ -23,9 +23,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: make check
-        run: make check
+      - name: npm run check
+        run: npm run check
