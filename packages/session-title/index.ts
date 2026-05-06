@@ -83,6 +83,13 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
+// The editor factory type, derived from the public getEditorComponent API.
+// EditorFactory is not re-exported from @mariozechner/pi-coding-agent so we
+// infer it here to keep innerEditorFactory type-safe without extra imports.
+type EditorFactory = NonNullable<
+	ReturnType<ExtensionContext["ui"]["getEditorComponent"]>
+>;
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -578,26 +585,24 @@ function createStickyBar(): StickyBar {
 }
 
 // ---------------------------------------------------------------------------
-// TitledEditor — extends CustomEditor to inlay the title into the top border
+// Divider widget — wraps the active editor with a Proxy to inlay the title
 // ---------------------------------------------------------------------------
 //
-// Pi's editor (from @mariozechner/pi-tui) renders like:
+// Pi's editor renders like:
 //
 //   [0]  ─────────────────────────────────     ← top border (or scroll-up indicator)
 //   [1]  > your text here
 //   ...
-//   [N]  ─────────────────────────────────     ← bottom border (or scroll-down indicator)
+//   [N]  ─────────────────────────────────     ← bottom border
 //
-// By subclassing CustomEditor and overriding `render`, we can swap line 0
-// with our title-inlaid divider. Pi's `setCustomEditorComponent` uses duck
-// typing (`"actionHandlers" in newEditor`) to wire app-level handlers, which
-// works transparently for any CustomEditor subclass loaded via jiti. Editor
-// text and other state are preserved across editor swaps by pi.
+// Instead of subclassing CustomEditor, we wrap whatever editor factory is
+// currently active (e.g. GhostEditor from prompt-suggestion) with a Proxy.
+// The Proxy delegates all operations — text buffer, cursor, key handling,
+// ghost-text rendering on lines[1] — to the inner editor unchanged, and only
+// intercepts render() to replace lines[0] (the top border) with the divider.
 //
-// We use a shared mutable state object instead of passing title/style/theme
-// to the constructor, so `/title` updates reflect without having to rebuild
-// the editor. `theme` is the pi theme singleton (a globalThis Proxy), so a
-// captured reference automatically tracks theme changes.
+// The inner factory is captured via ctx.ui.getEditorComponent() and restored
+// when the divider surface is deactivated.
 
 interface TitleState {
 	title: string;
@@ -708,7 +713,7 @@ export default function (pi: ExtensionAPI) {
 	let editorTui: TUI | undefined;
 	// The editor factory that was active before we installed our proxy wrapper.
 	// Restored when the divider surface is deactivated.
-	let innerEditorFactory: ((...args: unknown[]) => EditorComponent) | undefined;
+	let innerEditorFactory: EditorFactory | undefined;
 
 	function requestEditorRerender(): void {
 		editorTui?.requestRender();
@@ -836,7 +841,7 @@ export default function (pi: ExtensionAPI) {
 
 			if (!titledEditorInstalled) {
 				const existingFactory = ctx.ui.getEditorComponent();
-				innerEditorFactory = existingFactory as typeof innerEditorFactory;
+				innerEditorFactory = existingFactory;
 				ctx.ui.setEditorComponent((tui, editorTheme, keybindings) => {
 					editorTui = tui;
 					const inner: EditorComponent = existingFactory
@@ -850,11 +855,7 @@ export default function (pi: ExtensionAPI) {
 			}
 		} else if (titledEditorInstalled) {
 			// Restore the inner factory (e.g. GhostEditor) without our wrapper.
-			ctx.ui.setEditorComponent(
-				(innerEditorFactory as Parameters<
-					typeof ctx.ui.setEditorComponent
-				>[0]) ?? undefined,
-			);
+			ctx.ui.setEditorComponent(innerEditorFactory);
 			titledEditorInstalled = false;
 			editorTui = undefined;
 			innerEditorFactory = undefined;
