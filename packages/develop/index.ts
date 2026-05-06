@@ -140,10 +140,13 @@ interface DevelopState {
  * for the `auto-reviewing` and `awaiting-auto-review-fix` phases.
  */
 interface AutoReviewState {
-	/** Auto-eligible findings handed to the host agent. The host fix
-	 *  turn ends with a normal `agent_end`, at which point /develop
-	 *  transitions to the post-execution picker. */
-	appliedCount: number;
+	/**
+	 * Total findings handed to the host agent as pending work: the sum
+	 * of auto-applied fixes and findings surfaced for user discussion.
+	 * Used by `decideAutoReviewNextAction` to decide whether a host
+	 * agent turn is expected before the post-execution picker fires.
+	 */
+	pendingCount: number;
 	/** Models actually used — surfaced in the widget for transparency. */
 	primaryModel?: string;
 	secondaryModel?: string;
@@ -391,7 +394,7 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			case "awaiting-auto-review-fix": {
-				const applied = state.autoReview?.appliedCount ?? 0;
+				const applied = state.autoReview?.pendingCount ?? 0;
 				ctx.ui.setStatus(
 					EXT_ID,
 					`🔧 auto-review fix — ${applied} consensus finding(s)`,
@@ -629,7 +632,7 @@ export default function (pi: ExtensionAPI) {
 	// After execution completes, before the post-execution picker,
 	// run a focused cross-model review using the configured roles.
 	// Roles and multi-model mode are read from settings; defaults:
-	//   autoReviewRoles: "code-reviewer,code-simplifier"
+	//   autoReviewRoles: ["code-reviewer", "code-simplifier"]
 	//   autoReviewMultiModel: true
 	//
 	// State flow:
@@ -714,7 +717,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		state.phase = "auto-reviewing";
-		state.autoReview = { appliedCount: 0 };
+		state.autoReview = { pendingCount: 0 };
 		persist();
 		updateWidget(ctx);
 
@@ -738,7 +741,7 @@ export default function (pi: ExtensionAPI) {
 		if (state.autoReview) {
 			state.autoReview.primaryModel = result.primaryModel;
 			state.autoReview.secondaryModel = result.secondaryModel;
-			state.autoReview.appliedCount =
+			state.autoReview.pendingCount =
 				(result.autoApplied?.length ?? 0) + (result.surfaced?.length ?? 0);
 		}
 		persist();
