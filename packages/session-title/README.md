@@ -129,11 +129,18 @@ LLM to name the session for you after the first turn that either:
 
 Before that threshold fires, the **current git branch** (or cwd basename)
 is shown — you never see a blank title. After the initial title is set, the
-extension re-evaluates it every **3 turns** (configurable) using recent
+extension re-evaluates it every **3 agent completions** (configurable) using recent
 conversation context. It only updates if the focus has meaningfully shifted;
 otherwise the model replies `KEEP` and the title stays.
 
 Auto-title never beats `/title`, `--title`, or `$PI_SESSION_TITLE`.
+
+When the working directory is inside a git repository with a GitHub or
+GitLab remote, auto-generated titles are prefixed with `owner/repo:`
+(e.g. `vegardx/pi-extensions: Fix login redirect`). This makes session
+list entries scannable when you work across multiple repositories. The
+prefix is stripped from the LLM prompt so the model focuses on the
+task, not the repo name.
 
 ### Knobs
 
@@ -143,7 +150,7 @@ Auto-title never beats `/title`, `--title`, or `$PI_SESSION_TITLE`.
 | `PI_SESSION_AUTO_TITLE`                  | `1`                      | Set to `0` / `off` / `false` / `no` to disable.                                                            |
 | `PI_SESSION_AUTO_TITLE_MODEL`            | unset                    | `provider/id` override, e.g. `openai/gpt-4o-mini`. Wins over `settings.json`. Kept for backwards compat.  |
 | `PI_SESSION_AUTO_TITLE_THRESHOLD_CHARS`  | `500`                    | User-input character threshold before the initial title fires.                                              |
-| `PI_SESSION_AUTO_RETITLE_TURNS`          | `3`                      | Re-evaluate the title every N turns after the initial one is set. Set to `0` to disable retitling.         |
+| `PI_SESSION_AUTO_RETITLE_TURNS`          | `3`                      | Re-evaluate the title every N completed agent runs after the initial one is set. Set to `0` to disable retitling.         |
 | `PI_SESSION_AUTO_TITLE_CONTEXT_MESSAGES` | `3`                      | Number of recent messages to include as context when re-evaluating the title.                               |
 
 If no model can be resolved or none has credentials, auto-title silently

@@ -262,8 +262,10 @@ export type AutoReviewNextAction = "apply-fixes" | "skip-to-picker";
 export function decideAutoReviewNextAction(opts: {
 	ran: boolean;
 	appliedCount: number;
+	surfacedCount: number;
 }): AutoReviewNextAction {
 	if (!opts.ran) return "skip-to-picker";
-	if (opts.appliedCount <= 0) return "skip-to-picker";
+	if (opts.appliedCount <= 0 && opts.surfacedCount <= 0)
+		return "skip-to-picker";
 	return "apply-fixes";
 }

@@ -19,6 +19,8 @@
  * this module owns the model resolution, fan-out, consensus filtering,
  * and fix-prompt assembly.
  */
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -28,6 +30,7 @@ import type {
 	Tier,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import {
 	type BackgroundTier,
 	crossModelConsensus,
@@ -57,10 +60,27 @@ export const AUTO_REVIEW_ROLES: readonly ReviewerRole[] = [
 	"code-simplifier",
 ] as const;
 
+/** Allowlist used to validate user-supplied role strings at runtime. */
+const VALID_REVIEWER_ROLES = new Set<ReviewerRole>([
+	"architect",
+	"code-reviewer",
+	"scope-analyst",
+	"security-analyst",
+	"code-simplifier",
+	"doc-reviewer",
+	"dependency-checker",
+]);
+
 /** Fixed tier this pass uses on both `primary` and `secondary` sets. */
 const AUTO_REVIEW_TIER: Tier = "heavy";
 
 const AUTO_REVIEW_WIDGET = "auto-review-progress";
+
+const CHALLENGER_PROMPT_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"prompts",
+	"challenger.md",
+);
 
 /** Diff scope the auto-review operates on. Matches `/review`'s scopes
  *  but narrowed to the two relevant in-branch contexts: `/develop`
@@ -106,6 +126,7 @@ export type AutoReviewAbortReason =
 	| "no-diff"
 	| "no-primary-model"
 	| "no-secondary-model"
+	| "no-valid-roles"
 	| "fanout-error";
 
 export interface RunAutoReviewResult {
@@ -116,9 +137,18 @@ export interface RunAutoReviewResult {
 	findings?: Finding[];
 	/** Subset auto-eligible: cross-model consensus + concrete fix. */
 	autoApplied?: Finding[];
+	/**
+	 * Consensus findings surfaced to the host agent for user discussion
+	 * (cross-model consensus but no concrete suggested fix).
+	 */
+	surfaced?: Finding[];
 	/** Models actually used (for the report message). */
 	primaryModel?: string;
 	secondaryModel?: string;
+	/** How many CRITICAL single-tier findings were challenged (phase 2). */
+	challengedCount?: number;
+	/** Of those challenged, how many the other model agreed with. */
+	challengedAgreedCount?: number;
 	/** Per-(role, tier) reviewer errors, surfaced via the report. */
 	errors?: Array<{ role: ReviewerRole; tier: BackgroundTier; error: string }>;
 }
@@ -199,6 +229,197 @@ function buildTaskFor(role: ReviewerRole, rc: AutoReviewContext): string {
 		"Otherwise, emit JSON per your system prompt.",
 	);
 	return lines.join("\n");
+}
+
+// ---- Challenge phase ---------------------------------------------------
+//
+// Phase 2 of the auto-review: for every CRITICAL finding that only one
+// model tier flagged in phase 1, ask the OTHER tier's model to evaluate
+// it. If the challenger agrees, the finding is promoted to cross-model
+// consensus — so genuinely critical issues are not silently dropped
+// just because the second model happened not to surface them independently
+// (a real risk given non-deterministic reviewer outputs).
+//
+// Only CRITICAL findings are challenged. IMPORTANT/NOTE single-tier
+// findings are left as-is — the challenge overhead is only justified
+// for the highest-stakes findings.
+
+interface ChallengePromotion {
+	/** The finding to promote to cross-model consensus. */
+	finding: Finding;
+	/** Challenger's suggested fix, if better than the original. */
+	suggestedAction?: string;
+}
+
+interface ChallengeOutcome {
+	finding: Finding;
+	agree: boolean;
+	reason?: string;
+	suggestedAction?: string;
+	error?: string;
+}
+
+function parseChallengeResponse(
+	raw: string,
+): { agree: boolean; reason: string; suggestedAction?: string } | null {
+	if (!raw || raw.trim().length === 0) return null;
+	const fence = raw.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
+	const payload = (fence ? fence[1] : raw).trim();
+	if (payload.length === 0) return null;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(payload);
+	} catch {
+		return null;
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+		return null;
+	const obj = parsed as Record<string, unknown>;
+	if (typeof obj.agree !== "boolean") return null;
+	const reason = typeof obj.reason === "string" ? obj.reason : "";
+	const suggestedAction =
+		typeof obj.suggestedAction === "string" && obj.suggestedAction.trim()
+			? obj.suggestedAction.trim()
+			: undefined;
+	return { agree: obj.agree, reason, suggestedAction };
+}
+
+function buildChallengeTask(finding: Finding, rc: AutoReviewContext): string {
+	const loc = finding.line ? `${finding.file}:${finding.line}` : finding.file;
+	const lines: string[] = [
+		`You are evaluating a CRITICAL finding from another code reviewer. Respond with the JSON schema your system prompt describes.`,
+		``,
+		`## Finding to evaluate`,
+		``,
+		`- **File**: ${loc}`,
+		`- **Reviewer lane(s)**: ${finding.flaggedBy.join(", ")}`,
+		`- **Title**: ${finding.title}`,
+		`- **Description**: ${finding.description}`,
+		`- **Proposed fix**: ${finding.suggestedAction?.trim() || "none proposed"}`,
+		``,
+		`## Code diff (scope: ${rc.scopeLabel})`,
+		``,
+		"```diff",
+		rc.diff.trimEnd(),
+		"```",
+	];
+	return lines.join("\n");
+}
+
+async function runChallengePhase(opts: {
+	findings: Finding[];
+	rc: AutoReviewContext;
+	primary: ResolvedTierModel;
+	secondary: ResolvedTierModel;
+	extensionName: string;
+	ctx: ExtensionContext;
+	signal?: AbortSignal;
+}): Promise<{
+	challenged: number;
+	agreed: number;
+	promotions: ChallengePromotion[];
+}> {
+	const { findings, rc, primary, secondary, extensionName, ctx } = opts;
+
+	const targets = findings.filter(
+		(f) =>
+			f.severity === "CRITICAL" &&
+			f.crossModelConsensus === false &&
+			(f.flaggedByTier?.length ?? 0) === 1,
+	);
+
+	if (targets.length === 0) return { challenged: 0, agreed: 0, promotions: [] };
+
+	notify(
+		ctx,
+		`challenge phase: ${targets.length} critical single-tier finding(s) — asking the other model`,
+		"info",
+	);
+
+	const challengeStatus = new Map<string, "running" | "done">();
+	for (let i = 0; i < targets.length; i++) {
+		challengeStatus.set(`challenge ${i + 1}/${targets.length}`, "running");
+	}
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(extensionName, `challenge 0/${targets.length}`);
+		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, renderProgress(challengeStatus));
+	}
+
+	let completedChallenges = 0;
+	const outcomes: ChallengeOutcome[] = await Promise.all(
+		targets.map(async (finding, i): Promise<ChallengeOutcome> => {
+			const flaggedTier = finding.flaggedByTier?.[0];
+			const challenger = flaggedTier === "primary" ? secondary : primary;
+
+			const task = buildChallengeTask(finding, rc);
+			const out = await runSubagent({
+				tag: `challenge-${i}`,
+				task,
+				systemPromptPath: CHALLENGER_PROMPT_PATH,
+				provider: challenger.provider,
+				model: challenger.modelId,
+				cwd: ctx.cwd,
+				signal: opts.signal,
+				timeoutMs: reviewTimeoutMs(rc.diff.length),
+			});
+
+			completedChallenges++;
+			const challengeKey = `challenge ${i + 1}/${targets.length}`;
+			challengeStatus.set(challengeKey, "done");
+			if (ctx.hasUI) {
+				ctx.ui.setStatus(
+					extensionName,
+					`challenge ${completedChallenges}/${targets.length}`,
+				);
+				ctx.ui.setWidget(AUTO_REVIEW_WIDGET, renderProgress(challengeStatus));
+			}
+
+			if (out.error) {
+				return { finding, agree: false, error: out.error };
+			}
+			const parsed = parseChallengeResponse(out.rawText);
+			if (!parsed) {
+				return {
+					finding,
+					agree: false,
+					error: `challenge response not parseable: ${out.rawText.slice(0, 200)}`,
+				};
+			}
+			return {
+				finding,
+				agree: parsed.agree,
+				reason: parsed.reason,
+				suggestedAction: parsed.suggestedAction,
+			};
+		}),
+	);
+
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(extensionName, undefined);
+		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
+	}
+
+	let agreed = 0;
+	const promotions: ChallengePromotion[] = [];
+	for (const outcome of outcomes) {
+		if (outcome.error) {
+			notify(
+				ctx,
+				`challenge failed for "${outcome.finding.title}": ${outcome.error.split("\n")[0]}`,
+				"warning",
+			);
+			continue;
+		}
+		if (!outcome.agree) continue;
+
+		promotions.push({
+			finding: outcome.finding,
+			suggestedAction: outcome.suggestedAction,
+		});
+		agreed++;
+	}
+
+	return { challenged: targets.length, agreed, promotions };
 }
 
 interface ReviewerInvocationKey {
@@ -307,6 +528,9 @@ export function buildAutoReviewReport(opts: {
 	secondaryModel?: string;
 	findings: readonly Finding[];
 	autoApplied: readonly Finding[];
+	surfaced: readonly Finding[];
+	challengedCount: number;
+	challengedAgreedCount: number;
 	errors: ReadonlyArray<{
 		role: ReviewerRole;
 		tier: BackgroundTier;
@@ -328,15 +552,21 @@ export function buildAutoReviewReport(opts: {
 	}
 	lines.push("");
 	const totalFindings = opts.findings.length;
-	const agreed = opts.autoApplied.length;
-	const disagreed = totalFindings - agreed;
+	const autoCount = opts.autoApplied.length;
+	const surfacedCount = opts.surfaced.length;
+	const dropped = totalFindings - autoCount - surfacedCount;
 	if (opts.multiModel) {
 		lines.push(
-			`**Findings**: ${totalFindings} total · ${agreed} cross-model agreed · ${disagreed} flagged by only one tier (dropped)`,
+			`**Findings**: ${totalFindings} total · ${autoCount} auto-applying · ${surfacedCount} for discussion · ${dropped} single-tier (dropped)`,
 		);
+		if (opts.challengedCount > 0) {
+			lines.push(
+				`**Challenge phase**: ${opts.challengedAgreedCount}/${opts.challengedCount} critical single-tier findings confirmed by second model`,
+			);
+		}
 	} else {
 		lines.push(
-			`**Findings**: ${totalFindings} total · ${agreed} with concrete fix (auto-applying) · ${disagreed} without fix suggestion (dropped)`,
+			`**Findings**: ${totalFindings} total · ${autoCount} with concrete fix (auto-applying) · ${surfacedCount} for discussion · ${dropped} without fix (dropped)`,
 		);
 	}
 	if (opts.errors.length > 0) {
@@ -344,31 +574,97 @@ export function buildAutoReviewReport(opts: {
 			`**Reviewer errors**: ${opts.errors.length} (the affected lane was treated as empty)`,
 		);
 	}
-	if (agreed === 0) {
+	if (autoCount === 0 && surfacedCount === 0) {
 		lines.push("");
 		if (opts.multiModel) {
 			lines.push(
-				"No cross-model consensus findings. Nothing to auto-apply.",
+				"No cross-model consensus findings. Nothing to auto-apply or discuss.",
 				"Run `/review` for the full seven-lane interactive walk-through if",
 				"you want to look at the per-tier flags individually.",
 			);
 		} else {
 			lines.push(
-				"No findings with concrete fix suggestions. Nothing to auto-apply.",
+				"No findings with concrete fix suggestions. Nothing to auto-apply or discuss.",
 				"Run `/review` for the full seven-lane interactive walk-through.",
 			);
 		}
 		return lines.join("\n");
 	}
-	lines.push("");
-	lines.push("### Auto-applying:");
-	lines.push("");
-	opts.autoApplied.forEach((f, idx) => {
+	if (autoCount > 0) {
+		lines.push("");
+		lines.push("### Auto-applying:");
+		lines.push("");
+		opts.autoApplied.forEach((f, idx) => {
+			const loc = f.line ? `${f.file}:${f.line}` : f.file;
+			const challenged = f.challengedConsensus ? " †" : "";
+			lines.push(
+				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.flaggedBy.join(", ")})${challenged}`,
+			);
+		});
+		if (opts.challengedAgreedCount > 0) {
+			lines.push("");
+			lines.push("† confirmed via challenge (second model explicitly agreed)");
+		}
+	}
+	if (surfacedCount > 0) {
+		lines.push("");
+		lines.push("### Needs discussion (no concrete fix):");
+		lines.push("");
+		opts.surfaced.forEach((f, idx) => {
+			const loc = f.line ? `${f.file}:${f.line}` : f.file;
+			const challenged = f.challengedConsensus ? " †" : "";
+			lines.push(
+				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.flaggedBy.join(", ")})${challenged}`,
+			);
+		});
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Build the host-agent prompt for consensus findings that have no concrete
+ * `suggestedAction`. Asks the agent to surface each finding to the user
+ * and collect their decision (fix / investigate further / accept the risk).
+ *
+ * @param surfaced    Consensus findings without a concrete fix.
+ * @param primaryModel   The primary-tier model spec used in the pass.
+ * @param secondaryModel The secondary-tier model spec, or `undefined` when
+ *                       running in single-model mode. Controls the intro
+ *                       sentence phrasing ("two reviewers agreed" vs
+ *                       "the primary reviewer flagged").
+ *
+ * Callers should pass `primary.spec` and `secondary?.spec` from `runAutoReview`.
+ */
+export function buildAutoReviewDiscussionPrompt(
+	surfaced: readonly Finding[],
+	primaryModel: string,
+	secondaryModel: string | undefined,
+): string {
+	const isMultiModel = secondaryModel !== undefined;
+	const intro = isMultiModel
+		? `Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`) agreed the following issue(s) are real, but neither provided a concrete fix. Surface each one to the user and ask how they'd like to proceed.`
+		: `The primary reviewer (\`${primaryModel}\`) flagged the following issue(s) without a concrete fix. Surface each one to the user and ask how they'd like to proceed.`;
+	const lines: string[] = [
+		"[/develop auto-review \u2014 needs discussion]",
+		"",
+		intro,
+		"",
+	];
+	surfaced.forEach((f, idx) => {
 		const loc = f.line ? `${f.file}:${f.line}` : f.file;
 		lines.push(
-			`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.flaggedBy.join(", ")})`,
+			`${idx + 1}. **[${f.severity}] \`${loc}\`** \u2014 ${f.title}`,
+			`   - Lanes: ${f.flaggedBy.join(", ")}`,
+			`   - Why: ${f.description}`,
+			``,
 		);
 	});
+	lines.push(
+		`For each finding, ask the user whether they want to:`,
+		`a) Fix it (propose a concrete fix based on context)`,
+		`b) Investigate further (look deeper before deciding)`,
+		`c) Accept the risk / skip (with a brief reason)`,
+	);
 	return lines.join("\n");
 }
 
@@ -400,9 +696,29 @@ export async function runAutoReview(
 		return { ran: false, abortReason: "no-diff" };
 	}
 
-	const roles = (
-		opts.roles?.length ? opts.roles : AUTO_REVIEW_ROLES
-	) as ReviewerRole[];
+	const rawRoles = opts.roles?.length
+		? opts.roles
+		: (AUTO_REVIEW_ROLES as string[]);
+	const roles: ReviewerRole[] = [];
+	for (const r of rawRoles) {
+		if (VALID_REVIEWER_ROLES.has(r as ReviewerRole)) {
+			roles.push(r as ReviewerRole);
+		} else {
+			notify(
+				ctx,
+				`unknown reviewer role "${r}" in autoReviewRoles — skipping`,
+				"warning",
+			);
+		}
+	}
+	if (roles.length === 0) {
+		notify(
+			ctx,
+			"no valid roles remain after filtering autoReviewRoles — aborting auto-review",
+			"warning",
+		);
+		return { ran: false, abortReason: "no-valid-roles" };
+	}
 	const multiModel = opts.multiModel ?? true;
 
 	const primary = await resolveTierModel(ctx, extensionName, "primary");
@@ -533,13 +849,58 @@ export async function runAutoReview(
 		tier: o.tier,
 	}));
 	const findings = dedupeFindings(bundles);
-	// Auto-apply: in multi-model mode, require cross-model consensus.
-	// In single-model mode, apply any finding with a concrete fix.
+
+	// ---- Phase 2: challenge CRITICAL single-tier findings ----------------
+	// When running in multi-model mode, any CRITICAL finding that only one
+	// tier flagged is sent to the OTHER model as a targeted challenge.
+	// If the challenger agrees, the finding is promoted to cross-model
+	// consensus — catching issues that slipped through phase 1 due to
+	// non-determinism rather than genuine disagreement.
+	let challengedCount = 0;
+	let challengedAgreedCount = 0;
+	if (multiModel && secondary) {
+		const { challenged, agreed, promotions } = await runChallengePhase({
+			findings,
+			rc,
+			primary,
+			secondary,
+			extensionName,
+			ctx,
+			signal: ctx.signal,
+		});
+		challengedCount = challenged;
+		challengedAgreedCount = agreed;
+		// Apply promotions here — after runChallengePhase returns and
+		// before the consensus split — so callers see a clean pipeline
+		// where mutations happen at a single, explicit point.
+		for (const { finding, suggestedAction } of promotions) {
+			const existing = finding.flaggedByTier ?? [];
+			const flaggedTier = existing[0];
+			const challengerTier: BackgroundTier =
+				flaggedTier === "primary" ? "secondary" : "primary";
+			if (!existing.includes(challengerTier)) {
+				finding.flaggedByTier = [...existing, challengerTier];
+			}
+			finding.crossModelConsensus = true;
+			finding.challengedConsensus = true;
+			if (
+				suggestedAction &&
+				(!finding.suggestedAction ||
+					suggestedAction.length > finding.suggestedAction.length)
+			) {
+				finding.suggestedAction = suggestedAction;
+			}
+		}
+	}
+
+	// ---- Split consensus into auto-apply and surface-to-user -------------
 	const withFix = (f: Finding) =>
 		f.suggestedAction !== undefined && f.suggestedAction.trim() !== "";
-	const autoApplied = multiModel
-		? crossModelConsensus(findings).filter(withFix)
-		: findings.filter(withFix);
+	const consensusFindings = multiModel
+		? crossModelConsensus(findings)
+		: findings;
+	const autoApplied = consensusFindings.filter(withFix);
+	const surfaced = consensusFindings.filter((f) => !withFix(f));
 
 	const secondarySpec = secondary?.spec;
 	pi.sendMessage(
@@ -553,6 +914,9 @@ export async function runAutoReview(
 				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				findings,
 				autoApplied,
+				surfaced,
+				challengedCount,
+				challengedAgreedCount,
 				errors,
 			}),
 			display: true,
@@ -560,6 +924,9 @@ export async function runAutoReview(
 				scopeLabel: rc.scopeLabel,
 				totalFindings: findings.length,
 				autoApplied: autoApplied.length,
+				surfaced: surfaced.length,
+				challengedCount,
+				challengedAgreedCount,
 				primaryModel: primary.spec,
 				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				errorCount: errors.length,
@@ -567,6 +934,8 @@ export async function runAutoReview(
 		},
 		{ triggerTurn: false },
 	);
+
+	const hasPendingWork = autoApplied.length > 0 || surfaced.length > 0;
 
 	if (autoApplied.length > 0) {
 		pi.sendMessage(
@@ -584,17 +953,46 @@ export async function runAutoReview(
 					...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				},
 			},
+			{ deliverAs: "followUp", triggerTurn: surfaced.length === 0 },
+		);
+	}
+
+	if (surfaced.length > 0) {
+		pi.sendMessage(
+			{
+				customType: "auto-review-discussion",
+				content: buildAutoReviewDiscussionPrompt(
+					surfaced,
+					primary.spec,
+					secondarySpec,
+				),
+				display: false,
+				details: {
+					surfaced: surfaced.length,
+					primaryModel: primary.spec,
+					...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+				},
+			},
 			{ deliverAs: "followUp", triggerTurn: true },
 		);
-		const howMany = multiModel
-			? `${autoApplied.length} cross-model agreed finding(s)`
-			: `${autoApplied.length} finding(s) with suggested fix(es)`;
-		notify(ctx, `${howMany} handed to the host agent`, "info");
-	} else {
+	}
+
+	if (!hasPendingWork) {
 		const msg = multiModel
-			? "no cross-model consensus — nothing to apply"
-			: "no findings with suggested fixes — nothing to apply";
+			? "no cross-model consensus — nothing to apply or discuss"
+			: "no findings with suggested fixes — nothing to apply or discuss";
 		notify(ctx, msg, "info");
+	} else {
+		const parts: string[] = [];
+		if (autoApplied.length > 0) {
+			const howMany = multiModel
+				? `${autoApplied.length} consensus fix(es) queued`
+				: `${autoApplied.length} fix(es) queued`;
+			parts.push(howMany);
+		}
+		if (surfaced.length > 0)
+			parts.push(`${surfaced.length} finding(s) for discussion`);
+		notify(ctx, parts.join(", "), "info");
 	}
 
 	return {
@@ -602,6 +1000,9 @@ export async function runAutoReview(
 		scopeLabel: rc.scopeLabel,
 		findings,
 		autoApplied,
+		surfaced,
+		challengedCount,
+		challengedAgreedCount,
 		primaryModel: primary.spec,
 		...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 		errors,

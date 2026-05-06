@@ -14,6 +14,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { candidateJsonPayloads } from "@vegardx/pi-extensions-shared/json-extraction.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 
@@ -286,47 +287,10 @@ function coerceVerdict(parsed: unknown): VerifierVerdict | null {
 	return null;
 }
 
-/**
- * Return candidate JSON payload strings to try parsing, in priority order:
- *   1. Whole trimmed text (fast path — well-behaved models emit bare JSON).
- *   2. Content of the first code fence found *anywhere* in the text
- *      (some models wrap in ```json despite being told not to).
- *   3. Text from the first `[` onward — handles prose-then-array without
- *      a fence, which is the most common misbehaviour we observe.
- *   4. Text from the first `{` onward — same for objects.
- *
- * Deduplicates so the same string is never tried twice. The first
- * candidate that parses successfully wins; no candidate is guaranteed
- * to produce valid JSON.
- */
-function candidatePayloads(trimmed: string): string[] {
-	const seen = new Set<string>();
-	const out: string[] = [];
-	const push = (s: string) => {
-		const t = s.trim();
-		if (t && !seen.has(t)) {
-			seen.add(t);
-			out.push(t);
-		}
-	};
-	push(trimmed);
-	// Fence anywhere in the response (no ^ / $ anchors).
-	const fence = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-	if (fence?.[1]) push(fence[1]);
-	// Prose before a bare array.
-	const bracketIdx = trimmed.indexOf("[");
-	if (bracketIdx > 0) push(trimmed.slice(bracketIdx));
-	// Prose before a bare object.
-	const braceIdx = trimmed.indexOf("{");
-	if (braceIdx > 0) push(trimmed.slice(braceIdx));
-	return out;
-}
-
 export function parseVerdict(rawText: string): VerifierVerdict | null {
-	const trimmed = rawText.trim();
-	if (!trimmed) return null;
+	if (!rawText.trim()) return null;
 
-	for (const candidate of candidatePayloads(trimmed)) {
+	for (const candidate of candidateJsonPayloads(rawText)) {
 		try {
 			const parsed = JSON.parse(candidate);
 			const v = coerceVerdict(parsed);
@@ -358,10 +322,9 @@ export function parseVerdict(rawText: string): VerifierVerdict | null {
 export function parseVerdictArray(
 	rawText: string,
 ): readonly VerifierVerdict[] | null {
-	const trimmed = rawText.trim();
-	if (!trimmed) return null;
+	if (!rawText.trim()) return null;
 
-	for (const candidate of candidatePayloads(trimmed)) {
+	for (const candidate of candidateJsonPayloads(rawText)) {
 		let parsed: unknown;
 		try {
 			parsed = JSON.parse(candidate);

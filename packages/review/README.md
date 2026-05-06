@@ -170,29 +170,36 @@ Then in pi:
 
 In addition to the interactive `/review` command, this package exports
 `runAutoReview(...)` from `pi-ext-review/auto-review`. It is consumed
-by `/develop` between the auto-verify loop and the post-loop picker.
+by `/develop` after execution completes, before the post-execution picker.
 
 Differences from the interactive `/review` command:
 
-- **Two lanes only**: `code-reviewer` and `code-simplifier`. The other
-  five (architect, scope, security, docs, deps) are out of scope — the
-  auto-apply path means we trade breadth for high-confidence mechanical
-  fixes only.
-- **Two models, side by side**: every lane runs once against
+- **Configurable roles** (default: `code-reviewer` and
+  `code-simplifier`). Set `extensionConfig.develop.autoReviewRoles`
+  to any subset of the seven reviewer roles.
+- **Multi-model or single-model mode** (`autoReviewMultiModel`,
+  default `true`). When `true`, each role runs once against
   `backgroundModels.primary.heavy` and once against
-  `backgroundModels.secondary.heavy` (resolved via
-  `@vegardx/pi-extensions-shared/model-resolver`). Four subagents fan
-  out in parallel.
-- **Cross-model consensus**: `dedupeFindings` records `flaggedByTier`
-  on every merged finding; `crossModelConsensus(findings)` filters
-  down to those flagged by both `primary` and `secondary`. Only
-  consensus findings with a concrete `suggestedAction` get queued for
-  the host agent.
+  `backgroundModels.secondary.heavy`; only cross-model consensus
+  findings with a concrete `suggestedAction` are auto-applied.
+  When `false`, only `primary.heavy` is used and all findings with
+  a `suggestedAction` are applied (no consensus gate).
+- **Challenge phase** (multi-model mode only). After the initial
+  fan-out, every CRITICAL finding that only one tier flagged is sent
+  to the OTHER model as a targeted challenge: “Do you agree this is
+  a real issue?” If the challenger agrees, the finding is promoted
+  to cross-model consensus (annotated with † in the report) and
+  its `suggestedAction` is updated if the challenger provides a
+  better one. Only CRITICAL findings are challenged — the overhead
+  is only justified for the highest-stakes issues.
+- **Consensus split**: findings that reach consensus (phase 1 or
+  challenge) are split by whether a concrete fix is available:
+  - With `suggestedAction` → fix prompt queued for the host agent.
+  - Without `suggestedAction` → discussion prompt: the host agent
+    surfaces the finding to the user (fix / investigate / skip).
 - **No interactive walk**: there is no Accept / Skip / Explain picker.
-  The fix prompt is sent directly via
-  `pi.sendMessage(..., { triggerTurn: true })`; the host agent applies
-  the fixes and `/develop`'s `agent_end` handler picks the post-loop
-  picker back up afterwards.
+  The fix and discussion prompts are sent directly via
+  `pi.sendMessage(..., { triggerTurn: true })`.
 
 Settings:
 
@@ -203,16 +210,19 @@ Settings:
     "secondary": { "heavy": "openai/gpt-4-turbo" }
   },
   "extensionConfig": {
-    "develop": { "autoReview": false }   // disable the pass entirely
+    "develop": {
+      "autoReview": false,           // disable entirely
+      "autoReviewRoles": ["code-reviewer", "code-simplifier"],
+      "autoReviewMultiModel": true    // false = primary-only, no consensus gate
+    }
   }
 }
 ```
 
-If either tier is unresolvable, the pass is skipped (fail-open: the
-user still gets the post-loop picker). If both tiers point at the
-same model, every finding becomes "consensus" trivially — the
-cross-check is only meaningful when the two model families are
-actually different.
+If a model tier is unresolvable the pass is skipped (fail-open: the
+user still gets the post-execution picker). If both tiers point at
+the same model every finding becomes “consensus” trivially — use two
+different model families for the cross-check to be meaningful.
 
 ## Known limitations
 
