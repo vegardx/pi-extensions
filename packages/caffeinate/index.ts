@@ -53,6 +53,22 @@ export function renderStatusLine(state: KeepAwakeState): string {
 }
 
 /**
+ * Returns the pill string for the footer when the extension is enabled and
+ * the platform is supported, or `undefined` to clear the pill when the user
+ * has not opted in (or the platform can't support it).
+ *
+ * The pill is intentionally absent when disabled/unsupported so the footer
+ * stays clean by default — it only appears when there is something useful
+ * to say ("active" / "inactive").
+ */
+export function statusPill(state: KeepAwakeState): string | undefined {
+	if (!state.supported || !state.enabled) return undefined;
+	if (!state.active) return "caffeinate: inactive";
+	const reasons = state.reasons.length ? ` (${state.reasons.join(", ")})` : "";
+	return `caffeinate: active${reasons}`;
+}
+
+/**
  * One-shot human-readable status (used by `/caffeinate` with no args).
  * Renders multiple lines; we hand the join'd string to `ctx.ui.notify`.
  */
@@ -147,7 +163,7 @@ export default function (pi: ExtensionAPI) {
 
 	const refresh = (ctx: ExtensionContext) => {
 		const state = getKeepAwakeState(ctx);
-		ctx.ui.setStatus(EXT_ID, renderStatusLine(state));
+		ctx.ui.setStatus(EXT_ID, statusPill(state));
 	};
 
 	pi.on("session_start", (_event, ctx) => {
@@ -164,7 +180,7 @@ export default function (pi: ExtensionAPI) {
 			// has no ctx and falls back to `enabled: holders > 0`, which
 			// would show "disabled" after the last holder releases even
 			// when the user opted in.
-			ctx.ui.setStatus(EXT_ID, renderStatusLine(getKeepAwakeState(ctx)));
+			ctx.ui.setStatus(EXT_ID, statusPill(getKeepAwakeState(ctx)));
 		});
 		refresh(ctx);
 	});
