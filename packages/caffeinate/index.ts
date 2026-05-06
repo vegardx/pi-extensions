@@ -26,7 +26,6 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import {
 	acquireKeepAwake,
-	DEFAULT_FLAGS,
 	EXT_ID,
 	getKeepAwakeState,
 	type KeepAwakeState,
@@ -135,12 +134,12 @@ export default function (pi: ExtensionAPI) {
 				default: false,
 				doc: "Master opt-in. When false, every acquireKeepAwake() returns a no-op handle and no caffeinate subprocess is ever spawned.",
 			},
-			{
-				key: "flags",
-				type: "string",
-				default: [...DEFAULT_FLAGS],
-				doc: "Argv passed to caffeinate(8) before the auto-appended `-w <pi-pid>`. Default: ['-i','-m'] — idle + disk-idle, no display, no AC-only system sleep.",
-			},
+			// `flags` (string[]) is read at spawn time but intentionally not
+			// declared in configSchema: ConfigKeyType supports only
+			// string/number/boolean/enum, and rendering an array under
+			// `type: "string"` would mislead `/extensions`. The default
+			// (`["-i","-m"]`) and override syntax are documented in the
+			// extension's README.
 		],
 	});
 

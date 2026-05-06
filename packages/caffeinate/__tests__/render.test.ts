@@ -186,10 +186,13 @@ describe("setEnabledInProjectSettings", () => {
 		expect(previous).toBe(true);
 	});
 
-	it("recovers from a corrupt settings.json by overwriting it", () => {
+	it("throws on a corrupt settings.json instead of silently overwriting it", () => {
 		mkdirSync(join(cwd, ".pi"), { recursive: true });
 		writeFileSync(join(cwd, ".pi", "settings.json"), "this is not json {{{");
-		// Should throw — we don't want to silently nuke the user's file.
+		// Fail closed: the user's existing (broken) file is preserved
+		// and the toggle is reported as a hard error in the slash-command
+		// handler. Silently overwriting could clobber a partially-written
+		// edit the user is mid-rescue on.
 		expect(() => setEnabledInProjectSettings(cwd, true)).toThrow();
 	});
 });

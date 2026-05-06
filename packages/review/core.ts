@@ -600,14 +600,13 @@ export interface RunReviewResult {
 export async function runReview(
 	opts: RunReviewOptions,
 ): Promise<RunReviewResult> {
-	const { ctx, pi, arg = "" } = opts;
-
 	// Hold a keep-awake lock for the duration of the run — the
 	// seven-reviewer fan-out plus the user's findings walkthrough can
 	// take several minutes on a big diff. The shared helper is a no-op
 	// when the user hasn't opted in or isn't on macOS, so this is safe
-	// to call unconditionally.
-	const keepAwake = acquireKeepAwake(EXT_ID, ctx);
+	// to call unconditionally. The inner function does the real work
+	// and re-destructures `opts` itself.
+	const keepAwake = acquireKeepAwake(EXT_ID, opts.ctx);
 	try {
 		return await runReviewInner(opts);
 	} finally {

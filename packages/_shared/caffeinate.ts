@@ -109,6 +109,19 @@ interface Internals {
 	 */
 	platform: NodeJS.Platform;
 	exitListenerInstalled: boolean;
+	/**
+	 * Last argv used to spawn the child, cached so we can respawn if
+	 * the child unexpectedly exits while holders are still alive (e.g.
+	 * someone `pkill`'d caffeinate). Cleared on the last release.
+	 */
+	lastFlags: readonly string[] | null;
+	/**
+	 * Set to true when the most recent spawn emitted `error` (binary
+	 * not found, perms denied). Used to avoid an infinite respawn loop
+	 * — once a spawn `error` is observed for the current session, we
+	 * stop trying until the refcount drops to 0 and rises again.
+	 */
+	spawnFailed: boolean;
 }
 
 const internals: Internals = {
@@ -118,6 +131,8 @@ const internals: Internals = {
 	spawner: spawn,
 	platform: process.platform,
 	exitListenerInstalled: false,
+	lastFlags: null,
+	spawnFailed: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -194,24 +209,37 @@ function ensureExitListener(): void {
 
 function startChild(flags: readonly string[]): void {
 	if (internals.child) return;
+	internals.lastFlags = flags;
 	const args = [...flags, "-w", String(process.pid)];
 	const child = internals.spawner("caffeinate", args, {
 		stdio: "ignore",
 		detached: false,
 	});
 	child.on("error", () => {
-		// `caffeinate` not found, perms denied, etc. Drop the reference;
-		// further acquires will retry on the next 0→1 transition.
+		// `caffeinate` not found, perms denied, etc. Mark the spawn as
+		// failed so the `exit` handler doesn't immediately try to
+		// respawn into the same error — we'd loop forever. The user
+		// stays "awake-disabled" until their refcount goes 0 and back
+		// up, by which point we'll try once more.
 		if (internals.child === child) {
 			internals.child = null;
+			internals.spawnFailed = true;
 			notify(snapshot());
 		}
 	});
 	child.on("exit", () => {
-		if (internals.child === child) {
-			internals.child = null;
-			notify(snapshot());
+		if (internals.child !== child) return;
+		internals.child = null;
+		// If holders are still alive and the spawn itself didn't error
+		// out, respawn. Covers `pkill caffeinate`, OOM kill, or any
+		// other unexpected death mid-run — the long unattended run we
+		// were keeping awake would otherwise silently lose protection.
+		if (internals.holders.size > 0 && !internals.spawnFailed) {
+			const flags = internals.lastFlags ?? DEFAULT_FLAGS;
+			startChild(flags);
+			return;
 		}
+		notify(snapshot());
 	});
 	// Don't keep node alive on this child — pi's own event loop owns
 	// the lifetime, and the kernel will SIGKILL caffeinate once pi (the
@@ -287,7 +315,14 @@ export function acquireKeepAwake(
 			if (released) return;
 			released = true;
 			internals.holders.delete(id);
-			if (internals.holders.size === 0) stopChild();
+			if (internals.holders.size === 0) {
+				stopChild();
+				// Reset session-scoped state so the next 0→1 transition
+				// gets a clean slate (re-tries a previously-failed spawn,
+				// re-reads flags from settings).
+				internals.lastFlags = null;
+				internals.spawnFailed = false;
+			}
 			notify(snapshot(internals.holders.size > 0));
 		},
 	};
@@ -342,6 +377,8 @@ export function __resetForTests(): void {
 	internals.listeners.clear();
 	internals.spawner = spawn;
 	internals.platform = process.platform;
+	internals.lastFlags = null;
+	internals.spawnFailed = false;
 }
 
 /**
