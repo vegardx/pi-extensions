@@ -67,6 +67,99 @@ export interface Finding extends RawFinding {
  */
 export type BackgroundTier = "primary" | "secondary";
 
+// ---- Orchestrator output types -----------------------------------------
+
+export type OrchestratorConfidence = "high" | "medium" | "low";
+
+/**
+ * A finding as emitted by the orchestrator agent. The orchestrator
+ * synthesises raw findings from all role-agents × all model tiers,
+ * deduplicates, cross-validates, and assigns a confidence level.
+ *
+ * Downstream split:
+ *   - "high" + suggestedAction  → auto-apply
+ *   - "high" / "medium"         → surface for discussion
+ *   - "low" + CRITICAL          → surface with caveat (never dropped)
+ *   - "low" + IMPORTANT/NOTE    → drop
+ */
+export interface OrchestratedFinding extends RawFinding {
+	confidence: OrchestratorConfidence;
+	/** Model tiers that contributed to this finding. */
+	confirmedByTiers: BackgroundTier[];
+	/** Reviewer roles that contributed to this finding. */
+	confirmedByRoles: ReviewerRole[];
+	/** Non-null when the finding originated from a static analysis tool. */
+	staticToolSource: string | null;
+	/** Set when confidence is low or investigation found something notable. */
+	orchestratorNote?: string;
+}
+
+/** Parse the JSON array emitted by the orchestrator agent. */
+export function parseOrchestratorOutput(
+	raw: string,
+): OrchestratedFinding[] | null {
+	if (!raw || raw.trim().length === 0) return [];
+	for (const candidate of candidateJsonPayloads(raw)) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+		const out: OrchestratedFinding[] = [];
+		for (const item of parsed) {
+			const f = normalizeOrchestratedFinding(item);
+			if (f) out.push(f);
+		}
+		return out;
+	}
+	return null;
+}
+
+function normalizeOrchestratedFinding(
+	raw: unknown,
+): OrchestratedFinding | null {
+	if (!raw || typeof raw !== "object") return null;
+	const obj = raw as Record<string, unknown>;
+	const base = normalizeFinding(obj);
+	if (!base) return null;
+	const confidence = normalizeConfidence(obj.confidence);
+	const confirmedByTiers = _asStringArray(obj.confirmedByTiers).filter(
+		(t): t is BackgroundTier => t === "primary" || t === "secondary",
+	);
+	const confirmedByRoles = _asStringArray(
+		obj.confirmedByRoles,
+	) as ReviewerRole[];
+	const staticToolSource =
+		typeof obj.staticToolSource === "string" && obj.staticToolSource
+			? obj.staticToolSource
+			: null;
+	const orchestratorNote =
+		typeof obj.orchestratorNote === "string" && obj.orchestratorNote
+			? obj.orchestratorNote
+			: undefined;
+	return {
+		...base,
+		confidence,
+		confirmedByTiers,
+		confirmedByRoles,
+		staticToolSource,
+		...(orchestratorNote ? { orchestratorNote } : {}),
+	};
+}
+
+function normalizeConfidence(raw: unknown): OrchestratorConfidence {
+	if (raw === "high" || raw === "medium" || raw === "low") return raw;
+	// Default to medium — don't silently drop uncertain findings.
+	return "medium";
+}
+
+function _asStringArray(raw: unknown): string[] {
+	if (!Array.isArray(raw)) return [];
+	return raw.filter((v): v is string => typeof v === "string");
+}
+
 export function parseReviewerOutput(raw: string): RawFinding[] | null {
 	if (!raw || raw.trim().length === 0) return [];
 	for (const candidate of candidateJsonPayloads(raw)) {

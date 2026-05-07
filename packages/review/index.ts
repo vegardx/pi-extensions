@@ -8,7 +8,12 @@ export type {
 	RunAutoReviewOptions,
 	RunAutoReviewResult,
 } from "./auto-review.js";
-export { AUTO_REVIEW_ROLES, runAutoReview } from "./auto-review.js";
+export {
+	AUTO_REVIEW_ROLES,
+	readStaticAnalysisConfig,
+	runAutoReview,
+	VALID_REVIEWER_ROLES,
+} from "./auto-review.js";
 // Re-exports for tests + downstream consumers (e.g. /develop). `runReview`
 // piggybacks on the binding imported above; the others aren't needed at
 // runtime in this module so we re-export them straight from their sources.
@@ -18,6 +23,10 @@ export type { Severity } from "./findings.js";
 export { dedupeFindings } from "./findings.js";
 export type { ReviewMode } from "./scope.js";
 export { parseScope } from "./scope.js";
+export type {
+	StaticAnalysisConfig,
+	StaticToolResult,
+} from "./static-checker.js";
 export { runReview };
 
 export default function (pi: ExtensionAPI) {

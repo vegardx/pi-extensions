@@ -2,40 +2,54 @@
  * Auto-review pass — invoked by extensions (e.g. `modes`) after an
  * implement phase completes.
  *
- * Unlike interactive `/review`, the auto-review:
- *   - Runs a configurable subset of reviewer roles (defaults to
- *     `AUTO_REVIEW_ROLES`). Architect / scope / docs / deps are all out
- *     of scope unless the caller opts in.
- *   - Runs each lane TWICE: once against `backgroundModels.primary.heavy`,
- *     once against `backgroundModels.secondary.heavy`. Both must agree
- *     on a finding (cross-model consensus) before it is eligible for
- *     auto-application.
- *   - Has NO interactive walk-through. Findings the two model tiers
- *     agree on are queued for the host agent as a single fix prompt
- *     directly; everything else is dropped (the manual `/review`
- *     command is still available for the broader pass).
+ * Pipeline:
+ *   Phase 0 — Static analysis (tsc, biome, npm audit, …) runs before
+ *             any AI agent. Findings are injected into the relevant
+ *             reviewer lane's task payload as pre-computed evidence.
  *
- * The caller owns state-machine plumbing; this module owns model
- * resolution, fan-out, consensus filtering, and fix-prompt assembly.
+ *   Phase 1 — Fan-out: N reviewer roles × M model tiers run in
+ *             parallel. Each gets the diff + its lane's static output.
+ *
+ *   Phase 2 — Orchestrator: a single synthesis agent receives all raw
+ *             findings from every role + tier, deduplicates (fuzzy),
+ *             cross-validates using its own tool access, and emits a
+ *             final curated list with confidence levels.
+ *
+ *   Phase 3 — Split: high-confidence + fix → auto-apply;
+ *             high/medium without fix, or low-confidence CRITICAL →
+ *             surface for discussion; low-confidence IMPORTANT/NOTE →
+ *             drop.
+ *
+ * The caller owns state-machine plumbing. This module owns model
+ * resolution, static analysis, fan-out, orchestration, and prompt
+ * assembly.
  */
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
+import {
+	AuthStorage,
+	createAgentSession,
+	DefaultResourceLoader,
+	defineTool,
+	type ExtensionAPI,
+	type ExtensionContext,
+	getAgentDir,
+	ModelRegistry,
+	SessionManager,
 } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import type {
 	BackgroundSet,
 	Tier,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
+import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import {
 	type BackgroundTier,
-	crossModelConsensus,
-	dedupeFindings,
-	type Finding,
-	type FindingsBundle,
+	type OrchestratedFinding,
+	parseOrchestratorOutput,
 	type RawFinding,
 	type ReviewerRole,
 } from "./findings.js";
@@ -48,6 +62,10 @@ import {
 	isGitRepo,
 } from "./git.js";
 import { reviewTimeoutMs, runReviewer } from "./reviewer-client.js";
+import {
+	runStaticAnalysis,
+	type StaticAnalysisConfig,
+} from "./static-checker.js";
 
 /**
  * Default reviewer roles for the auto-review pass. Deliberately narrow:
@@ -77,6 +95,12 @@ const VALID_REVIEWER_ROLES_SET = new Set<ReviewerRole>(VALID_REVIEWER_ROLES);
 const AUTO_REVIEW_TIER: Tier = "heavy";
 
 const AUTO_REVIEW_WIDGET = "auto-review-progress";
+
+const ORCHESTRATOR_PROMPT_PATH = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"prompts",
+	"orchestrator.md",
+);
 
 const CHALLENGER_PROMPT_PATH = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -115,11 +139,17 @@ export interface RunAutoReviewOptions {
 	roles?: string[];
 	/**
 	 * When true (default), run each role on both `primary.heavy` and
-	 * `secondary.heavy` and require cross-model consensus before
-	 * auto-applying. When false, run only `primary.heavy` and apply
-	 * any finding that has a `suggestedAction`.
+	 * `secondary.heavy`, then synthesise with the orchestrator. When
+	 * false, run only `primary.heavy`; the orchestrator still runs but
+	 * has only one tier's findings.
 	 */
 	multiModel?: boolean;
+	/**
+	 * Static analysis tool config. Passed verbatim to `runStaticAnalysis`.
+	 * When omitted, all defaults apply (tsc + biome + npmAudit enabled;
+	 * eslint, knip, semgrep off).
+	 */
+	staticAnalysisConfig?: StaticAnalysisConfig;
 }
 
 export type AutoReviewAbortReason =
@@ -134,22 +164,22 @@ export interface RunAutoReviewResult {
 	ran: boolean;
 	abortReason?: AutoReviewAbortReason;
 	scopeLabel?: string;
-	/** Every deduped finding (with tier metadata) — diagnostic. */
-	findings?: Finding[];
-	/** Subset auto-eligible: cross-model consensus + concrete fix. */
-	autoApplied?: Finding[];
+	/** All findings as curated by the orchestrator agent. */
+	findings?: OrchestratedFinding[];
+	/** high-confidence + concrete fix → queued for auto-application. */
+	autoApplied?: OrchestratedFinding[];
 	/**
-	 * Consensus findings surfaced to the host agent for user discussion
-	 * (cross-model consensus but no concrete suggested fix).
+	 * High/medium confidence without a concrete fix, or low-confidence
+	 * CRITICAL findings — surfaced for user discussion.
 	 */
-	surfaced?: Finding[];
+	surfaced?: OrchestratedFinding[];
 	/** Models actually used (for the report message). */
 	primaryModel?: string;
 	secondaryModel?: string;
-	/** How many CRITICAL single-tier findings were challenged (phase 2). */
-	challengedCount?: number;
-	/** Of those challenged, how many the other model agreed with. */
-	challengedAgreedCount?: number;
+	/** True when the orchestrator agent ran and produced parseable output. */
+	orchestratorRan?: boolean;
+	/** Count of enabled static analysis tools that ran. */
+	staticToolsRan?: number;
 	/** Per-(role, tier) reviewer errors, surfaced via the report. */
 	errors?: Array<{ role: ReviewerRole; tier: BackgroundTier; error: string }>;
 }
@@ -203,7 +233,11 @@ function resolveAutoReviewContext(
 	};
 }
 
-function buildTaskFor(role: ReviewerRole, rc: AutoReviewContext): string {
+function buildTaskFor(
+	role: ReviewerRole,
+	rc: AutoReviewContext,
+	staticFindings?: readonly RawFinding[],
+): string {
 	const lines: string[] = [
 		`Role: ${role}`,
 		`Scope: ${rc.scopeLabel}. ${rc.changedFiles} changed files, ` +
@@ -229,198 +263,23 @@ function buildTaskFor(role: ReviewerRole, rc: AutoReviewContext): string {
 		"If nothing in this diff falls within your lane, reply `[]` and stop.",
 		"Otherwise, emit JSON per your system prompt.",
 	);
+	if (staticFindings && staticFindings.length > 0) {
+		lines.push(
+			"",
+			"## Static analysis pre-scan",
+			"",
+			"The following findings were produced by deterministic CLI tools",
+			"(tsc, biome, npm audit, etc.) before you started. They are",
+			"provided as additional evidence for your lane. Reference them",
+			"in your `description` when they support a finding you'd flag",
+			"anyway; you do not need to re-emit them verbatim.",
+			"",
+			"```json",
+			JSON.stringify(staticFindings, null, 2),
+			"```",
+		);
+	}
 	return lines.join("\n");
-}
-
-// ---- Challenge phase ---------------------------------------------------
-//
-// Phase 2 of the auto-review: for every CRITICAL finding that only one
-// model tier flagged in phase 1, ask the OTHER tier's model to evaluate
-// it. If the challenger agrees, the finding is promoted to cross-model
-// consensus — so genuinely critical issues are not silently dropped
-// just because the second model happened not to surface them independently
-// (a real risk given non-deterministic reviewer outputs).
-//
-// Only CRITICAL findings are challenged. IMPORTANT/NOTE single-tier
-// findings are left as-is — the challenge overhead is only justified
-// for the highest-stakes findings.
-
-interface ChallengePromotion {
-	/** The finding to promote to cross-model consensus. */
-	finding: Finding;
-	/** Challenger's suggested fix, if better than the original. */
-	suggestedAction?: string;
-}
-
-interface ChallengeOutcome {
-	finding: Finding;
-	agree: boolean;
-	reason?: string;
-	suggestedAction?: string;
-	error?: string;
-}
-
-function parseChallengeResponse(
-	raw: string,
-): { agree: boolean; reason: string; suggestedAction?: string } | null {
-	if (!raw || raw.trim().length === 0) return null;
-	const fence = raw.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-	const payload = (fence ? fence[1] : raw).trim();
-	if (payload.length === 0) return null;
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(payload);
-	} catch {
-		return null;
-	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-		return null;
-	const obj = parsed as Record<string, unknown>;
-	if (typeof obj.agree !== "boolean") return null;
-	const reason = typeof obj.reason === "string" ? obj.reason : "";
-	const suggestedAction =
-		typeof obj.suggestedAction === "string" && obj.suggestedAction.trim()
-			? obj.suggestedAction.trim()
-			: undefined;
-	return { agree: obj.agree, reason, suggestedAction };
-}
-
-function buildChallengeTask(finding: Finding, rc: AutoReviewContext): string {
-	const loc = finding.line ? `${finding.file}:${finding.line}` : finding.file;
-	const lines: string[] = [
-		`You are evaluating a CRITICAL finding from another code reviewer. Respond with the JSON schema your system prompt describes.`,
-		``,
-		`## Finding to evaluate`,
-		``,
-		`- **File**: ${loc}`,
-		`- **Reviewer lane(s)**: ${finding.flaggedBy.join(", ")}`,
-		`- **Title**: ${finding.title}`,
-		`- **Description**: ${finding.description}`,
-		`- **Proposed fix**: ${finding.suggestedAction?.trim() || "none proposed"}`,
-		``,
-		`## Code diff (scope: ${rc.scopeLabel})`,
-		``,
-		"```diff",
-		rc.diff.trimEnd(),
-		"```",
-	];
-	return lines.join("\n");
-}
-
-async function runChallengePhase(opts: {
-	findings: Finding[];
-	rc: AutoReviewContext;
-	primary: ResolvedTierModel;
-	secondary: ResolvedTierModel;
-	extensionName: string;
-	ctx: ExtensionContext;
-	signal?: AbortSignal;
-}): Promise<{
-	challenged: number;
-	agreed: number;
-	promotions: ChallengePromotion[];
-}> {
-	const { findings, rc, primary, secondary, extensionName, ctx } = opts;
-
-	const targets = findings.filter(
-		(f) =>
-			f.severity === "CRITICAL" &&
-			f.crossModelConsensus === false &&
-			(f.flaggedByTier?.length ?? 0) === 1,
-	);
-
-	if (targets.length === 0) return { challenged: 0, agreed: 0, promotions: [] };
-
-	notify(
-		ctx,
-		`challenge phase: ${targets.length} critical single-tier finding(s) — asking the other model`,
-		"info",
-	);
-
-	const challengeStatus = new Map<string, "running" | "done">();
-	for (let i = 0; i < targets.length; i++) {
-		challengeStatus.set(`challenge ${i + 1}/${targets.length}`, "running");
-	}
-	if (ctx.hasUI) {
-		ctx.ui.setStatus(extensionName, `challenge 0/${targets.length}`);
-		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, renderProgress(challengeStatus));
-	}
-
-	let completedChallenges = 0;
-	const outcomes: ChallengeOutcome[] = await Promise.all(
-		targets.map(async (finding, i): Promise<ChallengeOutcome> => {
-			const flaggedTier = finding.flaggedByTier?.[0];
-			const challenger = flaggedTier === "primary" ? secondary : primary;
-
-			const task = buildChallengeTask(finding, rc);
-			const out = await runSubagent({
-				tag: `challenge-${i}`,
-				task,
-				systemPromptPath: CHALLENGER_PROMPT_PATH,
-				provider: challenger.provider,
-				model: challenger.modelId,
-				cwd: ctx.cwd,
-				signal: opts.signal,
-				timeoutMs: reviewTimeoutMs(rc.diff.length),
-			});
-
-			completedChallenges++;
-			const challengeKey = `challenge ${i + 1}/${targets.length}`;
-			challengeStatus.set(challengeKey, "done");
-			if (ctx.hasUI) {
-				ctx.ui.setStatus(
-					extensionName,
-					`challenge ${completedChallenges}/${targets.length}`,
-				);
-				ctx.ui.setWidget(AUTO_REVIEW_WIDGET, renderProgress(challengeStatus));
-			}
-
-			if (out.error) {
-				return { finding, agree: false, error: out.error };
-			}
-			const parsed = parseChallengeResponse(out.rawText);
-			if (!parsed) {
-				return {
-					finding,
-					agree: false,
-					error: `challenge response not parseable: ${out.rawText.slice(0, 200)}`,
-				};
-			}
-			return {
-				finding,
-				agree: parsed.agree,
-				reason: parsed.reason,
-				suggestedAction: parsed.suggestedAction,
-			};
-		}),
-	);
-
-	if (ctx.hasUI) {
-		ctx.ui.setStatus(extensionName, undefined);
-		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
-	}
-
-	let agreed = 0;
-	const promotions: ChallengePromotion[] = [];
-	for (const outcome of outcomes) {
-		if (outcome.error) {
-			notify(
-				ctx,
-				`challenge failed for "${outcome.finding.title}": ${outcome.error.split("\n")[0]}`,
-				"warning",
-			);
-			continue;
-		}
-		if (!outcome.agree) continue;
-
-		promotions.push({
-			finding: outcome.finding,
-			suggestedAction: outcome.suggestedAction,
-		});
-		agreed++;
-	}
-
-	return { challenged: targets.length, agreed, promotions };
 }
 
 interface ReviewerInvocationKey {
@@ -473,22 +332,295 @@ async function resolveTierModel(
 	};
 }
 
+// ---- Orchestrator phase (Phase 2) --------------------------------------
+//
+// Replaces the old one-at-a-time challenge phase. A single synthesis
+// agent receives ALL raw findings from every reviewer lane and model
+// tier, plus the diff. It deduplicates (fuzzy), cross-validates using
+// its own read/grep/find/ls access, and assigns confidence levels.
+//
+// Confidence-based split (done by the caller after this returns):
+//   high + suggestedAction  → auto-apply
+//   high / medium           → surface for discussion
+//   low + CRITICAL          → surface with caveat (NEVER dropped)
+//   low + IMPORTANT/NOTE    → drop
+
+interface OrchestratorInput {
+	role: ReviewerRole;
+	tier: BackgroundTier;
+	findings: RawFinding[];
+	/** When true, findings came from a deterministic static analysis tool. */
+	staticTool?: boolean;
+}
+
+function buildOrchestratorTask(
+	bundles: OrchestratorInput[],
+	rc: AutoReviewContext,
+): string {
+	const lines: string[] = [
+		"## Input findings from all reviewer agents",
+		"",
+		"Each entry has `role` (reviewer lane) and `tier` (model tier: primary",
+		"or secondary). Same real issue may appear under different titles from",
+		"different models — your job is to recognise and merge them.",
+		"",
+		"```json",
+		JSON.stringify(
+			bundles.map((b) => ({
+				role: b.role,
+				tier: b.tier,
+				...(b.staticTool ? { staticTool: true } : {}),
+				findings: b.findings,
+			})),
+			null,
+			2,
+		),
+		"```",
+		"",
+		`## Diff (scope: ${rc.scopeLabel})`,
+		"",
+		"```diff",
+		rc.diff.trimEnd(),
+		"```",
+	];
+	return lines.join("\n");
+}
+
+async function runOrchestratorPhase(opts: {
+	bundles: OrchestratorInput[];
+	rc: AutoReviewContext;
+	primary: ResolvedTierModel;
+	/** When provided, the orchestrator gets a `consult_secondary_model`
+	 *  custom tool it can call for uncertain CRITICAL findings. */
+	secondary: ResolvedTierModel | null;
+	extensionName: string;
+	ctx: ExtensionContext;
+	signal?: AbortSignal;
+}): Promise<{
+	findings: OrchestratedFinding[];
+	orchestratorRan: boolean;
+	error?: string;
+}> {
+	const { bundles, rc, primary, secondary, extensionName, ctx } = opts;
+
+	const totalInputFindings = bundles.reduce((n, b) => n + b.findings.length, 0);
+
+	if (totalInputFindings === 0) {
+		return { findings: [], orchestratorRan: false };
+	}
+
+	notify(
+		ctx,
+		`orchestrator: synthesising ${totalInputFindings} raw finding(s)${
+			secondary ? " (consult tool available)" : ""
+		}`,
+		"info",
+	);
+
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(extensionName, "orchestrating");
+		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, [
+			"🧠 orchestrator: synthesising findings…",
+		]);
+	}
+
+	const timeoutMs = Math.min(reviewTimeoutMs(rc.diff.length) * 2, 600_000);
+
+	// ---- Build consultation tool (if secondary model available) ----------
+	//
+	// The orchestrator can call this tool for any CRITICAL finding it is
+	// uncertain about. The secondary model evaluates the finding using the
+	// challenger system prompt and returns its verdict as a JSON string.
+	// The orchestrator reads the response and adjusts confidence accordingly.
+	const customTools = secondary
+		? [
+				defineTool({
+					name: "consult_secondary_model",
+					label: "Consult Secondary Model",
+					description:
+						"Ask the secondary reviewer model whether it agrees with a finding " +
+						"you are uncertain about. The secondary model has independent code " +
+						"access and will return a JSON verdict with agree/reason/suggestedAction.",
+					parameters: Type.Object({
+						file: Type.String({ description: "File path" }),
+						line: Type.Optional(
+							Type.Number({ description: "Line number, if applicable" }),
+						),
+						title: Type.String({ description: "Finding title" }),
+						description: Type.String({
+							description: "Why this might be an issue",
+						}),
+						suggestedAction: Type.Optional(
+							Type.String({ description: "Proposed fix, if any" }),
+						),
+					}),
+					async execute(_toolCallId, params, signal) {
+						// Tool is only registered when secondary != null;
+						// guard defensively so TypeScript/biome are happy.
+						if (!secondary) {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: '{"agree":false,"reason":"secondary model unavailable"}',
+									},
+								],
+								details: {},
+							};
+						}
+						const loc = params.line
+							? `${params.file}:${params.line}`
+							: params.file;
+						const consultTask = [
+							"You are evaluating a finding from the primary reviewer. Respond with the JSON schema your system prompt describes.",
+							"",
+							"## Finding to evaluate",
+							"",
+							`- **File**: ${loc}`,
+							`- **Title**: ${params.title}`,
+							`- **Description**: ${params.description}`,
+							`- **Proposed fix**: ${
+								params.suggestedAction?.trim() || "none proposed"
+							}`,
+							"",
+							`## Code diff (scope: ${rc.scopeLabel})`,
+							"",
+							"```diff",
+							rc.diff.trimEnd(),
+							"```",
+						].join("\n");
+
+						const out = await runSubagent({
+							tag: "consultation",
+							task: consultTask,
+							systemPromptPath: CHALLENGER_PROMPT_PATH,
+							provider: secondary.provider,
+							model: secondary.modelId,
+							cwd: ctx.cwd,
+							signal,
+							timeoutMs: reviewTimeoutMs(rc.diff.length),
+						});
+
+						const text = out.error
+							? JSON.stringify({
+									agree: false,
+									reason: `consultation error: ${out.error.slice(0, 100)}`,
+								})
+							: out.rawText;
+						return {
+							content: [{ type: "text" as const, text }],
+							details: {},
+						};
+					},
+				}),
+			]
+		: [];
+
+	// ---- Spin up in-process orchestrator session -------------------------
+	const authStorage = AuthStorage.create();
+	const modelRegistry = ModelRegistry.create(authStorage);
+	const model = modelRegistry.find(primary.provider, primary.modelId);
+
+	if (!model) {
+		const err = `orchestrator: could not resolve model ${primary.spec} from registry`;
+		notify(ctx, err, "warning");
+		if (ctx.hasUI) {
+			ctx.ui.setStatus(extensionName, undefined);
+			ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
+		}
+		return { findings: [], orchestratorRan: false, error: err };
+	}
+
+	const systemPrompt = readFileSync(ORCHESTRATOR_PROMPT_PATH, "utf8");
+	const loader = new DefaultResourceLoader({
+		cwd: ctx.cwd,
+		agentDir: getAgentDir(),
+		systemPromptOverride: () => systemPrompt,
+		// Prevent DefaultResourceLoader from appending global/project
+		// APPEND_SYSTEM.md files — the orchestrator's prompt is self-contained.
+		appendSystemPromptOverride: () => [],
+	});
+	await loader.reload();
+
+	const { session } = await createAgentSession({
+		cwd: ctx.cwd,
+		model,
+		// Read-only built-in tools + the optional consult custom tool.
+		tools: ["read", "grep", "find", "ls"],
+		customTools,
+		resourceLoader: loader,
+		sessionManager: SessionManager.inMemory(ctx.cwd),
+		authStorage,
+		modelRegistry,
+	});
+
+	const task = buildOrchestratorTask(bundles, rc);
+
+	try {
+		const promptPromise = session.prompt(task);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let abortHandler: (() => void) | undefined;
+		const timeoutPromise = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error("orchestrator timeout")),
+				timeoutMs,
+			);
+			abortHandler = () => {
+				clearTimeout(timer);
+				reject(new Error("aborted"));
+			};
+			opts.signal?.addEventListener("abort", abortHandler, { once: true });
+		});
+
+		try {
+			await Promise.race([promptPromise, timeoutPromise]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			if (abortHandler && opts.signal) {
+				opts.signal.removeEventListener("abort", abortHandler);
+			}
+		}
+	} catch (err) {
+		session.dispose();
+		if (ctx.hasUI) {
+			ctx.ui.setStatus(extensionName, undefined);
+			ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
+		}
+		const msg = err instanceof Error ? err.message : String(err);
+		return { findings: [], orchestratorRan: false, error: msg };
+	}
+
+	const rawText = session.getLastAssistantText() ?? "";
+	session.dispose();
+
+	if (ctx.hasUI) {
+		ctx.ui.setStatus(extensionName, undefined);
+		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
+	}
+
+	const parsed = parseOrchestratorOutput(rawText);
+	if (parsed === null) {
+		return {
+			findings: [],
+			orchestratorRan: false,
+			error: `orchestrator output not parseable: ${rawText.slice(0, 300)}`,
+		};
+	}
+	return { findings: parsed, orchestratorRan: true };
+}
+
 /**
- * Build the fix prompt the host agent receives once we have the
- * cross-model-consensus findings in hand. Mirrors the shape of
- * `/review`'s `buildFixPrompt` but trims the "explain" bucket
- * (auto-review never asks for explanations) and adds an explicit
- * "two heavy models independently agreed" context line so the agent
- * understands the unusually high confidence.
+ * Build the fix prompt the host agent receives once the orchestrator
+ * has produced high-confidence findings with concrete fix suggestions.
  */
 export function buildAutoReviewFixPrompt(
-	accepted: readonly Finding[],
+	accepted: readonly OrchestratedFinding[],
 	primaryModel: string,
 	secondaryModel?: string,
 ): string {
 	const reviewerDesc = secondaryModel
-		? `Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`) independently flagged the following findings on the same file/line/title. Apply the suggested fixes directly.`
-		: `The reviewer (\`${primaryModel}\`) flagged the following findings with concrete fix suggestions. Apply them directly.`;
+		? `The review orchestrator (\`${primaryModel}\` synthesising \`${primaryModel}\` + \`${secondaryModel}\` reviewer output) flagged the following high-confidence findings. Apply the suggested fixes directly.`
+		: `The review orchestrator (\`${primaryModel}\`) flagged the following findings with concrete fix suggestions. Apply them directly.`;
 	const lines: string[] = [
 		"[auto-review]",
 		"",
@@ -499,14 +631,18 @@ export function buildAutoReviewFixPrompt(
 	];
 	accepted.forEach((f, idx) => {
 		const loc = f.line ? `${f.file}:${f.line}` : f.file;
-		const lanes = f.flaggedBy.join(", ");
+		const roles = f.confirmedByRoles.join(", ") || "(unknown)";
+		const conf = f.confidence;
 		lines.push(
 			`${idx + 1}. **[${f.severity}] \`${loc}\`** — ${f.title}`,
-			`   - Lanes: ${lanes}`,
+			`   - Confidence: ${conf} | Roles: ${roles}`,
 			`   - Why: ${f.description}`,
 		);
 		if (f.suggestedAction) {
 			lines.push(`   - Fix: ${f.suggestedAction}`);
+		}
+		if (f.orchestratorNote) {
+			lines.push(`   - Note: ${f.orchestratorNote}`);
 		}
 		lines.push("");
 	});
@@ -527,11 +663,11 @@ export function buildAutoReviewReport(opts: {
 	multiModel: boolean;
 	primaryModel: string;
 	secondaryModel?: string;
-	findings: readonly Finding[];
-	autoApplied: readonly Finding[];
-	surfaced: readonly Finding[];
-	challengedCount: number;
-	challengedAgreedCount: number;
+	findings: readonly OrchestratedFinding[];
+	autoApplied: readonly OrchestratedFinding[];
+	surfaced: readonly OrchestratedFinding[];
+	orchestratorRan: boolean;
+	staticToolsRan: number;
 	errors: ReadonlyArray<{
 		role: ReviewerRole;
 		tier: BackgroundTier;
@@ -546,29 +682,24 @@ export function buildAutoReviewReport(opts: {
 	if (opts.multiModel && opts.secondaryModel) {
 		lines.push(`**Primary model**: \`${opts.primaryModel}\``);
 		lines.push(`**Secondary model**: \`${opts.secondaryModel}\``);
-		lines.push(`**Mode**: cross-model consensus (both must agree)`);
+		lines.push(`**Mode**: multi-model + orchestrator synthesis`);
 	} else {
 		lines.push(`**Model**: \`${opts.primaryModel}\``);
-		lines.push(`**Mode**: single-model`);
+		lines.push(`**Mode**: single-model + orchestrator synthesis`);
+	}
+	if (opts.staticToolsRan > 0) {
+		lines.push(`**Static analysis**: ${opts.staticToolsRan} tool(s) ran`);
 	}
 	lines.push("");
 	const totalFindings = opts.findings.length;
 	const autoCount = opts.autoApplied.length;
 	const surfacedCount = opts.surfaced.length;
 	const dropped = totalFindings - autoCount - surfacedCount;
-	if (opts.multiModel) {
-		lines.push(
-			`**Findings**: ${totalFindings} total · ${autoCount} auto-applying · ${surfacedCount} for discussion · ${dropped} single-tier (dropped)`,
-		);
-		if (opts.challengedCount > 0) {
-			lines.push(
-				`**Challenge phase**: ${opts.challengedAgreedCount}/${opts.challengedCount} critical single-tier findings confirmed by second model`,
-			);
-		}
-	} else {
-		lines.push(
-			`**Findings**: ${totalFindings} total · ${autoCount} with concrete fix (auto-applying) · ${surfacedCount} for discussion · ${dropped} without fix (dropped)`,
-		);
+	lines.push(
+		`**Findings**: ${totalFindings} total · ${autoCount} auto-applying · ${surfacedCount} for discussion · ${dropped} low-confidence (dropped)`,
+	);
+	if (!opts.orchestratorRan) {
+		lines.push("**Orchestrator**: did not run or produced no parseable output");
 	}
 	if (opts.errors.length > 0) {
 		lines.push(
@@ -577,18 +708,11 @@ export function buildAutoReviewReport(opts: {
 	}
 	if (autoCount === 0 && surfacedCount === 0) {
 		lines.push("");
-		if (opts.multiModel) {
-			lines.push(
-				"No cross-model consensus findings. Nothing to auto-apply or discuss.",
-				"Run `/review` for the full seven-lane interactive walk-through if",
-				"you want to look at the per-tier flags individually.",
-			);
-		} else {
-			lines.push(
-				"No findings with concrete fix suggestions. Nothing to auto-apply or discuss.",
-				"Run `/review` for the full seven-lane interactive walk-through.",
-			);
-		}
+		lines.push(
+			"No actionable findings after orchestrator synthesis. Nothing to",
+			"auto-apply or discuss. Run `/review` for the full seven-lane",
+			"interactive walk-through.",
+		);
 		return lines.join("\n");
 	}
 	if (autoCount > 0) {
@@ -597,54 +721,44 @@ export function buildAutoReviewReport(opts: {
 		lines.push("");
 		opts.autoApplied.forEach((f, idx) => {
 			const loc = f.line ? `${f.file}:${f.line}` : f.file;
-			const challenged = f.challengedConsensus ? " †" : "";
+			const staticTag = f.staticToolSource ? ` [${f.staticToolSource}]` : "";
 			lines.push(
-				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.flaggedBy.join(", ")})${challenged}`,
+				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.confirmedByRoles.join(", ") || "orchestrator"})${staticTag}`,
 			);
 		});
-		if (opts.challengedAgreedCount > 0) {
-			lines.push("");
-			lines.push("† confirmed via challenge (second model explicitly agreed)");
-		}
 	}
 	if (surfacedCount > 0) {
 		lines.push("");
-		lines.push("### Needs discussion (no concrete fix):");
+		lines.push("### Needs discussion:");
 		lines.push("");
 		opts.surfaced.forEach((f, idx) => {
 			const loc = f.line ? `${f.file}:${f.line}` : f.file;
-			const challenged = f.challengedConsensus ? " †" : "";
+			const confTag =
+				f.confidence === "low" ? ` \u26a0\ufe0f low confidence` : "";
+			const staticTag = f.staticToolSource ? ` [${f.staticToolSource}]` : "";
 			lines.push(
-				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.flaggedBy.join(", ")})${challenged}`,
+				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.confirmedByRoles.join(", ") || "orchestrator"})${confTag}${staticTag}`,
 			);
+			if (f.orchestratorNote) {
+				lines.push(`   \u2192 ${f.orchestratorNote}`);
+			}
 		});
 	}
 	return lines.join("\n");
 }
 
 /**
- * Build the host-agent prompt for consensus findings that have no concrete
- * `suggestedAction`. Asks the agent to surface each finding to the user
- * and collect their decision (fix / investigate further / accept the risk).
- *
- * @param surfaced    Consensus findings without a concrete fix.
- * @param primaryModel   The primary-tier model spec used in the pass.
- * @param secondaryModel The secondary-tier model spec, or `undefined` when
- *                       running in single-model mode. Controls the intro
- *                       sentence phrasing ("two reviewers agreed" vs
- *                       "the primary reviewer flagged").
- *
- * Callers should pass `primary.spec` and `secondary?.spec` from `runAutoReview`.
+ * Build the host-agent prompt for findings that have no concrete
+ * `suggestedAction`, or are low-confidence CRITICALs.
  */
 export function buildAutoReviewDiscussionPrompt(
-	surfaced: readonly Finding[],
+	surfaced: readonly OrchestratedFinding[],
 	primaryModel: string,
 	secondaryModel: string | undefined,
 ): string {
-	const isMultiModel = secondaryModel !== undefined;
-	const intro = isMultiModel
-		? `Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`) agreed the following issue(s) are real, but neither provided a concrete fix. Surface each one to the user and ask how they'd like to proceed.`
-		: `The primary reviewer (\`${primaryModel}\`) flagged the following issue(s) without a concrete fix. Surface each one to the user and ask how they'd like to proceed.`;
+	const intro = secondaryModel
+		? `The review orchestrator (\`${primaryModel}\` + \`${secondaryModel}\`) flagged the following issue(s) but could not produce concrete fix suggestions, or confidence was low. Surface each one to the user and ask how they'd like to proceed.`
+		: `The review orchestrator (\`${primaryModel}\`) flagged the following issue(s) without a concrete fix or with low confidence. Surface each one to the user and ask how they'd like to proceed.`;
 	const lines: string[] = [
 		"[auto-review \u2014 needs discussion]",
 		"",
@@ -653,12 +767,16 @@ export function buildAutoReviewDiscussionPrompt(
 	];
 	surfaced.forEach((f, idx) => {
 		const loc = f.line ? `${f.file}:${f.line}` : f.file;
+		const conf = f.confidence === "low" ? " \u26a0\ufe0f low confidence" : "";
 		lines.push(
-			`${idx + 1}. **[${f.severity}] \`${loc}\`** \u2014 ${f.title}`,
-			`   - Lanes: ${f.flaggedBy.join(", ")}`,
+			`${idx + 1}. **[${f.severity}] \`${loc}\`** \u2014 ${f.title}${conf}`,
+			`   - Roles: ${f.confirmedByRoles.join(", ") || "orchestrator"}`,
 			`   - Why: ${f.description}`,
 			``,
 		);
+		if (f.orchestratorNote) {
+			lines.push(`   - Note: ${f.orchestratorNote}`, "");
+		}
 	});
 	lines.push(
 		`For each finding, ask the user whether they want to:`,
@@ -670,15 +788,47 @@ export function buildAutoReviewDiscussionPrompt(
 }
 
 /**
- * Public entry point. Resolves both heavy models, runs the four
- * subagents in parallel, computes cross-model consensus, sends a
- * report message + (when there are agreed findings) a fix-followup
- * to the host agent, and returns a structured result for the caller.
+ * Read the `staticAnalysis` sub-config from `extensionConfig.review`
+ * in settings.json. Returns `{}` (all defaults apply) when absent or
+ * malformed. Exported for testing and for callers that want to read
+ * and inspect the config before passing it to `runAutoReview`.
  *
- * The caller is responsible for state-machine bookkeeping: deciding
- * whether to wait for the host fix turn before showing the post-loop
- * picker. This function never opens a picker and never blocks on user
- * input.
+ * Settings shape:
+ * ```json
+ * {
+ *   "extensionConfig": {
+ *     "review": {
+ *       "staticAnalysis": {
+ *         "tsc":      { "enabled": true,  "timeout": 30000  },
+ *         "biome":    { "enabled": true,  "timeout": 15000  },
+ *         "eslint":   { "enabled": false },
+ *         "knip":     { "enabled": false },
+ *         "npmAudit": { "enabled": true,  "timeout": 20000  },
+ *         "semgrep":  { "enabled": false, "timeout": 120000 }
+ *       }
+ *     }
+ *   }
+ * }
+ * ```
+ */
+export function readStaticAnalysisConfig(
+	cwd: string,
+	agentDir?: string,
+): StaticAnalysisConfig {
+	const settings = readRelevantSettings(cwd, agentDir);
+	const reviewCfg = settings.extensionConfig?.review;
+	if (!reviewCfg || typeof reviewCfg !== "object") return {};
+	const raw = (reviewCfg as Record<string, unknown>).staticAnalysis;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+	// Shallow-trust the user-supplied object; individual tool entries are
+	// validated and defaulted inside resolveConfig() in static-checker.ts.
+	return raw as StaticAnalysisConfig;
+}
+
+/**
+ * Public entry point. Resolves both heavy models, runs Phase 0 static
+ * analysis, fans out to role reviewers in parallel, then runs the
+ * orchestrator agent to synthesise findings.
  */
 export async function runAutoReview(
 	opts: RunAutoReviewOptions,
@@ -754,6 +904,26 @@ export async function runAutoReview(
 	}
 
 	const tierModels = multiModel && secondary ? [primary, secondary] : [primary];
+
+	// ---- Phase 0: Static analysis ---------------------------------------
+	// Run before spawning AI agents so findings can be injected as
+	// pre-computed evidence into each reviewer's task payload.
+	const staticFindings = await runStaticAnalysis(
+		ctx.cwd,
+		opts.staticAnalysisConfig ?? readStaticAnalysisConfig(ctx.cwd),
+	);
+	const staticToolsRan = staticFindings.toolResults.filter(
+		(r) => r.available && r.enabled,
+	).length;
+	if (staticToolsRan > 0) {
+		notify(
+			ctx,
+			`static analysis: ${staticToolsRan} tool(s) ran, ` +
+				`${[...staticFindings.byLane.values()].reduce((n, f) => n + f.length, 0)} finding(s)`,
+			"info",
+		);
+	}
+
 	notify(
 		ctx,
 		`${rc.scopeLabel}: ${rc.changedFiles} file(s), fanning out ${roles.length * tierModels.length} reviewers (${primary.spec}${secondary ? ` + ${secondary.spec}` : ""})`,
@@ -785,7 +955,16 @@ export async function runAutoReview(
 			invocations.map(async (inv) => {
 				const result = await runReviewer({
 					role: inv.role,
-					task: buildTaskFor(inv.role, rc),
+					task: buildTaskFor(
+						inv.role,
+						rc,
+						staticFindings.byLane.get(
+							inv.role as
+								| "code-reviewer"
+								| "security-analyst"
+								| "code-simplifier",
+						),
+					),
 					provider: inv.provider,
 					model: inv.modelId,
 					cwd: ctx.cwd,
@@ -844,64 +1023,73 @@ export async function runAutoReview(
 		);
 	}
 
-	const bundles: FindingsBundle[] = outcomes.map((o) => ({
+	const orchestratorBundles: OrchestratorInput[] = outcomes.map((o) => ({
 		role: o.role,
-		findings: o.findings,
 		tier: o.tier,
+		findings: o.findings,
 	}));
-	const findings = dedupeFindings(bundles);
 
-	// ---- Phase 2: challenge CRITICAL single-tier findings ----------------
-	// When running in multi-model mode, any CRITICAL finding that only one
-	// tier flagged is sent to the OTHER model as a targeted challenge.
-	// If the challenger agrees, the finding is promoted to cross-model
-	// consensus — catching issues that slipped through phase 1 due to
-	// non-determinism rather than genuine disagreement.
-	let challengedCount = 0;
-	let challengedAgreedCount = 0;
-	if (multiModel && secondary) {
-		const { challenged, agreed, promotions } = await runChallengePhase({
-			findings,
-			rc,
-			primary,
-			secondary,
-			extensionName,
-			ctx,
-			signal: ctx.signal,
+	// Also inject static findings into the orchestrator's view (tagged
+	// as synthetic bundles so it can treat them with higher reliability).
+	const staticBundleRole: ReviewerRole = "code-reviewer";
+	const allStaticFindings: RawFinding[] = [
+		...[...staticFindings.byLane.values()].flat(),
+	];
+	if (allStaticFindings.length > 0) {
+		orchestratorBundles.push({
+			role: staticBundleRole,
+			tier: "primary" as BackgroundTier,
+			findings: allStaticFindings,
+			staticTool: true,
 		});
-		challengedCount = challenged;
-		challengedAgreedCount = agreed;
-		// Apply promotions here — after runChallengePhase returns and
-		// before the consensus split — so callers see a clean pipeline
-		// where mutations happen at a single, explicit point.
-		for (const { finding, suggestedAction } of promotions) {
-			const existing = finding.flaggedByTier ?? [];
-			const flaggedTier = existing[0];
-			const challengerTier: BackgroundTier =
-				flaggedTier === "primary" ? "secondary" : "primary";
-			if (!existing.includes(challengerTier)) {
-				finding.flaggedByTier = [...existing, challengerTier];
-			}
-			finding.crossModelConsensus = true;
-			finding.challengedConsensus = true;
-			if (
-				suggestedAction &&
-				(!finding.suggestedAction ||
-					suggestedAction.length > finding.suggestedAction.length)
-			) {
-				finding.suggestedAction = suggestedAction;
-			}
-		}
 	}
 
-	// ---- Split consensus into auto-apply and surface-to-user -------------
-	const withFix = (f: Finding) =>
+	// ---- Phase 2: Orchestrator -------------------------------------------
+	const {
+		findings,
+		orchestratorRan,
+		error: orchError,
+	} = await runOrchestratorPhase({
+		bundles: orchestratorBundles,
+		rc,
+		primary,
+		secondary,
+		extensionName,
+		ctx,
+		signal: ctx.signal,
+	});
+
+	if (orchError) {
+		notify(ctx, `orchestrator error: ${orchError.split("\n")[0]}`, "warning");
+	}
+
+	// ---- Phase 3: Confidence-based split ---------------------------------
+	//
+	// high + fix → auto-apply
+	// high / medium + no fix → surface for discussion
+	// low + CRITICAL → surface with caveat (TypeScript safety net: the
+	//   orchestrator should have called consult_secondary_model, but if
+	//   it still returns low confidence we never silently drop a CRITICAL)
+	// low + IMPORTANT/NOTE → drop
+	const withFix = (f: OrchestratedFinding) =>
 		f.suggestedAction !== undefined && f.suggestedAction.trim() !== "";
-	const consensusFindings = multiModel
-		? crossModelConsensus(findings)
-		: findings;
-	const autoApplied = consensusFindings.filter(withFix);
-	const surfaced = consensusFindings.filter((f) => !withFix(f));
+	const isHighOrMedium = (f: OrchestratedFinding) =>
+		f.confidence === "high" || f.confidence === "medium";
+
+	const autoApplied = findings.filter(
+		(f) => f.confidence === "high" && withFix(f),
+	);
+	const surfaced = findings.filter((f) => {
+		if (autoApplied.includes(f)) return false;
+		// High/medium without a fix → discuss
+		if (isHighOrMedium(f) && !withFix(f)) return true;
+		// Medium with a fix → discuss (not confident enough to auto-apply)
+		if (f.confidence === "medium" && withFix(f)) return true;
+		// Low-confidence CRITICAL: the orchestrator consulted and still
+		// wasn't sure — surface rather than drop.
+		if (f.confidence === "low" && f.severity === "CRITICAL") return true;
+		return false;
+	});
 
 	const secondarySpec = secondary?.spec;
 	pi.sendMessage(
@@ -916,8 +1104,8 @@ export async function runAutoReview(
 				findings,
 				autoApplied,
 				surfaced,
-				challengedCount,
-				challengedAgreedCount,
+				orchestratorRan,
+				staticToolsRan,
 				errors,
 			}),
 			display: true,
@@ -926,8 +1114,8 @@ export async function runAutoReview(
 				totalFindings: findings.length,
 				autoApplied: autoApplied.length,
 				surfaced: surfaced.length,
-				challengedCount,
-				challengedAgreedCount,
+				orchestratorRan,
+				staticToolsRan,
 				primaryModel: primary.spec,
 				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 				errorCount: errors.length,
@@ -979,18 +1167,11 @@ export async function runAutoReview(
 	}
 
 	if (!hasPendingWork) {
-		const msg = multiModel
-			? "no cross-model consensus — nothing to apply or discuss"
-			: "no findings with suggested fixes — nothing to apply or discuss";
-		notify(ctx, msg, "info");
+		notify(ctx, "no actionable findings after orchestrator synthesis", "info");
 	} else {
 		const parts: string[] = [];
-		if (autoApplied.length > 0) {
-			const howMany = multiModel
-				? `${autoApplied.length} consensus fix(es) queued`
-				: `${autoApplied.length} fix(es) queued`;
-			parts.push(howMany);
-		}
+		if (autoApplied.length > 0)
+			parts.push(`${autoApplied.length} fix(es) queued`);
 		if (surfaced.length > 0)
 			parts.push(`${surfaced.length} finding(s) for discussion`);
 		notify(ctx, parts.join(", "), "info");
@@ -1002,8 +1183,8 @@ export async function runAutoReview(
 		findings,
 		autoApplied,
 		surfaced,
-		challengedCount,
-		challengedAgreedCount,
+		orchestratorRan,
+		staticToolsRan,
 		primaryModel: primary.spec,
 		...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
 		errors,

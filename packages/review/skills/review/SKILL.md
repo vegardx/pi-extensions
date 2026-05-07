@@ -34,9 +34,36 @@ changed lines and returns `[]` if nothing in its lane appears; in
 a code-only diff, dependency-checker returns empty immediately; on a
 dependency-only diff, the other six do the same.
 
-## Workflow
+## Pipeline (auto-review mode)
 
-1. Determine scope (see above). If you're standalone, derive the diff
+When invoked via the `/develop` auto-review trigger, the pipeline is:
+
+1. **Phase 0 — Static analysis**: `tsc --noEmit`, `biome check`,
+   `npm audit`, and optionally `semgrep` / `knip` run before any AI
+   agent. Findings are injected as pre-computed evidence into the
+   relevant reviewer lane's task payload. Enabled tools are
+   configurable per-project via `extensionConfig.review.staticAnalysis`
+   in `settings.json`.
+
+2. **Phase 1 — Fan-out**: N reviewer roles × M model tiers run in
+   parallel. Each role agent receives the diff plus any static tool
+   output relevant to its lane.
+
+3. **Phase 2 — Orchestrator**: A single synthesis agent (using the
+   primary model) receives all raw findings from Phase 1, deduplicates
+   them (fuzzy — same issue described differently is merged), and
+   cross-validates using `read`/`grep`/`find` tools. For uncertain
+   CRITICAL findings it can call a `consult_secondary_model` tool,
+   which invokes the secondary model as a second opinion. The
+   orchestrator assigns a `confidence` level to each finding.
+
+4. **Phase 3 — Split**:
+   - `confidence: "high"` + concrete fix → auto-apply
+   - `confidence: "high"/"medium"` without fix → surface for discussion
+   - `confidence: "low"` + CRITICAL → surface with caveat
+   - `confidence: "low"` + IMPORTANT/NOTE → drop
+
+ (see above). If you're standalone, derive the diff
    yourself:
    ```bash
    git diff HEAD                    # working tree
