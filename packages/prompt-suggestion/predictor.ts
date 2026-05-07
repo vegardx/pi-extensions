@@ -19,7 +19,9 @@ const SYSTEM_PROMPT =
 	"- Stated assumptions about the codebase, stack, or intent → confirm or briefly correct (e.g. 'Yes, TypeScript', 'Correct', 'Actually it uses pnpm').\n" +
 	"- Short clarifying question → a short direct answer.\n" +
 	"- Otherwise → the most natural next instruction given recent context, heavily biased toward coding and software engineering tasks.\n" +
-	"Reply with ONLY the predicted message. No preamble, no quotes, no explanation. Keep it brief — one short sentence.";
+	"Do NOT suggest social acknowledgements, expressions of gratitude, or statements of developer intent — e.g. 'Thanks', 'Great work', 'Sounds good', 'You're welcome', or 'I'll review it'. These are never useful.\n" +
+	"If there is no clear actionable next instruction — the conversation is wrapping up, the developer just expressed thanks, or the context does not imply an obvious next task — respond with exactly the word NONE.\n" +
+	"Reply with ONLY the predicted message or NONE. No preamble, no quotes, no explanation. Keep it brief — one short sentence.";
 
 const MAX_CONTEXT_MESSAGES = 6;
 const MAX_OUTPUT_TOKENS = 500;
@@ -186,6 +188,14 @@ export class Predictor {
 				this.lastStatus = "empty-after-sanitize";
 				return null;
 			}
+			if (cleaned.toLowerCase() === "none") {
+				this.lastStatus = "no-actionable-suggestion";
+				return null;
+			}
+			if (!isActionable(cleaned)) {
+				this.lastStatus = "non-actionable-filtered";
+				return null;
+			}
 
 			this.lastMessageKey = key;
 			this.lastSuggestion = cleaned;
@@ -295,6 +305,23 @@ function extractText(content: unknown): string {
 		}
 	}
 	return parts.join("\n");
+}
+
+// Belt-and-braces guard against non-actionable social phrases the model may
+// still emit despite the NONE instruction in the system prompt.
+export function isActionable(s: string): boolean {
+	if (!s || s.toLowerCase() === "none") return false;
+	const lower = s.toLowerCase().trim();
+	const patterns = [
+		/^(thanks|thank you|thx|ty)\b/,
+		/^(great|awesome|excellent|perfect|wonderful|fantastic|nice)\b/,
+		/^(sounds good|looks good|that works|that's fine|that looks good)\b/,
+		/^(you're welcome|no problem|sure thing|absolutely|of course)\b/,
+		/^(good job|well done|great work|nice work|good work)\b/,
+		/^(ok|okay|alright|got it|understood|makes sense|noted)\b/,
+		/^(i'll|i will|i'm going to|i can)\b/,
+	];
+	return !patterns.some((re) => re.test(lower));
 }
 
 // Display-layer sanitization. Strips control characters that would corrupt
