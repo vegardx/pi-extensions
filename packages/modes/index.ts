@@ -374,7 +374,9 @@ export default function (pi: ExtensionAPI) {
 	// ---- Picker -----------------------------------------------------------
 
 	async function runPicker(ctx: ExtensionCommandContext): Promise<void> {
-		if (!modeState) return;
+		// Guard against stale setImmediate callbacks: if the user switched out
+		// of plan mode (e.g. Shift+Tab) between scheduling and execution, bail.
+		if (!modeState || modeState.mode !== "plan") return;
 		const choice = await ctx.ui.select(
 			`modes: plan ready${modeState.branch ? ` (${modeState.branch})` : ""} — what next?`,
 			[
@@ -397,6 +399,12 @@ export default function (pi: ExtensionAPI) {
 			await doPark(ctx);
 		} else {
 			await doImplement(ctx, null);
+		}
+		// If the action failed / returned early, phase is still "awaiting-choice".
+		// Reset to "planning" so agent_end re-arms the picker on the next turn.
+		if (modeState?.phase === "awaiting-choice") {
+			modeState.phase = "planning";
+			persist();
 		}
 	}
 
@@ -1049,8 +1057,10 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 				// "block" — ask for confirmation with the classifier's reason.
+				const cmdSnippet =
+					command.length > 80 ? `${command.slice(0, 80)}\u2026` : command;
 				const { proceed, blockReason } = await askPermission(
-					`Allow bash: ${result.reason}`,
+					`Allow bash: ${result.reason} — \`${cmdSnippet}\``,
 					"User declined the bash command.",
 				);
 				if (!proceed) return { block: true, reason: blockReason };
