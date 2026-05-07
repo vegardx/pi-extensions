@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
@@ -23,6 +26,102 @@ import {
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 
 const EXT_ID = "startup";
+
+// ---------------------------------------------------------------------------
+// Context-file discovery
+// ---------------------------------------------------------------------------
+
+const CONTEXT_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
+
+/**
+ * One AGENTS.md / CLAUDE.md file discovered on disk.
+ */
+export interface ContextFileInfo {
+	/** Absolute filesystem path. */
+	path: string;
+	/** Path with home directory replaced by ~ for display. */
+	displayPath: string;
+	/** How specific this file is relative to the session cwd. */
+	scope: "global" | "parent" | "project";
+	/** Rough token estimate: ceil(charCount / 4). */
+	tokens: number;
+	/** Number of newline-delimited lines in the file. */
+	lines: number;
+}
+
+/**
+ * Discover all context files that pi would load for the given cwd, in the
+ * order they appear in the assembled context:
+ *
+ *   1. Global: `<globalDir>/AGENTS.md` (or `CLAUDE.md`)
+ *   2. Every directory from the filesystem root down to `cwd`, one file per
+ *      directory (`AGENTS.md` checked before `CLAUDE.md`).
+ *
+ * This mirrors pi's own discovery without relying on `before_agent_start` so
+ * that results are available at `session_start` time.
+ *
+ * `options.globalDir` defaults to `~/.pi/agent` and can be overridden in
+ * tests to avoid depending on the real home directory.
+ */
+export function discoverContextFiles(
+	cwd: string,
+	options?: { globalDir?: string },
+): ContextFileInfo[] {
+	const home = homedir();
+	const globalDir = options?.globalDir ?? join(home, ".pi", "agent");
+	const results: ContextFileInfo[] = [];
+
+	function toDisplayPath(absPath: string): string {
+		const prefix = home + sep;
+		return absPath.startsWith(prefix)
+			? `~${absPath.slice(home.length)}`
+			: absPath;
+	}
+
+	function tryAdd(dir: string, scope: ContextFileInfo["scope"]): void {
+		for (const name of CONTEXT_FILE_NAMES) {
+			const absPath = join(dir, name);
+			if (!existsSync(absPath)) continue;
+			try {
+				const content = readFileSync(absPath, "utf8");
+				results.push({
+					path: absPath,
+					displayPath: toDisplayPath(absPath),
+					scope,
+					tokens: Math.ceil(content.length / 4),
+					lines: content.split("\n").length,
+				});
+			} catch {
+				// Unreadable file — skip silently.
+			}
+			return; // at most one file per directory
+		}
+	}
+
+	// 1. Global
+	tryAdd(globalDir, "global");
+
+	// 2. Every ancestor from filesystem root down to cwd (inclusive).
+	//    Walk up from cwd collecting ancestors, then reverse to get root→cwd.
+	const ancestors: string[] = [];
+	let dir = cwd;
+	while (true) {
+		ancestors.push(dir);
+		const parent = dirname(dir);
+		if (parent === dir) break; // reached filesystem root
+		dir = parent;
+	}
+	ancestors.reverse();
+
+	for (const ancestor of ancestors) {
+		if (ancestor === globalDir) continue; // already handled above
+		const scope: ContextFileInfo["scope"] =
+			ancestor === cwd ? "project" : "parent";
+		tryAdd(ancestor, scope);
+	}
+
+	return results;
+}
 
 /**
  * One loaded extension as we can observe it from the public API: a single
@@ -81,6 +180,8 @@ export interface StartupSummary {
 	unrecognized: LoadedExtension[];
 	layered: LayeredRelevantSettings;
 	activeModel?: string;
+	/** Context files discovered on disk for this session's cwd. */
+	contextFiles?: ContextFileInfo[];
 }
 
 // ---------------------------------------------------------------------------
@@ -301,6 +402,24 @@ export function renderLines(summary: StartupSummary): string[] {
 	lines.push(`  primary:   ${tierStr(bg?.primary)}`);
 	lines.push(`  secondary: ${tierStr(bg?.secondary)}`);
 
+	// Context files
+	const cfFiles = summary.contextFiles ?? [];
+	lines.push("");
+	if (cfFiles.length === 0) {
+		lines.push("Context files: (none found)");
+	} else {
+		const cfTotal = cfFiles.reduce((s, f) => s + f.tokens, 0);
+		const totalStr =
+			cfTotal >= 1000 ? `${(cfTotal / 1000).toFixed(1)}k` : String(cfTotal);
+		lines.push(`Context files (${cfFiles.length} · ${totalStr} tokens):`);
+		for (const f of cfFiles) {
+			const scope = f.scope.padEnd(7);
+			lines.push(
+				`  ${scope}  ${f.displayPath}  (${f.tokens} tok · ${f.lines} lines)`,
+			);
+		}
+	}
+
 	for (const ext of summary.declared) {
 		lines.push("");
 		lines.push(`${ext.meta.name}:`);
@@ -350,7 +469,13 @@ export function summarize(
 	const activeModel = ctx.model
 		? `${ctx.model.provider}/${ctx.model.id}`
 		: undefined;
-	return { declared, unrecognized, layered, activeModel };
+	return {
+		declared,
+		unrecognized,
+		layered,
+		activeModel,
+		contextFiles: discoverContextFiles(ctx.cwd),
+	};
 }
 
 export default function (pi: ExtensionAPI) {
