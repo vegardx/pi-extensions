@@ -147,4 +147,112 @@ describe("resolveEffectiveValue", () => {
 		expect(r.isOverride).toBe(true);
 		expect(r.value).toBeNull();
 	});
+
+	describe("dot-notation keys", () => {
+		const nestedSchema: ConfigKeySchema = {
+			key: "review.enable",
+			type: "boolean",
+			default: true,
+			doc: "Enable auto-review.",
+		};
+
+		it("resolves a nested key from the project layer", () => {
+			const r = resolveEffectiveValue({
+				extName: "modes",
+				key: "review.enable",
+				schema: nestedSchema,
+				layered: {
+					global: {},
+					project: {
+						extensionConfig: { modes: { review: { enable: false } } },
+					},
+				},
+			});
+			expect(r).toEqual({
+				value: false,
+				source: "project",
+				isOverride: true,
+			});
+		});
+
+		it("resolves a nested key from the global layer when project is absent", () => {
+			const r = resolveEffectiveValue({
+				extName: "modes",
+				key: "review.enable",
+				schema: nestedSchema,
+				layered: {
+					global: {
+						extensionConfig: { modes: { review: { enable: false } } },
+					},
+					project: {},
+				},
+			});
+			expect(r).toEqual({
+				value: false,
+				source: "global",
+				isOverride: true,
+			});
+		});
+
+		it("falls back to schema default when the nested path is absent", () => {
+			const r = resolveEffectiveValue({
+				extName: "modes",
+				key: "review.enable",
+				schema: nestedSchema,
+				layered: {
+					global: {},
+					project: { extensionConfig: { modes: {} } },
+				},
+			});
+			expect(r).toEqual({
+				value: true,
+				source: "default",
+				isOverride: false,
+			});
+		});
+
+		it("falls back to schema default when an intermediate segment is missing", () => {
+			const r = resolveEffectiveValue({
+				extName: "modes",
+				key: "review.enable",
+				schema: nestedSchema,
+				layered: {
+					global: {},
+					project: {},
+				},
+			});
+			expect(r).toEqual({
+				value: true,
+				source: "default",
+				isOverride: false,
+			});
+		});
+
+		it("resolves a nested string[] value", () => {
+			const arrSchema: ConfigKeySchema = {
+				key: "review.agents",
+				type: "string[]",
+				default: ["code-reviewer", "security-analyst"],
+				doc: "Reviewer roles.",
+			};
+			const r = resolveEffectiveValue({
+				extName: "modes",
+				key: "review.agents",
+				schema: arrSchema,
+				layered: {
+					global: {},
+					project: {
+						extensionConfig: {
+							modes: { review: { agents: ["architect"] } },
+						},
+					},
+				},
+			});
+			expect(r).toEqual({
+				value: ["architect"],
+				source: "project",
+				isOverride: true,
+			});
+		});
+	});
 });
