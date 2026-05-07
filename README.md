@@ -8,17 +8,20 @@ collection of extensions I use daily for coding sessions.
 
 ## Extensions
 
-| Package | What it does |
-|---|---|
-| [`startup`](packages/startup) | Reports loaded extensions and config on session start |
-| [`develop`](packages/develop) | `/develop` workflow — intake → plan → implement loop |
-| [`review`](packages/review) | `/review` command — fans out specialist reviewers over a diff or codebase |
-| [`commit`](packages/commit) | Generates and confirms git commit messages |
-| [`session-title`](packages/session-title) | Auto-names terminal sessions from context |
-| [`prompt-suggestion`](packages/prompt-suggestion) | Ghost-text next-message prediction after each turn |
-| [`smart-compact`](packages/smart-compact) | Smarter context compaction |
-| [`gh`](packages/gh) | GitHub skills (PR, issues, etc.) |
-| [`caffeinate`](packages/caffeinate) | macOS keep-awake helper for long-running sessions |
+| Package | Type | What it does |
+|---|---|---|
+| [`startup`](packages/startup) | `utility` | Reports loaded extensions and config on session start |
+| [`develop`](packages/develop) | `command` | `/develop` workflow — intake → plan → implement loop |
+| [`review`](packages/review) | `command` | `/review` command — fans out specialist reviewers over a diff or codebase |
+| [`commit`](packages/commit) | `command` | Generates and confirms git commit messages |
+| [`wrap-up`](packages/wrap-up) | `command` | End-of-session handover doc + resource cost prompt |
+| [`session-title`](packages/session-title) | `system` | Auto-names terminal sessions from context |
+| [`prompt-suggestion`](packages/prompt-suggestion) | `system` | Ghost-text next-message prediction after each turn |
+| [`smart-compact`](packages/smart-compact) | `system` | Smarter context compaction |
+| [`gh`](packages/gh) | `skill` | GitHub skills (PR, issues, etc.) |
+| [`context7`](packages/context7) | `skill` | Library docs lookup via Context7 API |
+| [`exa`](packages/exa) | `skill` | Semantic web search via Exa API |
+| [`caffeinate`](packages/caffeinate) | `utility` | macOS keep-awake helper for long-running sessions |
 
 ## Background models
 
