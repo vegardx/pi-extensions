@@ -90,6 +90,14 @@ export async function runReviewer(
 		return { role: input.role, findings: [], error: out.error };
 	}
 
+	if (!out.rawText || out.rawText.trim().length === 0) {
+		return {
+			role: input.role,
+			findings: [],
+			error: "reviewer produced no output (empty response)",
+		};
+	}
+
 	const parsed = parseReviewerOutput(out.rawText);
 	if (parsed === null) {
 		return {

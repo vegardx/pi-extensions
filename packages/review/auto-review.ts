@@ -178,6 +178,8 @@ export interface RunAutoReviewResult {
 	secondaryModel?: string;
 	/** True when the orchestrator agent ran and produced parseable output. */
 	orchestratorRan?: boolean;
+	/** Error message when the orchestrator failed (timeout, model not found, parse failure). */
+	orchestratorError?: string;
 	/** Count of enabled static analysis tools that ran. */
 	staticToolsRan?: number;
 	/** Per-(role, tier) reviewer errors, surfaced via the report. */
@@ -393,6 +395,9 @@ async function runOrchestratorPhase(opts: {
 	/** When provided, the orchestrator gets a `consult_secondary_model`
 	 *  custom tool it can call for uncertain CRITICAL findings. */
 	secondary: ResolvedTierModel | null;
+	/** Fraction of reviewer invocations that errored (0–1). Used to
+	 *  decide whether to run the orchestrator even with 0 input findings. */
+	reviewerErrorRate: number;
 	extensionName: string;
 	ctx: ExtensionContext;
 	signal?: AbortSignal;
@@ -405,8 +410,16 @@ async function runOrchestratorPhase(opts: {
 
 	const totalInputFindings = bundles.reduce((n, b) => n + b.findings.length, 0);
 
-	if (totalInputFindings === 0) {
+	if (shouldSkipOrchestrator(totalInputFindings, opts.reviewerErrorRate)) {
 		return { findings: [], orchestratorRan: false };
+	}
+
+	if (totalInputFindings === 0) {
+		notify(
+			ctx,
+			"high reviewer error rate — running orchestrator as fallback",
+			"warning",
+		);
 	}
 
 	notify(
@@ -667,7 +680,12 @@ export function buildAutoReviewReport(opts: {
 	autoApplied: readonly OrchestratedFinding[];
 	surfaced: readonly OrchestratedFinding[];
 	orchestratorRan: boolean;
+	orchestratorError?: string;
 	staticToolsRan: number;
+	/** Total reviewer invocations (roles × tiers). */
+	totalInvocations: number;
+	/** Sum of additions + deletions in the diff. */
+	diffSize: number;
 	errors: ReadonlyArray<{
 		role: ReviewerRole;
 		tier: BackgroundTier;
@@ -698,16 +716,42 @@ export function buildAutoReviewReport(opts: {
 	lines.push(
 		`**Findings**: ${totalFindings} total · ${autoCount} auto-applying · ${surfacedCount} for discussion · ${dropped} low-confidence (dropped)`,
 	);
+	const firstLine = (s: string) => s.split("\n")[0].slice(0, 120);
 	if (!opts.orchestratorRan) {
-		lines.push("**Orchestrator**: did not run or produced no parseable output");
+		if (opts.orchestratorError) {
+			lines.push(
+				`**Orchestrator**: failed — ${firstLine(opts.orchestratorError)}`,
+			);
+		} else {
+			lines.push(
+				"**Orchestrator**: skipped (no input findings from reviewers or static tools)",
+			);
+		}
 	}
 	if (opts.errors.length > 0) {
 		lines.push(
 			`**Reviewer errors**: ${opts.errors.length} (the affected lane was treated as empty)`,
 		);
+		for (const e of opts.errors) {
+			lines.push(`  - \`${e.role}/${e.tier}\`: ${firstLine(e.error)}`);
+		}
 	}
 	if (autoCount === 0 && surfacedCount === 0) {
 		lines.push("");
+		// Suspicious silence: all successful lanes found nothing on a large diff.
+		const successfulLanes = opts.totalInvocations - opts.errors.length;
+		if (
+			successfulLanes > 0 &&
+			totalFindings === 0 &&
+			opts.diffSize > 50 &&
+			!opts.orchestratorError
+		) {
+			lines.push(
+				"⚠️ All reviewers found nothing on a non-trivial diff — consider",
+				"running `/review` manually to rule out systemic subagent failures.",
+				"",
+			);
+		}
 		lines.push(
 			"No actionable findings after orchestrator synthesis. Nothing to",
 			"auto-apply or discuss. Run `/review` for the full seven-lane",
@@ -811,6 +855,23 @@ export function buildAutoReviewDiscussionPrompt(
  * }
  * ```
  */
+/**
+ * Should the orchestrator be skipped when there are 0 input findings?
+ * Returns `true` (skip) when the reviewer error rate is below the
+ * threshold — i.e. enough reviewers ran successfully and genuinely
+ * found nothing. Returns `false` (run anyway) when the error rate
+ * is high enough that the "0 findings" result is untrustworthy.
+ *
+ * Exported for unit testing.
+ */
+export function shouldSkipOrchestrator(
+	totalInputFindings: number,
+	reviewerErrorRate: number,
+): boolean {
+	if (totalInputFindings > 0) return false;
+	return reviewerErrorRate < 1 / 3;
+}
+
 export function readStaticAnalysisConfig(
 	cwd: string,
 	agentDir?: string,
@@ -1045,6 +1106,8 @@ export async function runAutoReview(
 	}
 
 	// ---- Phase 2: Orchestrator -------------------------------------------
+	const reviewerErrorRate =
+		invocations.length > 0 ? errors.length / invocations.length : 0;
 	const {
 		findings,
 		orchestratorRan,
@@ -1054,6 +1117,7 @@ export async function runAutoReview(
 		rc,
 		primary,
 		secondary,
+		reviewerErrorRate,
 		extensionName,
 		ctx,
 		signal: ctx.signal,
@@ -1105,7 +1169,10 @@ export async function runAutoReview(
 				autoApplied,
 				surfaced,
 				orchestratorRan,
+				...(orchError ? { orchestratorError: orchError } : {}),
 				staticToolsRan,
+				totalInvocations: invocations.length,
+				diffSize: rc.additions + rc.deletions,
 				errors,
 			}),
 			display: true,
@@ -1184,6 +1251,7 @@ export async function runAutoReview(
 		autoApplied,
 		surfaced,
 		orchestratorRan,
+		...(orchError ? { orchestratorError: orchError } : {}),
 		staticToolsRan,
 		primaryModel: primary.spec,
 		...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
