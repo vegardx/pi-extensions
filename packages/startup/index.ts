@@ -369,7 +369,8 @@ function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 		}
 		return `  ${key}: (unset)`;
 	}
-	return `  ${key}: ${formatValue(k.effective.value)} (default)`;
+	const hasDefault = k.schema.default !== undefined;
+	return `  ${key}: ${formatValue(k.effective.value)}${hasDefault ? " (default)" : ""}`;
 }
 
 /**

@@ -234,6 +234,9 @@ function readKeyFromLayer(
 	// extensionConfig.modes.review.enable). Single-segment keys take the
 	// fast path via Object.hasOwn so there is no behavioural change for
 	// the common flat case.
+	if (!key.includes(".")) {
+		return Object.hasOwn(ec, key) ? ec[key] : undefined;
+	}
 	const parts = key.split(".");
 	let current: unknown = ec;
 	for (const part of parts) {
