@@ -351,7 +351,7 @@ function formatValue(v: unknown): string {
  *   - Fallback-chain key, not overridden  →  `key: value (via set.tier)` using
  *     the parent extension's `backgroundModel.resolvedTierValue`; falls back to
  *     `(unset)` when nothing could be resolved.
- *   - Literal default, not overridden  →  `key: value` (no annotation)
+ *   - Literal default, not overridden  →  `key: value (default)`
  */
 function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 	const key = k.schema.key;
