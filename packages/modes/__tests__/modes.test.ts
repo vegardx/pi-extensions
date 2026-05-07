@@ -1,33 +1,14 @@
-import { isSafeCommand } from "@vegardx/pi-extensions-shared/plan-utils.js";
 import {
 	deriveBranchName,
+	deriveBranchNameWithModel,
 	deriveIssueTitle,
 	derivePrefix,
+	descriptionFromLastAssistant,
 	sanitizeSlug,
 	scanForSecrets,
 	slugify,
+	slugifyWithModel,
 } from "../helpers.js";
-
-// isSafeCommand is shared from _shared/plan-utils — a smoke test to confirm
-// the import path resolves correctly from modes.
-describe("isSafeCommand (from _shared)", () => {
-	it("allows read-only commands", () => {
-		expect(isSafeCommand("git log --oneline -10")).toBe(true);
-		expect(isSafeCommand("rg 'foo' src/")).toBe(true);
-		expect(isSafeCommand("cat package.json")).toBe(true);
-	});
-
-	it("blocks write commands", () => {
-		expect(isSafeCommand("rm -rf dist/")).toBe(false);
-		expect(isSafeCommand("git commit -m 'wip'")).toBe(false);
-	});
-
-	it("blocks bash redirects", () => {
-		expect(isSafeCommand("echo hello > out.txt")).toBe(false);
-		expect(isSafeCommand("echo hello >> out.txt")).toBe(false);
-		expect(isSafeCommand("cat foo | tee bar.txt")).toBe(false);
-	});
-});
 
 describe("slugify", () => {
 	it("produces kebab-case from a description", () => {
@@ -108,6 +89,19 @@ describe("scanForSecrets", () => {
 		).toBe(false);
 	});
 
+	it("does not false-positive on git hashes", () => {
+		expect(
+			scanForSecrets("commit abc123def456abc123def456abc123def456abc1")
+				.hasSecret,
+		).toBe(false);
+	});
+
+	it("does not false-positive on UUIDs", () => {
+		expect(
+			scanForSecrets("id: 550e8400e29b41d4a716446655440000").hasSecret,
+		).toBe(false);
+	});
+
 	it("detects GitHub PATs", () => {
 		expect(
 			scanForSecrets("token: ghp_abcdefghijklmnopqrstuvwxyz1234567890")
@@ -120,5 +114,210 @@ describe("scanForSecrets", () => {
 			scanForSecrets("key: sk-ant-abcdefghijklmnopqrstuvwxyz12345678")
 				.hasSecret,
 		).toBe(true);
+	});
+
+	it("detects npm tokens", () => {
+		expect(scanForSecrets("npm_abc123defghijklmnopqrst").hasSecret).toBe(true);
+	});
+
+	it("detects PEM blocks", () => {
+		expect(scanForSecrets("-----BEGIN RSA PRIVATE KEY-----").hasSecret).toBe(
+			true,
+		);
+	});
+});
+
+// ---- slugifyWithModel -------------------------------------------------------
+
+describe("slugifyWithModel", () => {
+	const fakeCtx = {} as unknown as Parameters<typeof slugifyWithModel>[0];
+
+	it("falls back to slugify() when no model resolves", async () => {
+		const slug = await slugifyWithModel(
+			fakeCtx,
+			"add payment webhooks for checkout",
+			{
+				_resolveModel: async () => null,
+				_complete: async () => {
+					throw new Error("should not be called");
+				},
+			},
+		);
+		expect(slug).toBe("add-payment-webhooks-for-checkout");
+	});
+
+	it("falls back when resolveModel throws", async () => {
+		const slug = await slugifyWithModel(fakeCtx, "add payment webhooks", {
+			_resolveModel: async () => {
+				throw new Error("boom");
+			},
+			_complete: async () => {
+				throw new Error("should not be called");
+			},
+		});
+		expect(slug).toBe("add-payment-webhooks");
+	});
+
+	it("falls back when resolveModel returns no apiKey", async () => {
+		const slug = await slugifyWithModel(fakeCtx, "add payment webhooks", {
+			_resolveModel: async () => ({
+				model: { provider: "x", id: "y" } as never,
+				apiKey: undefined,
+			}),
+			_complete: async () => {
+				throw new Error("should not be called");
+			},
+		});
+		expect(slug).toBe("add-payment-webhooks");
+	});
+
+	it("uses the sanitized model output on a happy path", async () => {
+		const slug = await slugifyWithModel(
+			fakeCtx,
+			"add payment webhooks for checkout",
+			{
+				_resolveModel: async () => ({
+					model: { provider: "x", id: "y" } as never,
+					apiKey: "k",
+				}),
+				_complete: (async () => ({
+					content: [{ type: "text", text: "add-payment-webhooks" }],
+				})) as never,
+			},
+		);
+		expect(slug).toBe("add-payment-webhooks");
+	});
+
+	it("falls back when the model returns garbage", async () => {
+		const slug = await slugifyWithModel(fakeCtx, "add payment webhooks", {
+			_resolveModel: async () => ({
+				model: { provider: "x", id: "y" } as never,
+				apiKey: "k",
+			}),
+			_complete: (async () => ({
+				content: [{ type: "text", text: "!!!...???" }],
+			})) as never,
+		});
+		expect(slug).toBe("add-payment-webhooks");
+	});
+
+	it("falls back when completeSimple throws", async () => {
+		const slug = await slugifyWithModel(fakeCtx, "add payment webhooks", {
+			_resolveModel: async () => ({
+				model: { provider: "x", id: "y" } as never,
+				apiKey: "k",
+			}),
+			_complete: (async () => {
+				throw new Error("network down");
+			}) as never,
+		});
+		expect(slug).toBe("add-payment-webhooks");
+	});
+});
+
+// ---- deriveBranchNameWithModel ----------------------------------------------
+
+describe("deriveBranchNameWithModel", () => {
+	const fakeCtx = {} as unknown as Parameters<
+		typeof deriveBranchNameWithModel
+	>[0];
+
+	it("combines deterministic prefix with smart slug", async () => {
+		const branch = await deriveBranchNameWithModel(
+			fakeCtx,
+			"fix login crash on safari",
+			{
+				_resolveModel: async () => ({
+					model: { provider: "x", id: "y" } as never,
+					apiKey: "k",
+				}),
+				_complete: (async () => ({
+					content: [{ type: "text", text: "fix-safari-login-crash" }],
+				})) as never,
+			},
+		);
+		expect(branch).toBe("fix/fix-safari-login-crash");
+	});
+
+	it("returns empty string when slug is empty", async () => {
+		const branch = await deriveBranchNameWithModel(fakeCtx, "!!!", {
+			_resolveModel: async () => null,
+			_complete: async () => {
+				throw new Error("should not be called");
+			},
+		});
+		expect(branch).toBe("");
+	});
+
+	it("falls back to deterministic prefix+slug when no model", async () => {
+		const branch = await deriveBranchNameWithModel(
+			fakeCtx,
+			"add payment webhooks",
+			{
+				_resolveModel: async () => null,
+				_complete: async () => {
+					throw new Error("should not be called");
+				},
+			},
+		);
+		expect(branch).toMatch(/^feat\//);
+		expect(branch.length).toBeGreaterThan(5);
+	});
+});
+
+// ---- descriptionFromLastAssistant ------------------------------------------
+
+describe("descriptionFromLastAssistant", () => {
+	function fakeCtx(entries: unknown[]) {
+		return {
+			sessionManager: {
+				getEntries: () => entries,
+			},
+		} as unknown as Parameters<typeof descriptionFromLastAssistant>[0];
+	}
+
+	it("returns null when no entries", () => {
+		expect(descriptionFromLastAssistant(fakeCtx([]))).toBeNull();
+	});
+
+	it("returns null when no assistant messages", () => {
+		const ctx = fakeCtx([
+			{ type: "message", message: { role: "user", content: "hello" } },
+		]);
+		expect(descriptionFromLastAssistant(ctx)).toBeNull();
+	});
+
+	it("returns text from last assistant message (string content)", () => {
+		const ctx = fakeCtx([
+			{ type: "message", message: { role: "user", content: "ask" } },
+			{
+				type: "message",
+				message: { role: "assistant", content: "Here is my plan." },
+			},
+		]);
+		expect(descriptionFromLastAssistant(ctx)).toBe("Here is my plan.");
+	});
+
+	it("returns text from last assistant message (content array)", () => {
+		const ctx = fakeCtx([
+			{
+				type: "message",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "text", text: "Step one." },
+						{ type: "text", text: "Step two." },
+					],
+				},
+			},
+		]);
+		expect(descriptionFromLastAssistant(ctx)).toBe("Step one. Step two.");
+	});
+
+	it("returns null when assistant content is too short", () => {
+		const ctx = fakeCtx([
+			{ type: "message", message: { role: "assistant", content: "ok" } },
+		]);
+		expect(descriptionFromLastAssistant(ctx)).toBeNull();
 	});
 });
