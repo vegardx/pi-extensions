@@ -5,7 +5,7 @@
  * instruction string to send to the agent.
  */
 
-import type { WrapUpContext } from "./context.js";
+import type { HandoverConfig, WrapUpContext } from "./context.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -44,7 +44,10 @@ function formatPr(prJson: string): string {
  * Build the full /wrap-up prompt. Pure function — given the same context
  * it always returns the same string.
  */
-export function buildWrapUpPrompt(ctx: WrapUpContext): string {
+export function buildWrapUpPrompt(
+	ctx: WrapUpContext,
+	handover: HandoverConfig,
+): string {
 	const lines: string[] = [];
 
 	lines.push(
@@ -70,17 +73,26 @@ export function buildWrapUpPrompt(ctx: WrapUpContext): string {
 	// --- Git snapshot ---
 	const snapshotParts: string[] = [];
 
+	// Session metadata
+	if (ctx.sessionName) {
+		snapshotParts.push(`Session name: ${ctx.sessionName}`);
+	}
+	snapshotParts.push(`Session ID:   ${ctx.sessionId}`);
+	if (ctx.sessionFile) {
+		snapshotParts.push(`Session file: ${ctx.sessionFile}`);
+	}
+
 	if (ctx.branch) {
-		snapshotParts.push(`Branch: ${ctx.branch}`);
+		snapshotParts.push(`Branch:       ${ctx.branch}`);
 	}
 	if (ctx.upstream) {
-		snapshotParts.push(`Upstream: ${ctx.upstream}`);
+		snapshotParts.push(`Upstream:     ${ctx.upstream}`);
 	}
 	if (ctx.remoteUrl) {
-		snapshotParts.push(`Remote: ${ctx.remoteUrl}`);
+		snapshotParts.push(`Remote:       ${ctx.remoteUrl}`);
 	}
 	if (ctx.prInfo) {
-		snapshotParts.push(`PR: ${formatPr(ctx.prInfo)}`);
+		snapshotParts.push(`PR:           ${formatPr(ctx.prInfo)}`);
 	}
 
 	if (snapshotParts.length > 0) {
@@ -138,6 +150,9 @@ export function buildWrapUpPrompt(ctx: WrapUpContext): string {
 		"Exact, numbered steps to get back to this point from a clean terminal:",
 		"  1. git checkout <branch>",
 		"  2. ...",
+		ctx.sessionFile
+			? `  Or resume the session directly: pi --resume (select session ${ctx.sessionId.slice(0, 8)})`
+			: "",
 		"Include any env vars to set, services to start, or commands to run.",
 		"",
 		"### Next steps",
@@ -173,20 +188,30 @@ export function buildWrapUpPrompt(ctx: WrapUpContext): string {
 		);
 	}
 
-	// --- Save to file offer ---
+	// --- Save to file ---
+	const stepNum = ctx.resources.length > 0 ? 5 : 4;
+	lines.push(`## Step ${stepNum} — Save handover document`, "");
+
+	if (handover.autoSave) {
+		lines.push(
+			`Write the handover document above to \`${handover.fullPath}\` immediately.`,
+			"Create the directory if it does not exist. Do not ask for confirmation.",
+			"After writing, tell the user the file was saved and show the path.",
+			"",
+		);
+	} else {
+		lines.push(
+			`Ask: "Should I save this handover to \`${handover.fullPath}\`?"`,
+			"If yes, write the file, creating the directory if needed, then confirm the path.",
+			"",
+		);
+	}
+
 	lines.push(
-		"## Step 5 — Offer to save",
-		"",
-		`Offer to write the handover document to \`.pi/handover-${ctx.date}.md\`.`,
-		"Ask: 'Should I save this to `.pi/handover-" +
-			ctx.date +
-			".md` for next session?'",
-		"If yes, write the file. If the `.pi/` directory doesn't exist, create it.",
-		"",
 		"## Rules",
 		"",
-		"- Write the handover document first, then ask about resources, then offer",
-		"  to save. Do not ask permission before writing the document.",
+		"- Write the handover document first, then ask about resources, then save.",
+		"  Do not ask permission before writing the document itself.",
 		"- Keep the document factual and actionable. No filler.",
 		"- If you are uncertain about something (e.g. what the original goal was),",
 		"  say so explicitly in the document rather than guessing.",

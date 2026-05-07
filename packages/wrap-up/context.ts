@@ -8,6 +8,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 // ---------------------------------------------------------------------------
@@ -119,13 +120,94 @@ export interface WrapUpContext {
 	resources: ResourceSignal[];
 	/** ISO date string at time of gathering, e.g. "2026-05-06". */
 	date: string;
+	/** pi session ID (always present). */
+	sessionId: string;
+	/** Absolute path to the session file, or null for ephemeral sessions. */
+	sessionFile: string | null;
+	/** Session name set via pi.setSessionName(), or null. */
+	sessionName: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Handover config
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolved configuration for where and how to write the handover file.
+ * Built from `extensionConfig.wrap-up` settings before the agent turn fires.
+ */
+export interface HandoverConfig {
+	/** Absolute directory path where handover files are written. */
+	dir: string;
+	/** Filename only, e.g. `handover-2026-05-06-abc12345.md`. */
+	filename: string;
+	/** Full absolute path = `dir/filename`. */
+	fullPath: string;
+	/** When true the agent writes the file immediately without asking. */
+	autoSave: boolean;
+}
+
+/**
+ * Default handover directory: `~/.pi/agent/handovers/`.
+ * Follows pi's convention of storing agent data under `~/.pi/agent/`.
+ */
+export const DEFAULT_HANDOVER_DIR = join(
+	homedir(),
+	".pi",
+	"agent",
+	"handovers",
+);
+
+/**
+ * Resolve the handover directory from a raw configured value.
+ * Expands a leading `~` to `homedir()`. Falls back to `DEFAULT_HANDOVER_DIR`
+ * when `configured` is empty or undefined.
+ */
+export function resolveHandoverDir(configured?: string): string {
+	if (!configured || configured.trim().length === 0)
+		return DEFAULT_HANDOVER_DIR;
+	return configured.trim().replace(/^~(?=\/|$)/, homedir());
+}
+
+/**
+ * Build the handover filename from context.
+ * Format: `handover-<date>-<sessionId-8>.md`
+ * The 8-char session-ID prefix makes filenames unique per session per day
+ * without embedding the full (long) session UUID.
+ */
+export function buildHandoverFilename(ctx: WrapUpContext): string {
+	const shortId = ctx.sessionId.slice(0, 8);
+	return `handover-${ctx.date}-${shortId}.md`;
+}
+
+/**
+ * Combine dir resolution and filename generation into a single
+ * `HandoverConfig` ready for the prompt builder and index.ts.
+ */
+export function resolveHandoverConfig(
+	ctx: WrapUpContext,
+	opts: { configuredDir?: string; autoSave: boolean },
+): HandoverConfig {
+	const dir = resolveHandoverDir(opts.configuredDir);
+	const filename = buildHandoverFilename(ctx);
+	return {
+		dir,
+		filename,
+		fullPath: join(dir, filename),
+		autoSave: opts.autoSave,
+	};
 }
 
 /**
  * Gather all context needed for the wrap-up prompt. Synchronous.
  * Never throws — missing git/gh binaries produce null/empty fields.
  */
-export function gatherContext(cwd: string): WrapUpContext {
+export function gatherContext(
+	cwd: string,
+	opts: { sessionId: string; sessionFile?: string; sessionName?: string } = {
+		sessionId: "unknown",
+	},
+): WrapUpContext {
 	const git = (args: readonly string[]) => runCmd("git", args, cwd);
 
 	const rawBranch = git(["branch", "--show-current"]);
@@ -171,5 +253,8 @@ export function gatherContext(cwd: string): WrapUpContext {
 		prInfo,
 		resources: detectResources(cwd),
 		date: new Date().toISOString().slice(0, 10),
+		sessionId: opts.sessionId,
+		sessionFile: opts.sessionFile ?? null,
+		sessionName: opts.sessionName ?? null,
 	};
 }
