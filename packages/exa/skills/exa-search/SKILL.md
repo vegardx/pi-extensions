@@ -1,6 +1,6 @@
 ---
 name: exa-search
-description: Searches the web using Exa's semantic search API. Use when the task requires current online information: finding implementations or libraries, researching prior art, locating documentation for unfamiliar projects, discovering best practices, or answering any question where training data may be stale. Covers requests like "search for", "look up online", "find", "research", "what are good libraries for", and "how do others solve".
+description: "Searches the web using Exa's semantic search API. Use when the task requires current online information: finding implementations or libraries, researching prior art, locating documentation for unfamiliar projects, discovering best practices, or answering any question where training data may be stale. Covers requests like 'search for', 'look up online', 'find', 'research', 'what are good libraries for', and 'how do others solve'."
 ---
 
 # Exa Search
