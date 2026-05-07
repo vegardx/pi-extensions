@@ -47,7 +47,7 @@ they all follow the same pattern: declare a **tier** (`fast` / `normal` /
 }
 ```
 
-`secondary` is used for cross-model checking — the `/review` command runs each reviewer lane against both sets and only surfaces findings both agree on.
+`secondary` is used for cross-model checking — the auto-review module (`packages/review/auto-review`) runs each reviewer lane against both `primary` and `secondary` and only surfaces findings both agree on. The `modes` extension invokes this after each implement loop.
 
 The shared implementation lives in [`packages/_shared`](packages/_shared) —
 a model resolver, settings helpers, and a macOS caffeinate wrapper reused
