@@ -63,7 +63,8 @@ type Phase =
 	| "awaiting-choice"
 	| "executing"
 	| "exec-complete"
-	| "awaiting-fix";
+	| "awaiting-fix"
+	| "awaiting-discussion";
 
 /**
  * Persisted per-session state. Steps live in tool result details and are
@@ -83,6 +84,9 @@ interface ModeState {
 	priorTools: string[];
 	/** Snapshot of last assistant plan text; used by /park. */
 	planText: string | null;
+	/** Set when auto-review ran after execution; suppresses redundant
+	 *  /review offers in the post-exec picker and /commit flow. */
+	autoReviewRan?: boolean;
 }
 
 export interface PlanStep {
@@ -173,6 +177,11 @@ export default function (pi: ExtensionAPI) {
 	// ---- In-memory state --------------------------------------------------
 
 	let modeState: ModeState | null = null;
+
+	// Tracks whether the current agent loop was initiated by a user
+	// prompt (vs an extension-triggered followUp). Used by the
+	// "awaiting-discussion" phase to know when the user has responded.
+	let userInitiatedTurn = false;
 
 	// Steps are reconstructed from plan_step tool results on session events.
 	let steps: PlanStep[] = [];
@@ -477,8 +486,10 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const installed = new Set(pi.getCommands().map((c) => c.name));
+		const reviewAlreadyRan = modeState?.autoReviewRan ?? false;
 		const options: string[] = [];
-		if (installed.has("review")) options.push("Run /review");
+		if (installed.has("review") && !reviewAlreadyRan)
+			options.push("Run /review");
 		if (installed.has("commit")) options.push("Run /commit");
 		options.push("Stay here");
 
@@ -513,7 +524,12 @@ export default function (pi: ExtensionAPI) {
 		} else if (choice.startsWith("Run /commit")) {
 			try {
 				const mod = await import("pi-ext-commit/core");
-				await mod.runCommit({ ctx, pi, guidance: "" });
+				await mod.runCommit({
+					ctx,
+					pi,
+					guidance: "",
+					skipReviewOffer: reviewAlreadyRan,
+				});
 			} catch (err) {
 				notify(
 					ctx,
@@ -922,6 +938,7 @@ export default function (pi: ExtensionAPI) {
 	// ---- System prompt injection ------------------------------------------
 
 	pi.on("before_agent_start", async () => {
+		userInitiatedTurn = true;
 		if (!modeState) return;
 
 		if (modeState.mode === "plan") {
@@ -1137,6 +1154,9 @@ export default function (pi: ExtensionAPI) {
 	// ---- Completion detection ---------------------------------------------
 
 	pi.on("agent_end", async (_event, ctx) => {
+		const wasUserInitiated = userInitiatedTurn;
+		userInitiatedTurn = false;
+
 		// Plan phase: auto-pop picker once the agent has built a plan.
 		// Phase "awaiting-choice" is set here so we fire exactly once per
 		// plan turn; runPicker resets it to "planning" on "Continue discussing".
@@ -1154,12 +1174,28 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// Auto-review queued a fix/discussion turn; show picker once it ends.
+		// Auto-review queued only auto-apply fixes (no discussion); show
+		// picker once the fix turn ends.
 		if (modeState?.phase === "awaiting-fix") {
 			modeState.phase = "exec-complete";
 			persist();
 			updateWidget(ctx);
 			runDetached("post-fix picker", ctx, () => runPostExecPicker(ctx));
+			return;
+		}
+
+		// Auto-review surfaced findings for discussion. The agent presented
+		// them and asked the user to respond. Don't pop the picker until
+		// the user has sent at least one message and that turn completes.
+		if (modeState?.phase === "awaiting-discussion") {
+			if (wasUserInitiated) {
+				modeState.phase = "exec-complete";
+				persist();
+				updateWidget(ctx);
+				runDetached("post-discussion picker", ctx, () =>
+					runPostExecPicker(ctx),
+				);
+			}
 			return;
 		}
 
@@ -1234,16 +1270,26 @@ export default function (pi: ExtensionAPI) {
 							multiModel: true,
 						});
 						// If the auto-review queued a fix or discussion turn,
-						// the agent is now busy. Defer the picker until that
-						// turn ends (handled in agent_end below).
-						const hasPendingWork =
-							(result.autoApplied?.length ?? 0) > 0 ||
-							(result.surfaced?.length ?? 0) > 0;
-						if (hasPendingWork) {
-							if (modeState) modeState.phase = "awaiting-fix";
+						// the agent is now busy. Defer the picker until the
+						// work is done.
+						const hasSurfaced = (result.surfaced?.length ?? 0) > 0;
+						const hasAutoApplied = (result.autoApplied?.length ?? 0) > 0;
+						if (hasSurfaced || hasAutoApplied) {
+							if (modeState) {
+								modeState.autoReviewRan = true;
+								// Discussion findings need user interaction before
+								// the picker pops. Fix-only can proceed immediately.
+								modeState.phase = hasSurfaced
+									? "awaiting-discussion"
+									: "awaiting-fix";
+							}
 							persist();
 							updateWidget(ctx);
 							return;
+						}
+						if (result.ran && modeState) {
+							modeState.autoReviewRan = true;
+							persist();
 						}
 					} catch (err) {
 						notify(
