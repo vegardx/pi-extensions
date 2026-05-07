@@ -63,7 +63,7 @@ Plan mode enforces read-only access through three independent layers so the agen
 
 1. **Tool restriction** — `edit` and `write` are absent from the active tool set.
 2. **System prompt injection** — the agent is told explicitly what mode it's in and what is allowed.
-3. **Bash guard** — the `tool_call` hook runs every `bash` invocation through `isSafeCommand`: the command must match an explicit read-only allowlist (`cat`, `grep`, `git log`, `rg`, etc.) AND must not match a destructive-pattern denylist (redirects, `tee`, `rm`, `git commit`, package installs, etc.). Anything not on the allowlist is blocked by default.
+3. **Bash classifier** — the `tool_call` hook sends every `bash` invocation to a fast-tier LLM (Haiku / flash) which classifies it as `allow`, `block`, or `redirect`. `redirect` blocks the command and suggests the appropriate pi tool instead (e.g. "use the `read` tool instead of `cat`"). Falls closed — if the model is unavailable the command is blocked.
 
 ## Settings
 

@@ -27,7 +27,7 @@ import type {
 import { visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
-import { isSafeCommand } from "@vegardx/pi-extensions-shared/plan-utils.js";
+import { classifyBashCommand } from "./bash-classifier.js";
 import {
 	checkoutBranch,
 	createBranch,
@@ -942,33 +942,41 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (event.toolName === "bash") {
 				const command = (event.input as { command?: string }).command ?? "";
-				if (!isSafeCommand(command)) {
+				const result = await classifyBashCommand(command, ctx);
+				if (result.verdict === "allow") return;
+				if (result.verdict === "redirect") {
 					return {
 						block: true,
-						reason: `modes: bash command blocked in plan mode (not in read-only allowlist): ${command}`,
+						reason: `Use the \`${result.tool ?? "read"}\` tool instead — ${result.reason}`,
 					};
 				}
+				return {
+					block: true,
+					reason: `modes (plan): ${result.reason}`,
+				};
 			}
 			return;
 		}
 
 		if (modeState.mode === "default") {
-			// Headless runs have no UI to show confirmation dialogs — block all
-			// mutating operations rather than letting them through silently.
+			// Headless: no UI for confirm dialogs — use classifier to decide.
 			if (!ctx.hasUI) {
-				const isMutating =
-					event.toolName === "edit" ||
-					event.toolName === "write" ||
-					(event.toolName === "bash" &&
-						!isSafeCommand(
-							(event.input as { command?: string }).command ?? "",
-						));
-				if (isMutating) {
+				if (event.toolName === "edit" || event.toolName === "write") {
 					return {
 						block: true,
 						reason:
 							"modes: default mode requires UI for confirmation (running headless)",
 					};
+				}
+				if (event.toolName === "bash") {
+					const command = (event.input as { command?: string }).command ?? "";
+					const result = await classifyBashCommand(command, ctx);
+					if (result.verdict !== "allow") {
+						return {
+							block: true,
+							reason: `modes (headless): ${result.reason}`,
+						};
+					}
 				}
 				return;
 			}
@@ -985,14 +993,21 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (event.toolName === "bash") {
 				const command = (event.input as { command?: string }).command ?? "";
-				if (!isSafeCommand(command)) {
-					const ok = await ctx.ui.confirm(
-						"Allow bash command?",
-						`\`${command.slice(0, 200)}\``,
-					);
-					if (!ok) {
-						return { block: true, reason: "User declined the bash command." };
-					}
+				const result = await classifyBashCommand(command, ctx);
+				if (result.verdict === "allow") return;
+				if (result.verdict === "redirect") {
+					return {
+						block: true,
+						reason: `Use the \`${result.tool ?? "read"}\` tool instead — ${result.reason}`,
+					};
+				}
+				// "block" — ask for confirmation with the LLM's reason.
+				const ok = await ctx.ui.confirm(
+					"Allow bash command?",
+					`${result.reason}\n\n\`${command.slice(0, 200)}\``,
+				);
+				if (!ok) {
+					return { block: true, reason: "User declined the bash command." };
 				}
 			}
 		}

