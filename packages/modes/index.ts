@@ -1125,9 +1125,11 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (autoReviewMod) {
 				const settings = readRelevantSettings(ctx.cwd);
-				const reviewCfg = settings.extensionConfig?.[EXT_ID]?.["review"];
+				const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
 				const reviewObj =
-					reviewCfg && typeof reviewCfg === "object" && !Array.isArray(reviewCfg)
+					reviewCfg &&
+					typeof reviewCfg === "object" &&
+					!Array.isArray(reviewCfg)
 						? (reviewCfg as Record<string, unknown>)
 						: {};
 				const enable =
@@ -1137,26 +1139,28 @@ export default function (pi: ExtensionAPI) {
 					Array.isArray(rawAgents) &&
 					rawAgents.every((a) => typeof a === "string") &&
 					rawAgents.every((a) =>
-						autoReviewMod!.VALID_REVIEWER_ROLES.includes(a as never),
+						autoReviewMod?.VALID_REVIEWER_ROLES.includes(a as never),
 					)
 						? (rawAgents as string[])
 						: [...autoReviewMod.AUTO_REVIEW_ROLES];
-				if (enable) try {
-					await autoReviewMod.runAutoReview({
-						ctx,
-						pi,
-						extensionName: EXT_ID,
-						roles: agents,
-						multiModel: true,
-					});
-				} catch (err) {
-					notify(
-						ctx,
-						`auto-review failed: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-						"warning",
-					);
+				if (enable) {
+					try {
+						await autoReviewMod.runAutoReview({
+							ctx,
+							pi,
+							extensionName: EXT_ID,
+							roles: agents,
+							multiModel: true,
+						});
+					} catch (err) {
+						notify(
+							ctx,
+							`auto-review failed: ${
+								err instanceof Error ? err.message : String(err)
+							}`,
+							"warning",
+						);
+					}
 				}
 			}
 			await runPostExecPicker(ctx);
