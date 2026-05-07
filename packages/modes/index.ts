@@ -85,17 +85,66 @@ interface ModeState {
 	planText: string | null;
 }
 
-interface PlanStep {
+export interface PlanStep {
 	id: number;
 	text: string;
 	done: boolean;
 }
 
-interface PlanStepDetails {
+export interface PlanStepDetails {
 	action: "add" | "toggle" | "list" | "clear";
 	steps: PlanStep[];
 	nextId: number;
 	error?: string;
+}
+
+/** Custom entry type persisted when steps are cleared on plan completion. */
+export const STEPS_CLEARED_ENTRY = "modes-steps-cleared";
+
+/**
+ * Pure hydration logic — given a session branch, reconstruct the plan
+ * step state. Exported for testing.
+ */
+export function hydrateStepsFromBranch(
+	branch: ReadonlyArray<{
+		type: string;
+		message?: unknown;
+		customType?: string;
+	}>,
+): { steps: PlanStep[]; nextStepId: number } {
+	let steps: PlanStep[] = [];
+	let nextStepId = 1;
+	let lastStepEntryIdx = -1;
+	let lastClearEntryIdx = -1;
+	for (let i = 0; i < branch.length; i++) {
+		const entry = branch[i];
+		if (!entry) continue;
+		if (entry.type === "message") {
+			const msg = entry.message as {
+				role?: string;
+				toolName?: string;
+				details?: PlanStepDetails;
+			};
+			if (
+				msg?.role === "toolResult" &&
+				msg.toolName === "plan_step" &&
+				msg.details
+			) {
+				steps = msg.details.steps;
+				nextStepId = msg.details.nextId;
+				lastStepEntryIdx = i;
+			}
+		} else if (
+			entry.type === "custom" &&
+			entry.customType === STEPS_CLEARED_ENTRY
+		) {
+			lastClearEntryIdx = i;
+		}
+	}
+	if (lastClearEntryIdx > lastStepEntryIdx) {
+		return { steps: [], nextStepId: 1 };
+	}
+	return { steps, nextStepId };
 }
 
 // ---- Extension ------------------------------------------------------------
@@ -151,18 +200,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function hydrateSteps(ctx: ExtensionContext): void {
-		steps = [];
-		nextStepId = 1;
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type !== "message") continue;
-			const msg = entry.message;
-			if (msg.role !== "toolResult" || msg.toolName !== "plan_step") continue;
-			const details = msg.details as PlanStepDetails | undefined;
-			if (details) {
-				steps = details.steps;
-				nextStepId = details.nextId;
-			}
-		}
+		const branch = ctx.sessionManager.getBranch();
+		const result = hydrateStepsFromBranch(branch as never);
+		steps = result.steps;
+		nextStepId = result.nextStepId;
 	}
 
 	// ---- UI helpers -------------------------------------------------------
@@ -1143,8 +1184,10 @@ export default function (pi: ExtensionAPI) {
 		);
 
 		// Clear the step list — the completion message above summarises everything.
+		// Persist via appendEntry so hydrateSteps sees it after session reload.
 		steps = [];
 		nextStepId = 1;
+		pi.appendEntry(STEPS_CLEARED_ENTRY);
 		updateWidget(ctx);
 
 		// Auto-review then post-exec picker — detached to avoid deadlocking
