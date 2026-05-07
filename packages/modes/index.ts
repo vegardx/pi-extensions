@@ -62,7 +62,8 @@ type Phase =
 	| "planning"
 	| "awaiting-choice"
 	| "executing"
-	| "exec-complete";
+	| "exec-complete"
+	| "awaiting-fix";
 
 /**
  * Persisted per-session state. Steps live in tool result details and are
@@ -1089,6 +1090,15 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		// Auto-review queued a fix/discussion turn; show picker once it ends.
+		if (modeState?.phase === "awaiting-fix") {
+			modeState.phase = "exec-complete";
+			persist();
+			updateWidget(ctx);
+			runDetached("post-fix picker", ctx, () => runPostExecPicker(ctx));
+			return;
+		}
+
 		if (!modeState || modeState.phase !== "executing") return;
 		if (steps.length === 0) return;
 		if (!steps.every((s) => s.done)) return;
@@ -1145,13 +1155,25 @@ export default function (pi: ExtensionAPI) {
 						: [...autoReviewMod.AUTO_REVIEW_ROLES];
 				if (enable) {
 					try {
-						await autoReviewMod.runAutoReview({
+						const result = await autoReviewMod.runAutoReview({
 							ctx,
 							pi,
 							extensionName: EXT_ID,
 							roles: agents,
 							multiModel: true,
 						});
+						// If the auto-review queued a fix or discussion turn,
+						// the agent is now busy. Defer the picker until that
+						// turn ends (handled in agent_end below).
+						const hasPendingWork =
+							(result.autoApplied?.length ?? 0) > 0 ||
+							(result.surfaced?.length ?? 0) > 0;
+						if (hasPendingWork) {
+							if (modeState) modeState.phase = "awaiting-fix";
+							persist();
+							updateWidget(ctx);
+							return;
+						}
 					} catch (err) {
 						notify(
 							ctx,
@@ -1163,6 +1185,9 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 			}
+			// Yield a macrotask tick so pi can finish processing any
+			// sendMessage calls before we open the select picker.
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			await runPostExecPicker(ctx);
 		});
 	});
