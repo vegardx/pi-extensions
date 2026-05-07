@@ -19,8 +19,8 @@ Classify each PR:
 | Condition | Category |
 |-----------|----------|
 | `mergeable: "CONFLICTING"` | Needs rebase |
-| `updatedAt` > 7 days ago, no review | Idle — waiting on review |
-| `updatedAt` > 14 days ago | Stale — likely abandoned |
+| `now - updatedAt > 7d`, no review | Idle — waiting on review |
+| `now - updatedAt > 14d` | Stale — likely abandoned |
 | `reviewDecision: "CHANGES_REQUESTED"` + idle | Stale — unresolved review |
 | `isDraft: true` + idle > 14d | Stale draft |
 

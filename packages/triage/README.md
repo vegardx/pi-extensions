@@ -1,4 +1,4 @@
-# triage
+# pi-ext-triage
 
 GitHub inbox triage skill for pi. Systematically work through your
 backlog: PR review comments, open issues, failing CI, or stale PRs.
