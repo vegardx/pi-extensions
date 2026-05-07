@@ -16,7 +16,7 @@
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -194,6 +194,7 @@ export default function (pi: ExtensionAPI) {
 	 */
 	function installFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
+		const cwd = ctx.cwd ?? "";
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			footerTui = tui;
 			return {
@@ -201,11 +202,16 @@ export default function (pi: ExtensionAPI) {
 					tui.requestRender();
 				},
 				render(width) {
-					// Left: git branch + other extensions' status entries.
+					// Left: path (branch) + other extensions' status entries.
 					const branch = footerData.getGitBranch();
 					const statuses = footerData.getExtensionStatuses();
 					const leftParts: string[] = [];
-					if (branch) leftParts.push(theme.fg("muted", branch));
+					const home = homedir();
+					const shortPath = cwd.startsWith(home)
+						? `~${cwd.slice(home.length)}`
+						: cwd;
+					const location = branch ? `${shortPath} (${branch})` : shortPath;
+					leftParts.push(theme.fg("muted", location));
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
