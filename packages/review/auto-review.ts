@@ -308,12 +308,13 @@ function renderProgress(
 
 interface ResolvedTierModel {
 	tier: BackgroundTier;
-	provider: string;
-	modelId: string;
+	/** Display string: `"provider/id"`. */
 	spec: string;
-	/** Retained Model reference — avoids a second registry lookup that
-	 *  can fail if the provider re-registers models between resolution
-	 *  and use (e.g. async model refresh in custom providers). */
+	/** Retained Model reference for the in-process orchestrator session.
+	 *  Avoids a second registry lookup that can fail if the provider
+	 *  re-registers models between resolution and use. Subagent paths
+	 *  (reviewer fan-out, consultation) pass provider/model strings to
+	 *  separate processes and are not affected. */
 	model: Model<Api>;
 }
 
@@ -331,8 +332,6 @@ async function resolveTierModel(
 	if (!resolved) return null;
 	return {
 		tier,
-		provider: resolved.model.provider,
-		modelId: resolved.model.id,
 		spec: `${resolved.model.provider}/${resolved.model.id}`,
 		model: resolved.model,
 	};
@@ -511,8 +510,8 @@ async function runOrchestratorPhase(opts: {
 							tag: "consultation",
 							task: consultTask,
 							systemPromptPath: CHALLENGER_PROMPT_PATH,
-							provider: secondary.provider,
-							model: secondary.modelId,
+							provider: secondary.model.provider,
+							model: secondary.model.id,
 							cwd: ctx.cwd,
 							signal,
 							timeoutMs: reviewTimeoutMs(rc.diff.length),
@@ -537,7 +536,6 @@ async function runOrchestratorPhase(opts: {
 	// Use the model reference retained by resolveTierModel so custom-provider
 	// models (e.g. radicalai) remain usable even if the provider re-registers
 	// its model list between resolution and use (async refresh race).
-	const model = primary.model;
 
 	const systemPrompt = readFileSync(ORCHESTRATOR_PROMPT_PATH, "utf8");
 	const loader = new DefaultResourceLoader({
@@ -552,7 +550,7 @@ async function runOrchestratorPhase(opts: {
 
 	const { session } = await createAgentSession({
 		cwd: ctx.cwd,
-		model,
+		model: primary.model,
 		// Read-only built-in tools + the optional consult custom tool.
 		tools: ["read", "grep", "find", "ls"],
 		customTools,
@@ -1020,8 +1018,8 @@ export async function runAutoReview(
 								| "code-simplifier",
 						),
 					),
-					provider: inv.provider,
-					model: inv.modelId,
+					provider: inv.model.provider,
+					model: inv.model.id,
 					cwd: ctx.cwd,
 					signal: ctx.signal,
 					timeoutMs: reviewTimeoutMs(rc.diff.length),
