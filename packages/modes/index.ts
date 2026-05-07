@@ -56,7 +56,12 @@ const PLAN_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"] as const;
 // ---- Types ----------------------------------------------------------------
 
 type Mode = "plan" | "default" | "auto";
-type Phase = "idle" | "planning" | "executing" | "exec-complete";
+type Phase =
+	| "idle"
+	| "planning"
+	| "awaiting-choice"
+	| "executing"
+	| "exec-complete";
 
 /**
  * Persisted per-session state. Steps live in tool result details and are
@@ -242,12 +247,17 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		fn: () => Promise<void>,
 	): void {
-		void Promise.resolve()
-			.then(fn)
-			.catch((err: unknown) => {
+		// setImmediate (macrotask) ensures fn runs in a new event-loop tick,
+		// after pi has fully flipped to idle following agent_end. Using
+		// Promise.resolve().then (microtask) would fire before pi's own
+		// post-handler continuation, causing ctx.ui.select to open while
+		// pi is still mid-flush and silently return null.
+		setImmediate(() => {
+			void fn().catch((err: unknown) => {
 				const msg = err instanceof Error ? err.message : String(err);
 				notify(ctx, `${label} failed: ${msg}`, "error");
 			});
+		});
 	}
 
 	// ---- Tool management --------------------------------------------------
@@ -375,6 +385,11 @@ export default function (pi: ExtensionAPI) {
 		);
 
 		if (!choice || choice.startsWith("Continue")) {
+			// Reset to planning so the picker re-arms after the next agent turn.
+			if (modeState) {
+				modeState.phase = "planning";
+				persist();
+			}
 			notify(ctx, "staying in plan mode", "info");
 			return;
 		}
@@ -990,15 +1005,37 @@ export default function (pi: ExtensionAPI) {
 				}
 				return;
 			}
+
+			/**
+			 * Show a three-way picker: Allow / Switch to auto / Deny.
+			 * Returns true if the tool call should proceed, false to block.
+			 * Switches to auto mode as a side effect when the user chooses it.
+			 */
+			const askPermission = async (
+				title: string,
+				denyReason: string,
+			): Promise<{ proceed: boolean; blockReason?: string }> => {
+				const choice = await ctx.ui.select(title, [
+					"Allow",
+					"Switch to auto — allow everything from here on",
+					"Deny",
+				]);
+				if (choice === "Allow") return { proceed: true };
+				if (choice?.startsWith("Switch to auto")) {
+					setMode("auto", ctx);
+					notify(ctx, "switched to auto mode", "info");
+					return { proceed: true };
+				}
+				return { proceed: false, blockReason: denyReason };
+			};
+
 			if (event.toolName === "edit" || event.toolName === "write") {
 				const path = (event.input as { path?: string }).path ?? event.toolName;
-				const ok = await ctx.ui.confirm(
-					`Allow ${event.toolName}?`,
-					`The agent wants to modify: ${path}`,
+				const { proceed, blockReason } = await askPermission(
+					`Allow ${event.toolName}: ${path}`,
+					"User declined the file edit.",
 				);
-				if (!ok) {
-					return { block: true, reason: "User declined the file edit." };
-				}
+				if (!proceed) return { block: true, reason: blockReason };
 				return;
 			}
 			if (event.toolName === "bash") {
@@ -1011,14 +1048,12 @@ export default function (pi: ExtensionAPI) {
 						reason: `Use the \`${result.tool ?? "read"}\` tool instead — ${result.reason}`,
 					};
 				}
-				// "block" — ask for confirmation with the LLM's reason.
-				const ok = await ctx.ui.confirm(
-					"Allow bash command?",
-					`${result.reason}\n\n\`${command.slice(0, 200)}\``,
+				// "block" — ask for confirmation with the classifier's reason.
+				const { proceed, blockReason } = await askPermission(
+					`Allow bash: ${result.reason}`,
+					"User declined the bash command.",
 				);
-				if (!ok) {
-					return { block: true, reason: "User declined the bash command." };
-				}
+				if (!proceed) return { block: true, reason: blockReason };
 			}
 		}
 	});
@@ -1026,6 +1061,23 @@ export default function (pi: ExtensionAPI) {
 	// ---- Completion detection ---------------------------------------------
 
 	pi.on("agent_end", async (_event, ctx) => {
+		// Plan phase: auto-pop picker once the agent has built a plan.
+		// Phase "awaiting-choice" is set here so we fire exactly once per
+		// plan turn; runPicker resets it to "planning" on "Continue discussing".
+		if (
+			modeState?.mode === "plan" &&
+			modeState.phase === "planning" &&
+			steps.length > 0 &&
+			ctx.hasUI
+		) {
+			modeState.phase = "awaiting-choice";
+			persist();
+			runDetached("plan picker", ctx, () =>
+				runPicker(ctx as ExtensionCommandContext),
+			);
+			return;
+		}
+
 		if (!modeState || modeState.phase !== "executing") return;
 		if (steps.length === 0) return;
 		if (!steps.every((s) => s.done)) return;

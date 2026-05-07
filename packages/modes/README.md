@@ -7,7 +7,7 @@ Permission-mode cycle with integrated git workflow. Replaces `/develop`.
 | Mode | Tools | Bash | Confirmation |
 |------|-------|------|-------------|
 | `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `plan_step`) | blocked if write-capable | none — writes are refused outright |
-| `default` | all | all | confirm before every `edit`, `write`, and non-safe bash |
+| `default` | all | all | confirm before every `edit`, `write`, and non-safe bash — with option to switch to auto |
 | `auto` | all | all | none — fully autonomous |
 
 The current mode is always shown in the footer. Cycle with **Shift+Tab**.
