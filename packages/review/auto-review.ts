@@ -28,14 +28,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	AuthStorage,
 	createAgentSession,
 	DefaultResourceLoader,
 	defineTool,
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
-	ModelRegistry,
 	SessionManager,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
@@ -530,9 +528,9 @@ async function runOrchestratorPhase(opts: {
 		: [];
 
 	// ---- Spin up in-process orchestrator session -------------------------
-	const authStorage = AuthStorage.create();
-	const modelRegistry = ModelRegistry.create(authStorage);
-	const model = modelRegistry.find(primary.provider, primary.modelId);
+	// Use the host's model registry so custom-provider models (e.g. radicalai)
+	// are visible. A fresh ModelRegistry.create() only sees built-in providers.
+	const model = ctx.modelRegistry.find(primary.provider, primary.modelId);
 
 	if (!model) {
 		const err = `orchestrator: could not resolve model ${primary.spec} from registry`;
@@ -563,8 +561,7 @@ async function runOrchestratorPhase(opts: {
 		customTools,
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(ctx.cwd),
-		authStorage,
-		modelRegistry,
+		modelRegistry: ctx.modelRegistry,
 	});
 
 	const task = buildOrchestratorTask(bundles, rc);
