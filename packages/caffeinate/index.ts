@@ -150,12 +150,12 @@ export default function (pi: ExtensionAPI) {
 				default: false,
 				doc: "Master opt-in. When false, every acquireKeepAwake() returns a no-op handle and no caffeinate subprocess is ever spawned.",
 			},
-			// `flags` (string[]) is read at spawn time but intentionally not
-			// declared in configSchema: ConfigKeyType supports only
-			// string/number/boolean/enum, and rendering an array under
-			// `type: "string"` would mislead `/extensions`. The default
-			// (`["-i","-m"]`) and override syntax are documented in the
-			// extension's README.
+			{
+				key: "flags",
+				type: "string[]",
+				default: ["-i", "-m"],
+				doc: 'caffeinate(8) flags passed at spawn time. `-w <pi-pid>` is always appended automatically. Default: ["-i", "-m"] (prevent idle sleep and disk-idle sleep; omits display sleep -d and AC-only -s).',
+			},
 		],
 	});
 

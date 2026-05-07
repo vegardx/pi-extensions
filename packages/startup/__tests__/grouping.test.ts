@@ -502,8 +502,8 @@ describe("renderLines", () => {
 		);
 		// Extension header
 		expect(lines).toContain("verify:");
-		// maxParallel has a literal default and no override → bare value
-		expect(lines).toContain("  maxParallel: 15");
+		// maxParallel has a literal default and no override → annotated with (default)
+		expect(lines).toContain("  maxParallel: 15 (default)");
 		// model is overridden at project level → annotated with source
 		expect(lines).toContain(
 			"  model: openrouter/anthropic/claude-sonnet-4.5 (project)",
@@ -657,7 +657,7 @@ describe("renderLines", () => {
 		};
 		const lines = renderLines(summary);
 		// literal default wins — must NOT render (via primary.fast)
-		expect(lines).toContain("  maxParallel: 15");
+		expect(lines).toContain("  maxParallel: 15 (default)");
 		expect(lines).not.toContain(
 			"  maxParallel: radicalai/eu-haiku-4-5 (via primary.fast)",
 		);

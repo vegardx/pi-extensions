@@ -216,6 +216,7 @@ export default function (pi: ExtensionAPI) {
 			{
 				key: "continueAfterCompact",
 				type: "boolean",
+				default: true,
 				doc: "When compactAt triggers compaction, automatically send a continue message after compaction completes so the agent resumes work. Defaults to true. Set to false to stay idle after compaction.",
 			},
 		],

@@ -105,6 +105,20 @@ export default function (pi: ExtensionAPI) {
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Permission-mode cycle (plan / default / auto) with integrated git workflow.",
+		configSchema: [
+			{
+				key: "review.enable",
+				type: "boolean",
+				default: true,
+				doc: "Run auto-review at the end of each auto-mode turn when the review extension is loaded. Set to false to disable.",
+			},
+			{
+				key: "review.agents",
+				type: "string[]",
+				default: ["code-reviewer", "code-simplifier", "security-analyst"],
+				doc: "Reviewer roles to run during auto-review. Valid values: architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker. Unknown values are silently dropped.",
+			},
+		],
 	});
 
 	// ---- In-memory state --------------------------------------------------

@@ -369,7 +369,7 @@ function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 		}
 		return `  ${key}: (unset)`;
 	}
-	return `  ${key}: ${formatValue(k.effective.value)}`;
+	return `  ${key}: ${formatValue(k.effective.value)} (default)`;
 }
 
 /**
@@ -487,6 +487,7 @@ export default function (pi: ExtensionAPI) {
 			{
 				key: "enabled",
 				type: "boolean",
+				default: true,
 				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /extensions command still works). Default: true.",
 			},
 		],

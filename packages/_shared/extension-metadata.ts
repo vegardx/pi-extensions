@@ -230,8 +230,23 @@ function readKeyFromLayer(
 		| Record<string, unknown>
 		| undefined;
 	if (!ec) return undefined;
-	if (!Object.hasOwn(ec, key)) return undefined;
-	return ec[key];
+	// Support dot-notation for nested keys (e.g. "review.enable" →
+	// extensionConfig.modes.review.enable). Single-segment keys take the
+	// fast path via Object.hasOwn so there is no behavioural change for
+	// the common flat case.
+	const parts = key.split(".");
+	let current: unknown = ec;
+	for (const part of parts) {
+		if (
+			typeof current !== "object" ||
+			current === null ||
+			!Object.hasOwn(current as Record<string, unknown>, part)
+		) {
+			return undefined;
+		}
+		current = (current as Record<string, unknown>)[part];
+	}
+	return current;
 }
 
 /**
