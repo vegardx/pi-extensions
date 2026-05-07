@@ -24,7 +24,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { classifyBashCommand } from "./bash-classifier.js";
@@ -216,17 +216,21 @@ export default function (pi: ExtensionAPI) {
 					const leftText = leftParts.join("  ");
 
 					// Right: mode indicator — empty when no state yet.
-					if (!modeState) return [leftText];
+					if (!modeState) return [truncateToWidth(leftText, width)];
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
 					const modeText = theme.bold(theme.fg(color, ` ${label} `));
 
-					const leftWidth = visibleWidth(leftText);
 					const rightWidth = visibleWidth(` ${label} `);
-					const gap = Math.max(1, width - leftWidth - rightWidth);
+					// Truncate left to guarantee total width never exceeds terminal width.
+					const safeLeft = truncateToWidth(
+						leftText,
+						Math.max(0, width - rightWidth - 1),
+					);
+					const gap = Math.max(1, width - visibleWidth(safeLeft) - rightWidth);
 
-					return [leftText + " ".repeat(gap) + modeText];
+					return [safeLeft + " ".repeat(gap) + modeText];
 				},
 				dispose: footerData.onBranchChange(() => tui.requestRender()),
 			};
