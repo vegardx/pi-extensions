@@ -10,12 +10,20 @@ the full breakdown — a one-line headline followed by the same
 report `/extensions` produces on demand:
 
 ```
-pi-ext-startup: 7 extensions · 3 overrides · /extensions for details
+pi-ext-startup: 7 extensions · /extensions for details
 
 Active model: anthropic/claude-…
-Background primary: fast=…, normal=…, heavy=…
-Background secondary: (not configured)
-Declared extensions (7):
+Background models:
+  primary:   fast=…, normal=…, heavy=…
+  secondary: (not configured)
+
+Context files (3 · 1.4k tokens):
+  global   ~/.pi/agent/AGENTS.md  (320 tok · 45 lines)
+  parent   ~/src/github.com/vegardx/AGENTS.md  (180 tok · 22 lines)
+  project  ~/src/github.com/vegardx/pi-extensions/AGENTS.md  (940 tok · 120 lines)
+
+extension-name:
+  key: value
   …
 ```
 
@@ -32,6 +40,14 @@ Run `/extensions` to print the same breakdown again on demand:
 - **Background-model tiers** — `backgroundModels.primary.{fast,normal,heavy}`
   and `backgroundModels.secondary.{fast,normal,heavy}` from merged
   global + project `settings.json`.
+- **Context files** — every `AGENTS.md` or `CLAUDE.md` that pi would
+  load for the current session, in the order they are assembled into
+  the context (global first, project last). Each entry shows:
+  - scope label: `global` (`~/.pi/agent/`), `parent` (ancestor
+    directories), or `project` (the cwd file);
+  - home-relative display path;
+  - rough token estimate (`ceil(charCount / 4)`) and line count.
+  Shows `(none found)` when no context files exist on disk.
 - **Declared extensions** — every extension that called
   `declareExtension(...)` from its factory. For each:
   - source path, registered commands (e.g. `/develop`, `/review`),
@@ -133,14 +149,18 @@ otherwise — each extension declares itself exactly once per process.
 ## Layout
 
 - `index.ts` — factory: `summarize(pi, ctx)` (joins the metadata
-  registry, command/tool grouping, and layered settings into a
-  structured summary), `renderHeadline(summary)` / `renderLines(summary)`
-  (pure, summary → string / string[]), and the `session_start` +
-  `/extensions` wiring (one multi-line `notify` per emit).
+  registry, command/tool grouping, layered settings, and discovered
+  context files into a structured summary), `renderHeadline(summary)` /
+  `renderLines(summary)` (pure, summary → string / string[]), and the
+  `session_start` + `/extensions` wiring (one multi-line `notify` per
+  emit).
 - `__tests__/grouping.test.ts` — covers the pure helpers:
-  `groupBySource` (command/tool dedup + builtin/sdk filtering),
-  `resolveBackgroundTier` (set/tier lookup with secondary→primary
-  fallback), `buildDeclaredView` (joining declarations against
-  loaded paths and resolving config + tier), `countOverrides`,
-  `renderHeadline`, `renderLines`, and a smoke test that the factory
-  self-declares as `"startup"`.
+  `groupBySource`, `resolveBackgroundTier`, `buildDeclaredView`,
+  `countOverrides`, `renderHeadline`, `renderLines`, and a smoke test
+  that the factory self-declares as `"startup"`.
+- `__tests__/context-files.test.ts` — covers `discoverContextFiles`
+  (global file, AGENTS.md vs CLAUDE.md preference, scope assignment,
+  root→cwd ordering, token and line counts, at-most-one-per-dir,
+  `~` display path) and the `renderLines` context-files section
+  (none-found fallback, count/token header, `k` suffix, per-file
+  lines, ordering after background models).
