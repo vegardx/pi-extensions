@@ -63,13 +63,11 @@
  *      turn that either ran a tool call OR accumulated >= 500 chars of
  *      user input). Opt out with `--no-auto-title` or
  *      `PI_SESSION_AUTO_TITLE=0`. Force regeneration with `/retitle`.
- *   5. Current git branch name, if inside a repo.
- *   6. Fallback: basename of the current working directory.
+ *   5. Nothing — no title is shown until one of the above resolves.
  */
 
 import { execFileSync, spawn } from "node:child_process";
 import { writeSync } from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { completeSimple } from "@mariozechner/pi-ai";
@@ -173,39 +171,8 @@ function parsePosition(value: string | undefined): Surface[] | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Cached result of `git rev-parse --abbrev-ref HEAD`, sniffed lazily the
- * first time someone asks. `undefined` = not checked yet, `null` = checked
- * and not a repo / detached HEAD, `string` = branch name.
- *
- * We cache across the whole process lifetime because (a) `git` spawns are
- * not free and (b) branch changes during a pi session are rare and if they
- * do matter the user can `/title` or `/retitle` them away.
- */
-let cachedGitBranch: string | null | undefined;
-
-function getGitBranch(): string | undefined {
-	if (cachedGitBranch !== undefined) return cachedGitBranch ?? undefined;
-	try {
-		const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
-			stdio: ["ignore", "pipe", "ignore"],
-			timeout: 500,
-			encoding: "utf8",
-		}).trim();
-		if (out.length === 0 || out === "HEAD") {
-			cachedGitBranch = null;
-			return undefined;
-		}
-		cachedGitBranch = out;
-		return out;
-	} catch {
-		cachedGitBranch = null;
-		return undefined;
-	}
-}
-
-/**
- * Cached `owner/repo` parsed from `git remote get-url origin`. Same
- * lifetime rules as `cachedGitBranch` — cleared on `session_shutdown`.
+ * Cached `owner/repo` parsed from `git remote get-url origin`.
+ * Cleared on `session_shutdown`.
  * `null` = checked, not a git repo or no origin remote.
  */
 let cachedGitOrgRepo: string | null | undefined;
@@ -913,9 +880,7 @@ export default function (pi: ExtensionAPI) {
 		const fromEnv = process.env[ENV_TITLE];
 		if (fromEnv && fromEnv.length > 0) return fromEnv;
 		if (autoTitle && autoTitle.length > 0) return autoTitle;
-		const branch = getGitBranch();
-		if (branch && branch.length > 0) return branch;
-		return path.basename(process.cwd());
+		return "";
 	}
 
 	function resolveStyle(): Style {
@@ -975,6 +940,27 @@ export default function (pi: ExtensionAPI) {
 		const title = resolveTitle();
 		const style = resolveStyle();
 		const surfaces = new Set(resolvePosition());
+
+		// No title yet (auto-title pending, nothing explicit set) — clean up
+		// any previously-applied surfaces and bail rather than showing the
+		// git branch or cwd as a placeholder.
+		if (!title) {
+			ctx.ui.setStatus(STATUS_KEY, undefined);
+			if (titledEditorInstalled) {
+				installingSelf = true;
+				ctx.ui.setEditorComponent(innerEditorFactory);
+				installingSelf = false;
+				titledEditorInstalled = false;
+				editorTui = undefined;
+				innerEditorFactory = undefined;
+			}
+			if (weInstalledHeader) {
+				ctx.ui.setHeader(undefined);
+				weInstalledHeader = false;
+			}
+			tearDownSticky();
+			return;
+		}
 
 		// ---- OS terminal window/tab title (always-sticky) ----
 		if (surfaces.has("terminal")) {
@@ -1176,15 +1162,13 @@ export default function (pi: ExtensionAPI) {
 				autoTitleState.status = "skipped";
 				return;
 			}
-			const orgRepo = getGitOrgRepo();
-			const titled = orgRepo ? `${orgRepo}: ${sanitized}` : sanitized;
 			// If the user set an explicit title while we were in-flight, defer
 			// to them: still record the result for a later `/title` clear, but
 			// don't repaint now — their title wins via resolveTitle().
-			autoTitle = titled;
+			autoTitle = sanitized;
 			autoTitleState.status = "done";
 			autoTitleState.agentsSinceLastTitle = 0;
-			autoTitleState.result = titled;
+			autoTitleState.result = sanitized;
 			applyTitle(ctx);
 		} catch {
 			// Silent: auto-title is quality-of-life. Next session may pick a
@@ -1284,10 +1268,8 @@ export default function (pi: ExtensionAPI) {
 			const sanitized = sanitizeAutoTitle(firstLine);
 			if (!sanitized) return;
 
-			const orgRepo = getGitOrgRepo();
-			const titled = orgRepo ? `${orgRepo}: ${sanitized}` : sanitized;
-			autoTitle = titled;
-			autoTitleState.result = titled;
+			autoTitle = sanitized;
+			autoTitleState.result = sanitized;
 			applyTitle(ctx);
 		} catch {
 			// Silent — retitling is quality-of-life.
@@ -1429,7 +1411,6 @@ export default function (pi: ExtensionAPI) {
 		// extension runtime per session_shutdown docs) starts fresh.
 		autoTitle = undefined;
 		resetAutoTitleState(autoTitleState);
-		cachedGitBranch = undefined;
 		cachedGitOrgRepo = undefined;
 	});
 
