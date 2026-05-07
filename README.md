@@ -11,7 +11,6 @@ collection of extensions I use daily for coding sessions.
 | Package | Type | What it does |
 |---|---|---|
 | [`startup`](packages/startup) | `utility` | Reports loaded extensions and config on session start |
-| [`develop`](packages/develop) | `command` | `/develop` workflow — intake → plan → implement loop |
 | [`review`](packages/review) | `command` | `/review` command — fans out specialist reviewers over a diff or codebase |
 | [`commit`](packages/commit) | `command` | Generates and confirms git commit messages |
 | [`wrap-up`](packages/wrap-up) | `command` | End-of-session handover doc + resource cost prompt |
@@ -48,9 +47,7 @@ they all follow the same pattern: declare a **tier** (`fast` / `normal` /
 }
 ```
 
-`secondary` is used for cross-model checking — the `/develop` auto-review
-pass runs each reviewer lane against both sets and only surfaces findings
-both agree on.
+`secondary` is used for cross-model checking — the `/review` command runs each reviewer lane against both sets and only surfaces findings both agree on.
 
 The shared implementation lives in [`packages/_shared`](packages/_shared) —
 a model resolver, settings helpers, and a macOS caffeinate wrapper reused
@@ -70,13 +67,6 @@ pi -e ./packages/startup    # smoke-test
 
 ```bash
 pi install git:github.com/vegardx/pi-extensions
-```
-
-Or a single extension only:
-
-```bash
-git clone https://github.com/vegardx/pi-extensions
-pi install ./pi-extensions/packages/develop
 ```
 
 ## Docs
