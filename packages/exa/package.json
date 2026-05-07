@@ -1,0 +1,13 @@
+{
+	"name": "pi-ext-exa",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Exa semantic search skill for pi. Searches the web on demand using Exa's neural search API — no MCP server required.",
+	"pi": {
+		"skills": ["./skills/"]
+	},
+	"dependencies": {
+		"exa-js": "^2.11.0"
+	}
+}

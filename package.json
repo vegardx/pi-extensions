@@ -6,7 +6,8 @@
   "workspaces": ["packages/*"],
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["packages/*/index.ts"]
+    "extensions": ["packages/*/index.ts"],
+    "skills": ["packages/*/skills/"]
   },
   "scripts": {
     "check": "biome check . && tsc --noEmit && vitest run",
