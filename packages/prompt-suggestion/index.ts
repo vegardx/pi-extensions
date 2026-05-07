@@ -104,6 +104,11 @@ export default function (pi: ExtensionAPI): void {
 	let editor: GhostEditor | undefined;
 	let predictor: Predictor | undefined;
 	let enabled = true;
+	// True only when the most recent user action was a direct editor submission
+	// (i.e. the `input` event fired). Extension-internal agent calls — e.g.
+	// those driven by /commit or /review — bypass `input`, so this stays false
+	// and we skip suggestions for those runs.
+	let pendingRealInput = false;
 
 	const persist = () => {
 		savePersistedConfig({
@@ -155,6 +160,7 @@ export default function (pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const lines: string[] = [];
 			lines.push(`enabled: ${enabled}`);
+			lines.push(`pending real input: ${pendingRealInput}`);
 			lines.push(`editor installed: ${editor ? "yes" : "no"}`);
 			lines.push(`predictor: ${predictor ? "yes" : "no"}`);
 			lines.push(
@@ -218,6 +224,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		pendingRealInput = false;
 		const persisted = loadPersistedConfig();
 
 		// Enabled precedence: persisted > flag > default(true).
@@ -273,9 +280,11 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("input", () => {
 		predictor?.cancel();
 		editor?.clearGhost();
+		pendingRealInput = true;
 	});
 
 	pi.on("session_shutdown", () => {
+		pendingRealInput = false;
 		predictor?.cancel();
 		predictor = undefined;
 		editor?.clearGhost();
@@ -297,10 +306,10 @@ export default function (pi: ExtensionAPI): void {
 			predictor.lastStatus = "gate: no-ui";
 			return;
 		}
-		// Intentionally NOT checking ctx.isIdle() here — agent_end means the agent
-		// ended; Pi's internal streaming flag may not flip until after this handler
-		// runs, so isIdle() is racy at this point. getEditorText() below is the real
-		// signal for "user has started typing".
+		// Intentionally NOT checking ctx.isIdle() pre-await — agent_end means the
+		// agent just ended; Pi's internal streaming flag may not flip until after
+		// this handler runs, so isIdle() is racy here. We check it post-await
+		// instead, where enough time has elapsed for the flag to settle.
 		if (ctx.hasPendingMessages()) {
 			predictor.lastStatus = "gate: pending-messages";
 			return;
@@ -313,12 +322,27 @@ export default function (pi: ExtensionAPI): void {
 			predictor.lastStatus = "gate: no-real-turn-seen";
 			return;
 		}
+		if (!pendingRealInput) {
+			predictor.lastStatus = "gate: no-editor-input";
+			return;
+		}
+		pendingRealInput = false;
 
 		const suggestion = await predictor.predict(event.messages);
 		if (!suggestion) return;
-		// Post-await: if the user started typing during the predictor call,
-		// don't paint over their in-progress input. isIdle() is skipped here
-		// for the same racy-flag reason as the pre-check above.
+		// Post-await guards: the prediction API call takes time; by the time it
+		// resolves the user may have submitted another prompt (agent is running
+		// again) or started typing. isIdle() is reliable here — unlike the
+		// pre-await path, enough wall-clock time has elapsed for Pi's internal
+		// streaming flag to have settled.
+		if (!ctx.isIdle()) {
+			predictor.lastStatus = "post: agent-running";
+			return;
+		}
+		if (ctx.hasPendingMessages()) {
+			predictor.lastStatus = "post: pending-messages";
+			return;
+		}
 		if (ctx.ui.getEditorText() !== "") {
 			predictor.lastStatus = "post: buffer-not-empty";
 			return;
