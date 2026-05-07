@@ -6,8 +6,8 @@ import type {
 
 type AgentMessage = AgentEndEvent["messages"][number];
 
-// Kept in sync with MAX_SUGGESTION_WORDS below — both enforce the length cap.
-// The prompt tells the model the limit; sanitize() enforces it if the model ignores.
+// The prompt guides the model toward brevity; sanitize() enforces the character cap
+// as a belt-and-braces guard.
 const SYSTEM_PROMPT =
 	"You predict the most likely next message from a developer to an AI coding agent.\n" +
 	"The developer directs the agent — always predict a message where the developer tells the agent what to do, not what the developer will do themselves.\n" +
@@ -19,12 +19,11 @@ const SYSTEM_PROMPT =
 	"- Stated assumptions about the codebase, stack, or intent → confirm or briefly correct (e.g. 'Yes, TypeScript', 'Correct', 'Actually it uses pnpm').\n" +
 	"- Short clarifying question → a short direct answer.\n" +
 	"- Otherwise → the most natural next instruction given recent context, heavily biased toward coding and software engineering tasks.\n" +
-	"Reply with ONLY the predicted message. No preamble, no quotes, no explanation. Under 10 words.";
+	"Reply with ONLY the predicted message. No preamble, no quotes, no explanation. Keep it brief — one short sentence.";
 
 const MAX_CONTEXT_MESSAGES = 6;
 const MAX_OUTPUT_TOKENS = 500;
 const MAX_CHARS_PER_MESSAGE = 2000;
-const MAX_SUGGESTION_WORDS = 10;
 const MAX_SUGGESTION_CHARS = 120;
 
 export class Predictor {
@@ -141,7 +140,7 @@ export class Predictor {
 									type: "text",
 									text:
 										`Here is the recent conversation between the developer and the coding agent:\n\n${contextText.formatted}\n\n` +
-										`Predict what the developer will say next. Reply with just that message — no preamble, no quotes, under 10 words.`,
+										`Predict what the developer will say next. Reply with just that message — no preamble, no quotes, keep it brief.`,
 								},
 							],
 							timestamp: Date.now(),
@@ -324,10 +323,6 @@ export function sanitize(raw: string): string {
 	s = s.replace(/^["'`]+|["'`]+$/g, "");
 	s = s.replace(/[.!?]+$/g, "");
 	s = s.trim();
-	const words = s.split(/\s+/).filter(Boolean);
-	if (words.length > MAX_SUGGESTION_WORDS) {
-		s = words.slice(0, MAX_SUGGESTION_WORDS).join(" ");
-	}
 	// Belt-and-braces character cap. Trim trailing whitespace before appending the
 	// ellipsis so we don't render "foo   …" when the slice lands on whitespace.
 	if (s.length > MAX_SUGGESTION_CHARS) {

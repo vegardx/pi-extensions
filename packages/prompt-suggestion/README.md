@@ -58,7 +58,8 @@ not a command-safety filter.
   other keystroke dismisses the suggestion and cancels the in-flight
   prediction.
 - Predictions are capped at 120 characters (with a trailing ellipsis) as a
-  belt-and-braces guard on top of the 10-word limit.
+  belt-and-braces guard. The model is prompted to keep suggestions brief —
+  one short sentence — but is not hard-capped at a word count.
 - Suppressed during session resume (the first synthetic `agent_end` after
   loading a prior session). Comes back on the next real turn.
 - Suppressed in non-interactive modes (`pi -p`, RPC).
