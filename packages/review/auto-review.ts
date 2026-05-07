@@ -1,10 +1,11 @@
 /**
- * Auto-review pass — used by `/develop` after the implement phase completes.
+ * Auto-review pass — invoked by extensions (e.g. `modes`) after an
+ * implement phase completes.
  *
  * Unlike interactive `/review`, the auto-review:
- *   - Runs ONLY the `code-reviewer` and `code-simplifier` lanes.
- *     Architect / scope / security / docs / deps are all out of
- *     scope here (the user opted into a focused, auto-applied pass).
+ *   - Runs a configurable subset of reviewer roles (defaults to
+ *     `AUTO_REVIEW_ROLES`). Architect / scope / docs / deps are all out
+ *     of scope unless the caller opts in.
  *   - Runs each lane TWICE: once against `backgroundModels.primary.heavy`,
  *     once against `backgroundModels.secondary.heavy`. Both must agree
  *     on a finding (cross-model consensus) before it is eligible for
@@ -14,10 +15,8 @@
  *     directly; everything else is dropped (the manual `/review`
  *     command is still available for the broader pass).
  *
- * Wired in by `/develop` between `loop-complete`/`loop-bailed` and
- * the post-loop picker. `/develop` owns the state-machine plumbing;
- * this module owns the model resolution, fan-out, consensus filtering,
- * and fix-prompt assembly.
+ * The caller owns state-machine plumbing; this module owns model
+ * resolution, fan-out, consensus filtering, and fix-prompt assembly.
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,17 +50,18 @@ import {
 import { reviewTimeoutMs, runReviewer } from "./reviewer-client.js";
 
 /**
- * The two reviewer roles the auto-review covers. Deliberately narrow:
+ * Default reviewer roles for the auto-review pass. Deliberately narrow:
  * the auto-apply path means we trade breadth for high-confidence
  * mechanical fixes only.
  */
 export const AUTO_REVIEW_ROLES: readonly ReviewerRole[] = [
 	"code-reviewer",
 	"code-simplifier",
+	"security-analyst",
 ] as const;
 
 /** Allowlist used to validate user-supplied role strings at runtime. */
-const VALID_REVIEWER_ROLES = new Set<ReviewerRole>([
+export const VALID_REVIEWER_ROLES: readonly ReviewerRole[] = [
 	"architect",
 	"code-reviewer",
 	"scope-analyst",
@@ -69,7 +69,9 @@ const VALID_REVIEWER_ROLES = new Set<ReviewerRole>([
 	"code-simplifier",
 	"doc-reviewer",
 	"dependency-checker",
-]);
+] as const;
+
+const VALID_REVIEWER_ROLES_SET = new Set<ReviewerRole>(VALID_REVIEWER_ROLES);
 
 /** Fixed tier this pass uses on both `primary` and `secondary` sets. */
 const AUTO_REVIEW_TIER: Tier = "heavy";
@@ -82,9 +84,8 @@ const CHALLENGER_PROMPT_PATH = join(
 	"challenger.md",
 );
 
-/** Diff scope the auto-review operates on. Matches `/review`'s scopes
- *  but narrowed to the two relevant in-branch contexts: `/develop`
- *  always runs after a sequence of edits on a feature branch, so we
+/** Diff scope the auto-review operates on. Narrowed to in-branch
+ *  contexts: the caller runs after edits on a feature branch, so we
  *  default to the branch diff against the default branch and fall
  *  back to the working-tree diff when no default branch is detected
  *  (e.g. a freshly-init'd repo with no `origin/HEAD`). */
@@ -104,7 +105,7 @@ export interface RunAutoReviewOptions {
 	ctx: ExtensionContext;
 	pi: ExtensionAPI;
 	/** Extension name used for per-extension model overrides. Defaults
-	 *  to "develop" because that's where the call site lives. */
+	 *  to "modes". */
 	extensionName?: string;
 	/**
 	 * Reviewer roles to run. Defaults to `AUTO_REVIEW_ROLES`.
@@ -489,7 +490,7 @@ export function buildAutoReviewFixPrompt(
 		? `Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`) independently flagged the following findings on the same file/line/title. Apply the suggested fixes directly.`
 		: `The reviewer (\`${primaryModel}\`) flagged the following findings with concrete fix suggestions. Apply them directly.`;
 	const lines: string[] = [
-		"[/develop auto-review]",
+		"[auto-review]",
 		"",
 		reviewerDesc,
 		"Group related fixes into cohesive commits, but do not commit",
@@ -645,7 +646,7 @@ export function buildAutoReviewDiscussionPrompt(
 		? `Two heavy reviewers (\`${primaryModel}\` and \`${secondaryModel}\`) agreed the following issue(s) are real, but neither provided a concrete fix. Surface each one to the user and ask how they'd like to proceed.`
 		: `The primary reviewer (\`${primaryModel}\`) flagged the following issue(s) without a concrete fix. Surface each one to the user and ask how they'd like to proceed.`;
 	const lines: string[] = [
-		"[/develop auto-review \u2014 needs discussion]",
+		"[auto-review \u2014 needs discussion]",
 		"",
 		intro,
 		"",
@@ -674,16 +675,16 @@ export function buildAutoReviewDiscussionPrompt(
  * report message + (when there are agreed findings) a fix-followup
  * to the host agent, and returns a structured result for the caller.
  *
- * The caller (`/develop`) is responsible for state-machine
- * bookkeeping: deciding whether to wait for the host fix turn before
- * showing the post-loop picker. This function never opens a picker
- * and never blocks on user input.
+ * The caller is responsible for state-machine bookkeeping: deciding
+ * whether to wait for the host fix turn before showing the post-loop
+ * picker. This function never opens a picker and never blocks on user
+ * input.
  */
 export async function runAutoReview(
 	opts: RunAutoReviewOptions,
 ): Promise<RunAutoReviewResult> {
 	const { ctx, pi } = opts;
-	const extensionName = opts.extensionName ?? "develop";
+	const extensionName = opts.extensionName ?? "modes";
 
 	if (!isGitRepo(ctx.cwd)) {
 		notify(ctx, "not inside a git repository", "error");
@@ -701,7 +702,7 @@ export async function runAutoReview(
 		: (AUTO_REVIEW_ROLES as string[]);
 	const roles: ReviewerRole[] = [];
 	for (const r of rawRoles) {
-		if (VALID_REVIEWER_ROLES.has(r as ReviewerRole)) {
+		if (VALID_REVIEWER_ROLES_SET.has(r as ReviewerRole)) {
 			roles.push(r as ReviewerRole);
 		} else {
 			notify(

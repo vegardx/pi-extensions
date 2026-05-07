@@ -27,6 +27,7 @@ import type {
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { classifyBashCommand } from "./bash-classifier.js";
 import {
 	checkoutBranch,
@@ -1123,22 +1124,43 @@ export default function (pi: ExtensionAPI) {
 				// Module not resolvable despite being in the command list — skip.
 			}
 			if (autoReviewMod) {
-				try {
-					await autoReviewMod.runAutoReview({
-						ctx,
-						pi,
-						extensionName: EXT_ID,
-						roles: ["code-reviewer", "code-simplifier"],
-						multiModel: true,
-					});
-				} catch (err) {
-					notify(
-						ctx,
-						`auto-review failed: ${
-							err instanceof Error ? err.message : String(err)
-						}`,
-						"warning",
-					);
+				const settings = readRelevantSettings(ctx.cwd);
+				const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
+				const reviewObj =
+					reviewCfg &&
+					typeof reviewCfg === "object" &&
+					!Array.isArray(reviewCfg)
+						? (reviewCfg as Record<string, unknown>)
+						: {};
+				const enable =
+					typeof reviewObj.enable === "boolean" ? reviewObj.enable : true;
+				const rawAgents = reviewObj.agents;
+				const agents =
+					Array.isArray(rawAgents) &&
+					rawAgents.every((a) => typeof a === "string") &&
+					rawAgents.every((a) =>
+						autoReviewMod?.VALID_REVIEWER_ROLES.includes(a as never),
+					)
+						? (rawAgents as string[])
+						: [...autoReviewMod.AUTO_REVIEW_ROLES];
+				if (enable) {
+					try {
+						await autoReviewMod.runAutoReview({
+							ctx,
+							pi,
+							extensionName: EXT_ID,
+							roles: agents,
+							multiModel: true,
+						});
+					} catch (err) {
+						notify(
+							ctx,
+							`auto-review failed: ${
+								err instanceof Error ? err.message : String(err)
+							}`,
+							"warning",
+						);
+					}
 				}
 			}
 			await runPostExecPicker(ctx);
