@@ -1,0 +1,28 @@
+{
+  "name": "pi-ext-modes",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Permission-mode cycle (plan / default / auto) with integrated git workflow.",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*",
+    "@vegardx/pi-extensions-shared": "*",
+    "pi-ext-commit": "*",
+    "pi-ext-review": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-ai": { "optional": true },
+    "@mariozechner/pi-coding-agent": { "optional": true },
+    "@mariozechner/pi-tui": { "optional": true },
+    "@sinclair/typebox": { "optional": true },
+    "@vegardx/pi-extensions-shared": { "optional": true },
+    "pi-ext-commit": { "optional": true },
+    "pi-ext-review": { "optional": true }
+  }
+}

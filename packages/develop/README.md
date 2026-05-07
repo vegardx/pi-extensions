@@ -25,7 +25,8 @@ own `examples/extensions/plan-mode/`.
 - `git.ts` — thin, no-throw shell wrappers for the git calls we make.
 - `plan-utils.ts` — pure plan-extraction and progress helpers:
   `extractTodoItems`, `markCompletedSteps`, `extractDoneSteps`,
-  `isSafeCommand`, `cleanStepText`. Ported from pi's `plan-mode`
+  `isSafeCommand` (implementation in `packages/_shared/plan-utils.ts`,
+  re-exported here), `cleanStepText`. Ported from pi's `plan-mode`
   example, unit-tested.
 - `skills/develop/SKILL.md` — the plan-mode workflow. Usable standalone
   via `/skill:develop` even without the extension loaded.
