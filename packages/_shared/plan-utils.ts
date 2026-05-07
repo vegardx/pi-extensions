@@ -73,8 +73,7 @@ const SAFE_PATTERNS: readonly RegExp[] = [
 	/^\s*which\b/,
 	/^\s*whereis\b/,
 	/^\s*type\b/,
-	/^\s*env\b/,
-	/^\s*printenv\b/,
+	// env/printenv omitted — exposes full process environment including API keys.
 	/^\s*uname\b/,
 	/^\s*whoami\b/,
 	/^\s*id\b/,
@@ -85,7 +84,8 @@ const SAFE_PATTERNS: readonly RegExp[] = [
 	/^\s*top\b/,
 	/^\s*htop\b/,
 	/^\s*free\b/,
-	/^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
+	// git config omitted — repo/global configs may contain inline tokens.
+	/^\s*git\s+(status|log|diff|show|branch|remote)/i,
 	/^\s*git\s+ls-/i,
 	/^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
 	/^\s*yarn\s+(list|info|why|audit)/i,
@@ -104,6 +104,13 @@ const SAFE_PATTERNS: readonly RegExp[] = [
  * Returns `true` iff `command` matches at least one safe pattern and no
  * destructive pattern. When in doubt, blocks. Callers should surface the
  * block to the user with the offending command.
+ *
+ * Known limitation: SAFE_PATTERNS anchor to `^` while DESTRUCTIVE_PATTERNS
+ * are unanchored substring checks. A pipeline like `git log; npm install`
+ * passes the safe check (starts with `git log`) while the destructive segment
+ * goes undetected. This is an intentional heuristic trade-off; callers that
+ * need tighter control can split on `;`/`&&`/`||` and run both checks on
+ * each sub-command independently.
  */
 export function isSafeCommand(command: string): boolean {
 	const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(command));

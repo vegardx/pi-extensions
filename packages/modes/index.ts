@@ -12,6 +12,7 @@
  *   /plan [desc]      sync to default branch, enter plan mode
  *   /implement [desc] sync + derive branch + git checkout -b + auto mode
  *   /park             gh issue create from plan text, exit plan mode
+ *   /modes-status     show current mode, phase, branch, and step progress
  */
 
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -196,7 +197,9 @@ export default function (pi: ExtensionAPI) {
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			footerTui = tui;
 			return {
-				invalidate() {},
+				invalidate() {
+					tui.requestRender();
+				},
 				render(width) {
 					// Left: git branch + other extensions' status entries.
 					const branch = footerData.getGitBranch();
@@ -540,9 +543,9 @@ export default function (pi: ExtensionAPI) {
 			"",
 			plan.trim(),
 		].join("\n");
-		writeFileSync(bodyFile, body, "utf8");
 
 		try {
+			writeFileSync(bodyFile, body, "utf8");
 			const create = runCommand(
 				"gh",
 				[
@@ -575,9 +578,7 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 				const urlMatch = plain.stdout.match(/https?:\/\/\S+\/(\d+)\s*$/m);
-				if (urlMatch) {
-					finalizePark(ctx, urlMatch[1] ?? "", urlMatch[0] ?? "", branchSlug);
-				}
+				finalizePark(ctx, urlMatch?.[1] ?? "", urlMatch?.[0] ?? "", branchSlug);
 				return;
 			}
 
@@ -849,6 +850,7 @@ export default function (pi: ExtensionAPI) {
 						"the plan to the user, then stop. The user will choose to implement,",
 						"park as a GitHub issue, or keep discussing.",
 					].join("\n"),
+					details: { modeMarker: "plan" as const },
 					display: false,
 				},
 			};
@@ -876,6 +878,7 @@ export default function (pi: ExtensionAPI) {
 								]
 							: []),
 					].join("\n"),
+					details: { modeMarker: "default" as const },
 					display: false,
 				},
 			};
@@ -898,6 +901,7 @@ export default function (pi: ExtensionAPI) {
 						"completing each one. Do not stop to ask for confirmation unless",
 						"genuinely stuck.",
 					].join("\n"),
+					details: { modeMarker: "auto" as const },
 					display: false,
 				},
 			};
@@ -912,15 +916,12 @@ export default function (pi: ExtensionAPI) {
 			messages: event.messages.filter((m) => {
 				const ct = (m as { customType?: string }).customType;
 				if (ct !== CUSTOM_MODE_CONTEXT) return true;
-				// Keep the message only while the mode that produced it is active.
-				const content = (m as { content?: string }).content ?? "";
-				if (currentMode === "plan" && content.includes("[PLAN MODE"))
-					return true;
-				if (currentMode === "default" && content.includes("[DEFAULT MODE"))
-					return true;
-				if (currentMode === "auto" && content.includes("[AUTO MODE"))
-					return true;
-				return false;
+				// Keep the injected context only for the mode that produced it.
+				// details.modeMarker is the authoritative discriminator — content-string
+				// matching would silently break on any wording change.
+				const marker = (m as { details?: { modeMarker?: string } }).details
+					?.modeMarker;
+				return marker === currentMode;
 			}),
 		};
 	});
@@ -952,6 +953,25 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (modeState.mode === "default") {
+			// Headless runs have no UI to show confirmation dialogs — block all
+			// mutating operations rather than letting them through silently.
+			if (!ctx.hasUI) {
+				const isMutating =
+					event.toolName === "edit" ||
+					event.toolName === "write" ||
+					(event.toolName === "bash" &&
+						!isSafeCommand(
+							(event.input as { command?: string }).command ?? "",
+						));
+				if (isMutating) {
+					return {
+						block: true,
+						reason:
+							"modes: default mode requires UI for confirmation (running headless)",
+					};
+				}
+				return;
+			}
 			if (event.toolName === "edit" || event.toolName === "write") {
 				const path = (event.input as { path?: string }).path ?? event.toolName;
 				const ok = await ctx.ui.confirm(
@@ -1008,17 +1028,31 @@ export default function (pi: ExtensionAPI) {
 				await runPostExecPicker(ctx);
 				return;
 			}
+			let autoReviewMod: typeof import("pi-ext-review/auto-review") | null =
+				null;
 			try {
-				const mod = await import("pi-ext-review/auto-review");
-				await mod.runAutoReview({
-					ctx,
-					pi,
-					extensionName: EXT_ID,
-					roles: ["code-reviewer", "code-simplifier"],
-					multiModel: true,
-				});
+				autoReviewMod = await import("pi-ext-review/auto-review");
 			} catch {
-				/* review not available or failed — skip */
+				// Module not resolvable despite being in the command list — skip.
+			}
+			if (autoReviewMod) {
+				try {
+					await autoReviewMod.runAutoReview({
+						ctx,
+						pi,
+						extensionName: EXT_ID,
+						roles: ["code-reviewer", "code-simplifier"],
+						multiModel: true,
+					});
+				} catch (err) {
+					notify(
+						ctx,
+						`auto-review failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+						"warning",
+					);
+				}
 			}
 			await runPostExecPicker(ctx);
 		});

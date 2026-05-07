@@ -63,7 +63,7 @@ Plan mode enforces read-only access through three independent layers so the agen
 
 1. **Tool restriction** — `edit` and `write` are absent from the active tool set.
 2. **System prompt injection** — the agent is told explicitly what mode it's in and what is allowed.
-3. **Bash guard** — the `tool_call` hook checks every `bash` invocation against a write-command blocklist (redirects, `tee`, `sed -i`, `rm`, `git commit`, package installs, etc.) and blocks any match.
+3. **Bash guard** — the `tool_call` hook runs every `bash` invocation through `isSafeCommand`: the command must match an explicit read-only allowlist (`cat`, `grep`, `git log`, `rg`, etc.) AND must not match a destructive-pattern denylist (redirects, `tee`, `rm`, `git commit`, package installs, etc.). Anything not on the allowlist is blocked by default.
 
 ## Settings
 

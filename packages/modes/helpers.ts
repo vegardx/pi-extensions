@@ -146,7 +146,15 @@ export type CompleteSimpleFn = typeof completeSimple;
 export interface SlugifyWithModelOptions {
 	maxTokens?: number;
 	maxLength?: number;
+	/**
+	 * Test seam — override the LLM completion function in tests without
+	 * standing up a real provider. Not intended for production use.
+	 */
 	_complete?: CompleteSimpleFn;
+	/**
+	 * Test seam — override the model resolver in tests.
+	 * Not intended for production use.
+	 */
 	_resolveModel?: typeof resolveModel;
 }
 
@@ -235,8 +243,11 @@ export interface SecretScanResult {
 }
 
 const SECRET_PATTERNS: readonly RegExp[] = [
-	/\b(?:ghp_|gho_|ghs_|glpat-|sk-|xox[bpras]-|AKIA)[A-Za-z0-9_-]{12,}\b/i,
-	/[A-Za-z0-9_-]{32,}/,
+	// Named-prefix credentials: GitHub PATs/Actions/App tokens, GitLab tokens,
+	// OpenAI/Anthropic keys, Slack tokens, AWS access keys, npm tokens,
+	// JWTs (eyJ…), PEM blocks.
+	/\b(?:ghp_|gho_|ghs_|ghx_|glpat-|sk-|sk-proj-|xox[bpras]-|AKIA|npm_|eyJ)[A-Za-z0-9_-]{12,}/i,
+	/-----BEGIN\s+[A-Z ]+-----/,
 ];
 
 export function scanForSecrets(text: string): SecretScanResult {
