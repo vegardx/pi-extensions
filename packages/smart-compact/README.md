@@ -56,6 +56,25 @@ Set `extensionConfig.smart-compact.compactAt` to a token count. At the end of ea
 
 This gives you a single, model-agnostic knob: compact when I have 100k tokens in context, regardless of the model's context window size.
 
+## Continuing after compaction
+
+When `compactAt` triggers compaction the agent has just finished a turn, so after the session reloads it would sit idle. `smart-compact` handles this automatically: once compaction completes it sends a fixed `"Continue where you left off."` message to restart the agent. If the summary includes a **Next Steps** section, that text is surfaced as a read-only notification so you can see what the agent will do — but it is never injected as part of the agent message (which would create a prompt-injection surface).
+
+This behaviour is on by default and only applies to `compactAt`-triggered compactions. Pi's native auto-compaction (fired mid-turn by `reserveTokens`) doesn't need this — the agent loop resumes on its own.
+
+To stay idle after compaction (e.g. you want to review the summary before continuing), set `continueAfterCompact` to `false`:
+
+```json
+{
+  "extensionConfig": {
+    "smart-compact": {
+      "compactAt": 100000,
+      "continueAfterCompact": false
+    }
+  }
+}
+```
+
 **Option B — pi's native threshold (`reserveTokens`)**
 
 Increase `compaction.reserveTokens` to fire compaction earlier (more tokens reserved for the response = earlier trigger):
