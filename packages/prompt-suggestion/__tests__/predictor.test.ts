@@ -1,4 +1,4 @@
-import { sanitize, trimMessages } from "../predictor.js";
+import { isActionable, sanitize, trimMessages } from "../predictor.js";
 
 // We need to construct AgentMessage-like objects; using `as any` at the boundary
 // since the full AgentMessage shape is large and we only care about role/content/timestamp.
@@ -91,6 +91,53 @@ describe("trimMessages", () => {
 		]);
 		const out = trimMessages(input, 6, 100);
 		expect((out[0]?.content as { text: string }[])[0]?.text.length).toBe(100);
+	});
+});
+
+describe("isActionable", () => {
+	const nonActionable = [
+		"NONE",
+		"none",
+		"Thanks for the help",
+		"Thank you",
+		"Great work",
+		"Awesome",
+		"Sounds good",
+		"Looks good to me",
+		"You're welcome",
+		"No problem",
+		"Good job",
+		"Well done",
+		"Ok",
+		"Got it",
+		"Understood",
+		"I'll review it",
+		"I will push it later",
+	];
+
+	for (const phrase of nonActionable) {
+		it(`rejects "${phrase}"`, () => {
+			expect(isActionable(phrase)).toBe(false);
+		});
+	}
+
+	const actionable = [
+		"Run the tests",
+		"Create a PR",
+		"Fix the linter errors",
+		"Yes, do that",
+		"Add error handling to the fetch call",
+		"Rebase onto main",
+	];
+
+	for (const phrase of actionable) {
+		it(`accepts "${phrase}"`, () => {
+			expect(isActionable(phrase)).toBe(true);
+		});
+	}
+
+	it("rejects empty string", () => {
+		expect(isActionable("")).toBe(false);
 	});
 });
 
