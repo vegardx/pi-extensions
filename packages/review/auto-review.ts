@@ -27,6 +27,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -310,6 +311,10 @@ interface ResolvedTierModel {
 	provider: string;
 	modelId: string;
 	spec: string;
+	/** Retained Model reference — avoids a second registry lookup that
+	 *  can fail if the provider re-registers models between resolution
+	 *  and use (e.g. async model refresh in custom providers). */
+	model: Model<Api>;
 }
 
 async function resolveTierModel(
@@ -329,6 +334,7 @@ async function resolveTierModel(
 		provider: resolved.model.provider,
 		modelId: resolved.model.id,
 		spec: `${resolved.model.provider}/${resolved.model.id}`,
+		model: resolved.model,
 	};
 }
 
@@ -528,19 +534,10 @@ async function runOrchestratorPhase(opts: {
 		: [];
 
 	// ---- Spin up in-process orchestrator session -------------------------
-	// Use the host's model registry so custom-provider models (e.g. radicalai)
-	// are visible. A fresh ModelRegistry.create() only sees built-in providers.
-	const model = ctx.modelRegistry.find(primary.provider, primary.modelId);
-
-	if (!model) {
-		const err = `orchestrator: could not resolve model ${primary.spec} from registry`;
-		notify(ctx, err, "warning");
-		if (ctx.hasUI) {
-			ctx.ui.setStatus(extensionName, undefined);
-			ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
-		}
-		return { findings: [], orchestratorRan: false, error: err };
-	}
+	// Use the model reference retained by resolveTierModel so custom-provider
+	// models (e.g. radicalai) remain usable even if the provider re-registers
+	// its model list between resolution and use (async refresh race).
+	const model = primary.model;
 
 	const systemPrompt = readFileSync(ORCHESTRATOR_PROMPT_PATH, "utf8");
 	const loader = new DefaultResourceLoader({
