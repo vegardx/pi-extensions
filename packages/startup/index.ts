@@ -361,7 +361,9 @@ function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 	// A literal `default` takes precedence over fallback-chain display even
 	// when both are set on the schema (ConfigKeySchema: "default wins for the
 	// literal value displayed"). Only enter the via/unset branch when there
-	// is no concrete default to show.
+	// is no concrete default to show. When a schema default IS defined and
+	// the effective value matches, we render "key: value (default)" so the
+	// user can distinguish overrides from defaults at a glance.
 	if (k.schema.fallbackChain && k.schema.default === undefined) {
 		const bm = ext.backgroundModel;
 		if (bm?.resolvedTierValue) {

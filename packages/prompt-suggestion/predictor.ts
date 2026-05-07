@@ -310,8 +310,9 @@ function extractText(content: unknown): string {
 // Belt-and-braces guard against non-actionable social phrases the model may
 // still emit despite the NONE instruction in the system prompt.
 export function isActionable(s: string): boolean {
-	if (!s || s.toLowerCase() === "none") return false;
-	const lower = s.toLowerCase().trim();
+	if (!s) return false;
+	const lower = s.trim().toLowerCase();
+	if (lower === "none") return false;
 	const patterns = [
 		/^(thanks|thank you|thx|ty)\b/,
 		/^(great|awesome|excellent|perfect|wonderful|fantastic|nice)\b/,

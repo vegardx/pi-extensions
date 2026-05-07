@@ -85,17 +85,66 @@ interface ModeState {
 	planText: string | null;
 }
 
-interface PlanStep {
+export interface PlanStep {
 	id: number;
 	text: string;
 	done: boolean;
 }
 
-interface PlanStepDetails {
+export interface PlanStepDetails {
 	action: "add" | "toggle" | "list" | "clear";
 	steps: PlanStep[];
 	nextId: number;
 	error?: string;
+}
+
+/** Custom entry type persisted when steps are cleared on plan completion. */
+export const STEPS_CLEARED_ENTRY = "modes-steps-cleared";
+
+/**
+ * Pure hydration logic — given a session branch, reconstruct the plan
+ * step state. Exported for testing.
+ */
+export function hydrateStepsFromBranch(
+	branch: ReadonlyArray<{
+		type: string;
+		message?: unknown;
+		customType?: string;
+	}>,
+): { steps: PlanStep[]; nextStepId: number } {
+	let steps: PlanStep[] = [];
+	let nextStepId = 1;
+	let lastStepEntryIdx = -1;
+	let lastClearEntryIdx = -1;
+	for (let i = 0; i < branch.length; i++) {
+		const entry = branch[i];
+		if (!entry) continue;
+		if (entry.type === "message") {
+			const msg = entry.message as {
+				role?: string;
+				toolName?: string;
+				details?: PlanStepDetails;
+			};
+			if (
+				msg?.role === "toolResult" &&
+				msg.toolName === "plan_step" &&
+				msg.details
+			) {
+				steps = msg.details.steps;
+				nextStepId = msg.details.nextId;
+				lastStepEntryIdx = i;
+			}
+		} else if (
+			entry.type === "custom" &&
+			entry.customType === STEPS_CLEARED_ENTRY
+		) {
+			lastClearEntryIdx = i;
+		}
+	}
+	if (lastClearEntryIdx > lastStepEntryIdx) {
+		return { steps: [], nextStepId: 1 };
+	}
+	return { steps, nextStepId };
 }
 
 // ---- Extension ------------------------------------------------------------
@@ -151,18 +200,10 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function hydrateSteps(ctx: ExtensionContext): void {
-		steps = [];
-		nextStepId = 1;
-		for (const entry of ctx.sessionManager.getBranch()) {
-			if (entry.type !== "message") continue;
-			const msg = entry.message;
-			if (msg.role !== "toolResult" || msg.toolName !== "plan_step") continue;
-			const details = msg.details as PlanStepDetails | undefined;
-			if (details) {
-				steps = details.steps;
-				nextStepId = details.nextId;
-			}
-		}
+		const branch = ctx.sessionManager.getBranch();
+		const result = hydrateStepsFromBranch(branch as never);
+		steps = result.steps;
+		nextStepId = result.nextStepId;
 	}
 
 	// ---- UI helpers -------------------------------------------------------
@@ -199,9 +240,13 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (steps.length > 0) {
+			const MAX_STEP_WIDTH = 60;
 			ctx.ui.setWidget(
 				"modes-steps",
-				steps.map((s) => `${s.done ? "☑" : "☐"} ${s.text}`),
+				steps.map((s) => {
+					const label = truncateToWidth(s.text, MAX_STEP_WIDTH);
+					return `${s.done ? "☑" : "☐"} ${label}`;
+				}),
 			);
 		} else {
 			ctx.ui.setWidget("modes-steps", undefined);
@@ -688,7 +733,9 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Add, toggle, list, or clear numbered plan steps",
 		promptGuidelines: [
 			"Use plan_step to build and track your plan when in plan or auto mode. " +
-				"Call plan_step(add) for each step when planning, plan_step(toggle) when a step is done.",
+				"Call plan_step(add) for each step when planning, plan_step(toggle) when a step is done. " +
+				"Step text MUST be short: ≤ 8 words, imperative verb phrase, no full sentences. " +
+				"Good: 'Add rate-limit middleware'. Bad: 'Add middleware that limits requests to the API...'.",
 		],
 		parameters: Type.Object({
 			action: Type.Union([
@@ -895,6 +942,9 @@ export default function (pi: ExtensionAPI) {
 						"  plan_step(list)        → show all steps",
 						"  plan_step(clear)       → remove all steps",
 						"",
+						"Step text MUST be short: ≤ 8 words, imperative verb phrase, no full sentences.",
+						"Good: 'Add rate-limit middleware'. Bad: 'Add middleware that limits requests…'",
+						"",
 						"When you have a clear plan: add all steps with plan_step, present",
 						"the plan to the user, then stop. The user will choose to implement,",
 						"park as a GitHub issue, or keep discussing.",
@@ -918,7 +968,7 @@ export default function (pi: ExtensionAPI) {
 						...(steps.length > 0 && modeState.phase === "executing"
 							? [
 									"",
-									"Active plan steps:",
+									"Active plan steps (labels are short — expand as needed):",
 									...steps.map(
 										(s) => `  ${s.done ? "✓" : "○"} #${s.id}: ${s.text}`,
 									),
@@ -943,7 +993,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						"[AUTO MODE — executing plan]",
 						"",
-						"Remaining steps:",
+						"Remaining steps (labels are short — expand as needed when executing):",
 						...remaining.map((s) => `  ${s.id}. ${s.text}`),
 						"",
 						"Execute each step in order. Call plan_step(toggle, id) after",
@@ -1132,6 +1182,13 @@ export default function (pi: ExtensionAPI) {
 			},
 			{ triggerTurn: false },
 		);
+
+		// Clear the step list — the completion message above summarises everything.
+		// Persist via appendEntry so hydrateSteps sees it after session reload.
+		steps = [];
+		nextStepId = 1;
+		pi.appendEntry(STEPS_CLEARED_ENTRY);
+		updateWidget(ctx);
 
 		// Auto-review then post-exec picker — detached to avoid deadlocking
 		// pi's idle flip.
