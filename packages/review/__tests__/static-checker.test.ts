@@ -110,8 +110,8 @@ describe("parseBiomeOutput", () => {
 		expect(parseBiomeOutput(raw)).toHaveLength(0);
 	});
 
-	it("returns [] on invalid JSON", () => {
-		expect(parseBiomeOutput("not json")).toEqual([]);
+	it("throws on invalid JSON", () => {
+		expect(() => parseBiomeOutput("not json")).toThrow(/not valid JSON/);
 	});
 });
 
@@ -190,8 +190,8 @@ describe("parseKnipOutput", () => {
 		});
 	});
 
-	it("returns [] on invalid JSON", () => {
-		expect(parseKnipOutput("garbage")).toEqual([]);
+	it("throws on invalid JSON", () => {
+		expect(() => parseKnipOutput("garbage")).toThrow(/not valid JSON/);
 	});
 });
 
@@ -265,8 +265,8 @@ describe("parseNpmAuditOutput", () => {
 		expect(findings[0]?.title).toContain("express");
 	});
 
-	it("returns [] on invalid JSON", () => {
-		expect(parseNpmAuditOutput("{not json")).toEqual([]);
+	it("throws on invalid JSON", () => {
+		expect(() => parseNpmAuditOutput("{not json")).toThrow(/not valid JSON/);
 	});
 });
 
@@ -332,8 +332,8 @@ describe("parseSemgrepOutput", () => {
 		expect(parseSemgrepOutput(raw)).toHaveLength(0);
 	});
 
-	it("returns [] on invalid JSON", () => {
-		expect(parseSemgrepOutput("")).toEqual([]);
+	it("throws on invalid JSON", () => {
+		expect(() => parseSemgrepOutput("")).toThrow(/not valid JSON/);
 	});
 });
 

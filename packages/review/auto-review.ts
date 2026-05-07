@@ -349,6 +349,8 @@ interface OrchestratorInput {
 	role: ReviewerRole;
 	tier: BackgroundTier;
 	findings: RawFinding[];
+	/** When true, findings came from a deterministic static analysis tool. */
+	staticTool?: boolean;
 }
 
 function buildOrchestratorTask(
@@ -367,6 +369,7 @@ function buildOrchestratorTask(
 			bundles.map((b) => ({
 				role: b.role,
 				tier: b.tier,
+				...(b.staticTool ? { staticTool: true } : {}),
 				findings: b.findings,
 			})),
 			null,
@@ -499,7 +502,10 @@ async function runOrchestratorPhase(opts: {
 						});
 
 						const text = out.error
-							? `{"agree":false,"reason":"consultation error: ${out.error.slice(0, 100)}"}`
+							? JSON.stringify({
+									agree: false,
+									reason: `consultation error: ${out.error.slice(0, 100)}`,
+								})
 							: out.rawText;
 						return {
 							content: [{ type: "text" as const, text }],
@@ -552,22 +558,28 @@ async function runOrchestratorPhase(opts: {
 
 	try {
 		const promptPromise = session.prompt(task);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let abortHandler: (() => void) | undefined;
 		const timeoutPromise = new Promise<never>((_, reject) => {
-			const t = setTimeout(
+			timer = setTimeout(
 				() => reject(new Error("orchestrator timeout")),
 				timeoutMs,
 			);
-			opts.signal?.addEventListener(
-				"abort",
-				() => {
-					clearTimeout(t);
-					reject(new Error("aborted"));
-				},
-				{ once: true },
-			);
+			abortHandler = () => {
+				clearTimeout(timer);
+				reject(new Error("aborted"));
+			};
+			opts.signal?.addEventListener("abort", abortHandler, { once: true });
 		});
 
-		await Promise.race([promptPromise, timeoutPromise]);
+		try {
+			await Promise.race([promptPromise, timeoutPromise]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			if (abortHandler && opts.signal) {
+				opts.signal.removeEventListener("abort", abortHandler);
+			}
+		}
 	} catch (err) {
 		session.dispose();
 		if (ctx.hasUI) {
@@ -1028,6 +1040,7 @@ export async function runAutoReview(
 			role: staticBundleRole,
 			tier: "primary" as BackgroundTier,
 			findings: allStaticFindings,
+			staticTool: true,
 		});
 	}
 
@@ -1068,8 +1081,10 @@ export async function runAutoReview(
 	);
 	const surfaced = findings.filter((f) => {
 		if (autoApplied.includes(f)) return false;
-		// High/medium without a fix
+		// High/medium without a fix → discuss
 		if (isHighOrMedium(f) && !withFix(f)) return true;
+		// Medium with a fix → discuss (not confident enough to auto-apply)
+		if (f.confidence === "medium" && withFix(f)) return true;
 		// Low-confidence CRITICAL: the orchestrator consulted and still
 		// wasn't sure — surface rather than drop.
 		if (f.confidence === "low" && f.severity === "CRITICAL") return true;

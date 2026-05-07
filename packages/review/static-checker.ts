@@ -171,8 +171,10 @@ export function parseBiomeOutput(raw: string): RawFinding[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
-	} catch {
-		return [];
+	} catch (e) {
+		throw new Error(
+			`biome output is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+		);
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
 	const obj = parsed as Record<string, unknown>;
@@ -219,8 +221,10 @@ export function parseEslintOutput(raw: string): RawFinding[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
-	} catch {
-		return [];
+	} catch (e) {
+		throw new Error(
+			`eslint output is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+		);
 	}
 	if (!Array.isArray(parsed)) return [];
 	const findings: RawFinding[] = [];
@@ -256,8 +260,10 @@ export function parseKnipOutput(raw: string): RawFinding[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
-	} catch {
-		return [];
+	} catch (e) {
+		throw new Error(
+			`knip output is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+		);
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
 	const obj = parsed as Record<string, unknown>;
@@ -309,8 +315,10 @@ export function parseNpmAuditOutput(raw: string): RawFinding[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
-	} catch {
-		return [];
+	} catch (e) {
+		throw new Error(
+			`npm audit output is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+		);
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
 	const obj = parsed as Record<string, unknown>;
@@ -401,8 +409,10 @@ export function parseSemgrepOutput(raw: string): RawFinding[] {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
-	} catch {
-		return [];
+	} catch (e) {
+		throw new Error(
+			`semgrep output is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+		);
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
 	const obj = parsed as Record<string, unknown>;

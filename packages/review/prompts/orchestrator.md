@@ -14,9 +14,9 @@ Your task message contains:
 2. A JSON array of **all raw findings** from every reviewer lane and
    every model tier, each annotated with `role` and `tier`.
 3. Optionally: static analysis tool output that was run before the
-   AI reviewers (tsc, biome, npm audit, semgrep). These are already
-   normalised as findings in the same shape and tagged with
-   `staticTool: true`.
+   AI reviewers (tsc, biome, npm audit, semgrep). These are
+   normalised as findings in the same shape and their bundle is
+   tagged with `staticTool: true` at the top level.
 
 You have access to `read`, `grep`, `find`, and `ls`. Use them when a
 finding's validity depends on context the diff alone does not show
