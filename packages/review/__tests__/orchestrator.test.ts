@@ -7,6 +7,7 @@ import {
 	buildAutoReviewDiscussionPrompt,
 	buildAutoReviewFixPrompt,
 	buildAutoReviewReport,
+	shouldSkipOrchestrator,
 } from "../auto-review.js";
 import {
 	type OrchestratedFinding,
@@ -104,6 +105,8 @@ const BASE_REPORT_OPTS = {
 	surfaced: [] as OrchestratedFinding[],
 	orchestratorRan: true,
 	staticToolsRan: 2,
+	totalInvocations: 4,
+	diffSize: 30,
 	errors: [] as Array<{ role: never; tier: never; error: string }>,
 };
 
@@ -143,12 +146,13 @@ describe("buildAutoReviewReport", () => {
 		expect(report).toContain("2 total");
 	});
 
-	it("shows orchestrator-not-run warning when orchestratorRan=false", () => {
+	it("shows orchestrator-skipped message when orchestratorRan=false and no error", () => {
 		const report = buildAutoReviewReport({
 			...BASE_REPORT_OPTS,
 			orchestratorRan: false,
 		});
-		expect(report).toContain("did not run");
+		expect(report).toContain("skipped");
+		expect(report).toContain("no input findings");
 	});
 
 	it("emits no-findings message when both lists are empty", () => {
@@ -224,5 +228,117 @@ describe("buildAutoReviewDiscussionPrompt", () => {
 		expect(prompt).toMatch(/a\) Fix/i);
 		expect(prompt).toMatch(/b\) Investigate/i);
 		expect(prompt).toMatch(/c\) Accept/i);
+	});
+});
+
+// ---- Error rendering in report -----------------------------------------
+
+describe("buildAutoReviewReport — error rendering", () => {
+	it("renders per-error detail lines with role/tier and message", () => {
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			errors: [
+				{
+					role: "code-reviewer" as never,
+					tier: "secondary" as never,
+					error: "Timeout waiting for agent to become idle. Stderr: rate limit",
+				},
+			],
+		});
+		expect(report).toContain("Reviewer errors");
+		expect(report).toContain("code-reviewer/secondary");
+		expect(report).toContain("Timeout waiting for agent");
+	});
+
+	it("truncates long error messages to 120 chars", () => {
+		const longError = "x".repeat(200);
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			errors: [
+				{
+					role: "security-analyst" as never,
+					tier: "primary" as never,
+					error: longError,
+				},
+			],
+		});
+		// Should not contain the full 200-char string
+		expect(report).not.toContain(longError);
+		// Should contain the truncated 120-char prefix
+		expect(report).toContain("x".repeat(120));
+	});
+
+	it("shows orchestrator error message when orchestratorRan=false with error", () => {
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			orchestratorRan: false,
+			orchestratorError: "orchestrator timeout",
+		});
+		expect(report).toContain("failed");
+		expect(report).toContain("orchestrator timeout");
+		expect(report).not.toContain("skipped");
+	});
+
+	it("emits suspicious-silence warning on large diff with all-empty lanes", () => {
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			findings: [],
+			autoApplied: [],
+			surfaced: [],
+			orchestratorRan: false,
+			totalInvocations: 6,
+			diffSize: 200,
+		});
+		expect(report).toContain("⚠️");
+		expect(report).toContain("non-trivial diff");
+	});
+
+	it("does NOT emit suspicious-silence warning on small diff", () => {
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			findings: [],
+			autoApplied: [],
+			surfaced: [],
+			orchestratorRan: false,
+			totalInvocations: 6,
+			diffSize: 10,
+		});
+		expect(report).not.toContain("⚠️");
+	});
+
+	it("does NOT emit suspicious-silence warning when orchestratorError is present", () => {
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			findings: [],
+			autoApplied: [],
+			surfaced: [],
+			orchestratorRan: false,
+			orchestratorError: "orchestrator timeout",
+			totalInvocations: 6,
+			diffSize: 200,
+		});
+		expect(report).not.toContain("⚠️");
+		expect(report).toContain("failed");
+	});
+});
+
+// ---- shouldSkipOrchestrator threshold ----------------------------------
+
+describe("shouldSkipOrchestrator", () => {
+	it("skips when 0 findings and error rate below 1/3", () => {
+		expect(shouldSkipOrchestrator(0, 0)).toBe(true);
+		expect(shouldSkipOrchestrator(0, 0.2)).toBe(true);
+		expect(shouldSkipOrchestrator(0, 1 / 6)).toBe(true);
+	});
+
+	it("does NOT skip when 0 findings and error rate >= 1/3", () => {
+		expect(shouldSkipOrchestrator(0, 1 / 3)).toBe(false);
+		expect(shouldSkipOrchestrator(0, 0.5)).toBe(false);
+		expect(shouldSkipOrchestrator(0, 1.0)).toBe(false);
+	});
+
+	it("never skips when there are input findings", () => {
+		expect(shouldSkipOrchestrator(5, 0)).toBe(false);
+		expect(shouldSkipOrchestrator(1, 0.9)).toBe(false);
 	});
 });
