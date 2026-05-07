@@ -29,13 +29,9 @@ describe("classifyStatic", () => {
 			);
 		});
 
-		it("allows curl for fetching", () => {
-			expect(classifyStatic("curl -s https://api.example.com")?.verdict).toBe(
-				"allow",
-			);
-			expect(classifyStatic("curl --silent https://docs.rs")?.verdict).toBe(
-				"allow",
-			);
+		it("defers curl to LLM (ambiguous)", () => {
+			expect(classifyStatic("curl -s https://api.example.com")).toBeNull();
+			expect(classifyStatic("curl --silent https://docs.rs")).toBeNull();
 		});
 
 		it("allows npm read-only commands", () => {
@@ -53,6 +49,39 @@ describe("classifyStatic", () => {
 			expect(classifyStatic("git log > out.txt")?.verdict).toBe("block");
 			expect(classifyStatic("cat foo.ts >> bar.ts")?.verdict).toBe("block");
 			expect(classifyStatic("echo hello > file")?.verdict).toBe("block");
+		});
+	});
+
+	describe("chaining / bypass prevention", () => {
+		it("blocks chained commands when any segment is dangerous", () => {
+			expect(classifyStatic("git log && rm -rf node_modules")?.verdict).toBe(
+				"block",
+			);
+			expect(classifyStatic("ls -la; rm -rf /")?.verdict).toBe("block");
+			expect(classifyStatic("echo hi || git push origin main")?.verdict).toBe(
+				"block",
+			);
+		});
+
+		it("blocks time-prefixed destructive commands", () => {
+			expect(classifyStatic("time rm -rf foo")?.verdict).toBe("block");
+		});
+
+		it("blocks plain cp/mv (mutations without redirects)", () => {
+			expect(classifyStatic("cp a b")?.verdict).toBe("block");
+			expect(classifyStatic("mv a b")?.verdict).toBe("block");
+		});
+
+		it("blocks git tag creation (mutation)", () => {
+			expect(classifyStatic("git tag v1.0.0")).toBeNull();
+		});
+
+		it("blocks git branch -D (mutation)", () => {
+			expect(classifyStatic("git branch -D foo")).toBeNull();
+		});
+
+		it("defers awk/sed to LLM (can write files)", () => {
+			expect(classifyStatic("awk '{print}' file.txt")).toBeNull();
 		});
 	});
 

@@ -34,13 +34,17 @@ const ALLOW_PREFIXES: readonly string[] = [
 	"git log",
 	"git show",
 	"git diff",
-	"git branch",
+	"git branch -a",
+	"git branch -r",
+	"git branch --list",
+	"git branch -v",
 	"git status",
 	"git remote",
 	"git rev-parse",
 	"git symbolic-ref",
 	"git merge-base",
-	"git tag",
+	"git tag -l",
+	"git tag --list",
 	"git stash list",
 	"git shortlog",
 	"git blame",
@@ -74,9 +78,6 @@ const ALLOW_PREFIXES: readonly string[] = [
 	"sort ",
 	"uniq ",
 	"cut ",
-	"awk ",
-	"sed -n",
-	"sed -e",
 	"tr ",
 	"diff ",
 	"comm ",
@@ -91,9 +92,6 @@ const ALLOW_PREFIXES: readonly string[] = [
 	"gh repo view",
 	"gh auth status",
 	"gh search ",
-	"curl -s",
-	"curl --silent",
-	"curl -fsSL",
 ];
 
 /**
@@ -141,7 +139,7 @@ const ALLOW_BINARIES: readonly string[] = [
 const DENY_PATTERNS: readonly RegExp[] = [
 	// File mutations
 	/\b(rm|rmdir|unlink)\b/,
-	/\b(mv|cp)\b.*>/,
+	/\b(mv|cp)\b/,
 	/\bmkdir\b/,
 	/\bchmod\b/,
 	/\bchown\b/,
@@ -188,47 +186,55 @@ export function classifyStatic(command: string): ClassifyResult | null {
 	const trimmed = command.trim();
 	const firstToken = trimmed.split(/\s+/)[0] ?? "";
 
-	// Check binary allowlist (just the command name, no args)
-	if (ALLOW_BINARIES.includes(firstToken)) {
-		// Still check for output redirects/tee — `cat foo > bar` is a write.
-		if (
-			/[^|]>\s*[^&]/.test(trimmed) ||
-			/>>/.test(trimmed) ||
-			/\btee\b/.test(trimmed)
-		) {
-			return {
-				verdict: "block",
-				reason: "output redirect writes to a file",
-			};
+	// ---- Denylist first (always takes priority) ----------------------------
+	// Check for shell command separators — if chained, check each segment.
+	if (/[;|]|&&|\|\|/.test(trimmed)) {
+		const segments = trimmed.split(/\s*(?:&&|\|\||[;|])\s*/);
+		for (const seg of segments) {
+			const segResult = classifyStatic(seg.trim());
+			if (segResult?.verdict === "block") return segResult;
 		}
-		return { verdict: "allow", reason: "read-only command" };
+		// If no segment is blocked, check if any is ambiguous
+		for (const seg of segments) {
+			const segResult = classifyStatic(seg.trim());
+			if (segResult === null) return null;
+		}
+		return { verdict: "allow", reason: "all chained commands are safe" };
 	}
 
-	// Check prefix allowlist
-	for (const prefix of ALLOW_PREFIXES) {
-		if (trimmed.startsWith(prefix)) {
-			// Guard: even allow-listed prefixes shouldn't have redirects
-			if (
-				/[^|]>\s*[^&]/.test(trimmed) ||
-				/>>/.test(trimmed) ||
-				/\btee\b/.test(trimmed)
-			) {
-				return {
-					verdict: "block",
-					reason: "output redirect writes to a file",
-				};
-			}
-			return { verdict: "allow", reason: "read-only command" };
-		}
-	}
-
-	// Check denylist
+	// Check denylist patterns against the full command
 	for (const pattern of DENY_PATTERNS) {
 		if (pattern.test(trimmed)) {
 			return {
 				verdict: "block",
 				reason: `matches deny pattern: ${pattern.source.slice(0, 40)}`,
 			};
+		}
+	}
+
+	// Check for output redirects/tee
+	if (
+		/[^|]>\s*[^&]/.test(trimmed) ||
+		/>>/.test(trimmed) ||
+		/\btee\b/.test(trimmed)
+	) {
+		return {
+			verdict: "block",
+			reason: "output redirect writes to a file",
+		};
+	}
+
+	// ---- Allowlist (only after denylist clears) ----------------------------
+
+	// Check binary allowlist (just the command name, no args)
+	if (ALLOW_BINARIES.includes(firstToken)) {
+		return { verdict: "allow", reason: "read-only command" };
+	}
+
+	// Check prefix allowlist
+	for (const prefix of ALLOW_PREFIXES) {
+		if (trimmed.startsWith(prefix)) {
+			return { verdict: "allow", reason: "read-only command" };
 		}
 	}
 
