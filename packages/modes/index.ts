@@ -112,6 +112,23 @@ export interface PlanStepDetails {
 /** Custom entry type persisted when steps are cleared on plan completion. */
 export const STEPS_CLEARED_ENTRY = "modes-steps-cleared";
 
+/** Custom entry type for persisted Q&A pairs. */
+export const ASK_ANSWERS_ENTRY = "modes-ask-answers";
+
+/** A question queued by the `ask` tool. */
+export interface PendingQuestion {
+	id: string;
+	question: string;
+	options?: string[];
+	context?: string;
+}
+
+/** Persisted Q&A pair. */
+export interface QAPair {
+	question: string;
+	answer: string;
+}
+
 /**
  * Pure hydration logic — given a session branch, reconstruct the plan
  * step state. Exported for testing.
@@ -205,6 +222,10 @@ export default function (pi: ExtensionAPI) {
 	// Stored TUI instance from the footer factory, used to trigger re-renders
 	// when the mode changes without reinstalling the footer.
 	let footerTui: { requestRender(): void } | null = null;
+
+	// Questions queued by the `ask` tool during a single agent turn.
+	let pendingQuestions: PendingQuestion[] = [];
+	let nextQuestionId = 1;
 
 	// ---- Persistence ------------------------------------------------------
 
@@ -330,11 +351,19 @@ export default function (pi: ExtensionAPI) {
 					const leftText = leftParts.join("  ");
 
 					// Right: context usage + mode label.
-					if (!modeState) return [truncateToWidth(leftText, width)];
+					const ctxLabel = formatContextUsage(ctx);
+
+					if (!modeState) {
+						if (!ctxLabel) return [truncateToWidth(leftText, width)];
+						const right = theme.fg("muted", ctxLabel);
+						const rw = visibleWidth(ctxLabel);
+						const sl = truncateToWidth(leftText, Math.max(0, width - rw - 1));
+						const g = Math.max(1, width - visibleWidth(sl) - rw);
+						return [sl + " ".repeat(g) + right];
+					}
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
-					const ctxLabel = formatContextUsage(ctx);
 					const rightParts: string[] = [];
 					if (ctxLabel) rightParts.push(theme.fg("muted", ctxLabel));
 					rightParts.push(theme.bold(theme.fg(color, label)));
@@ -719,6 +748,94 @@ export default function (pi: ExtensionAPI) {
 		lastReviewedRef = null;
 	}
 
+	// ---- Ask dialog -------------------------------------------------------
+
+	async function showAskDialog(
+		ctx: ExtensionContext,
+		questions: PendingQuestion[],
+	): Promise<void> {
+		let dialogMod: typeof import("@vegardx/pi-structured-dialog") | null = null;
+		try {
+			dialogMod = await import("@vegardx/pi-structured-dialog");
+		} catch {
+			// Fallback: structured-dialog not available. Feed questions as
+			// plain text and let the user reply normally.
+			const fallback = questions
+				.map((q, i) => `${i + 1}. ${q.question}`)
+				.join("\n");
+			pi.sendMessage(
+				{
+					customType: `${EXT_ID}-ask-fallback`,
+					content: `**Questions:**\n\n${fallback}`,
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
+			return;
+		}
+
+		const items = questions.map((q) => ({
+			id: q.id,
+			label:
+				q.question.length > 30
+					? `${q.question.slice(0, 27)}\u2026`
+					: q.question,
+			prompt: q.question,
+			options: (q.options ?? []).map((opt, i) => ({
+				value: String(i),
+				label: opt,
+			})),
+			textInput: { placeholder: "Type your answer\u2026" },
+			...(q.context
+				? {
+						preview: {
+							kind: "code" as const,
+							content: q.context,
+							title: "Context",
+						},
+					}
+				: {}),
+		}));
+
+		const result = await dialogMod.showStructuredDialog(ctx, {
+			title: "Questions",
+			items,
+			requireAll: true,
+		});
+
+		if (result.cancelled) {
+			notify(
+				ctx,
+				"questions dismissed \u2014 agent will continue without answers",
+				"warning",
+			);
+			return;
+		}
+
+		// Build Q&A pairs and persist.
+		const pairs: QAPair[] = [];
+		const answerLines: string[] = [];
+		for (const q of questions) {
+			const answer = result.answers.find((a) => a.id === q.id);
+			const text = answer?.text ?? answer?.label ?? "(no answer)";
+			pairs.push({ question: q.question, answer: text });
+			answerLines.push(`**Q:** ${q.question}\n**A:** ${text}`);
+		}
+
+		// Persist for context.
+		pi.appendEntry(ASK_ANSWERS_ENTRY, { pairs });
+
+		// Send answers as a followUp message to continue the conversation.
+		pi.sendMessage(
+			{
+				customType: `${EXT_ID}-ask-answers`,
+				content: answerLines.join("\n\n"),
+				display: true,
+			},
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
+	}
+
 	// ---- Implement path ---------------------------------------------------
 
 	async function doImplement(
@@ -922,6 +1039,66 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 	}
+
+	// ---- ask tool ---------------------------------------------------------
+
+	pi.registerTool({
+		name: "ask",
+		label: "Ask",
+		description:
+			"Queue a clarifying question. Questions are batched and shown to the user " +
+			"as a structured dialog after your turn ends. Provide options when the " +
+			"question has a finite set of likely answers.",
+		promptSnippet:
+			"Queue a clarifying question for the user (shown as structured dialog at turn end)",
+		promptGuidelines: [
+			"Use `ask` when you need clarification before finalizing a plan or making a decision. " +
+				"Each call queues one question. All queued questions are presented together as a structured " +
+				"dialog after your turn ends. The user can pick a suggested option or type a free-text answer. " +
+				"Provide 2\u20134 options when the question has a known set of likely answers. " +
+				"Omit options for open-ended questions. " +
+				"Do NOT ask questions inline in your response text when using this tool \u2014 " +
+				"the dialog replaces inline questions.",
+		],
+		parameters: Type.Object({
+			question: Type.String({ description: "The question to ask the user" }),
+			options: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "Suggested answer options (2-4 recommended)",
+				}),
+			),
+			context: Type.Optional(
+				Type.String({
+					description:
+						"Optional context shown as a preview pane (e.g. relevant code snippet)",
+				}),
+			),
+		}),
+
+		async execute(_toolCallId, params) {
+			const id = `q-${nextQuestionId++}`;
+			pendingQuestions.push({
+				id,
+				question: params.question,
+				options: params.options,
+				context: params.context,
+			});
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Question queued (${pendingQuestions.length} pending). Will present to user at end of turn.`,
+					},
+				],
+				details: {
+					id,
+					question: params.question,
+					options: params.options,
+					context: params.context,
+				},
+			};
+		},
+	});
 
 	// ---- plan_step tool ---------------------------------------------------
 
@@ -1130,6 +1307,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("before_agent_start", async () => {
 		userInitiatedTurn = true;
+		pendingQuestions = [];
 		if (!modeState) return;
 
 		if (modeState.mode === "plan") {
@@ -1161,6 +1339,14 @@ export default function (pi: ExtensionAPI) {
 						"When you have a clear plan: add all steps with plan_step, present",
 						"the plan to the user, then stop. The user will choose to implement,",
 						"park as a GitHub issue, or keep discussing.",
+						"",
+						"When you need clarification before finalizing the plan, use the `ask` tool:",
+						"  ask(question, options?, context?)",
+						"Each call queues one question. All queued questions are presented together",
+						"as a structured dialog after your turn ends. The user can pick a suggested",
+						"option or type a free-text answer.",
+						"Do NOT ask questions inline in your response when using the `ask` tool —",
+						"the dialog replaces inline questions.",
 					].join("\n"),
 					details: { modeMarker: "plan" as const },
 					display: false,
@@ -1352,6 +1538,17 @@ export default function (pi: ExtensionAPI) {
 	pi.on("agent_end", async (_event, ctx) => {
 		const wasUserInitiated = userInitiatedTurn;
 		userInitiatedTurn = false;
+
+		// If the agent queued questions via the `ask` tool, present them
+		// as a structured dialog and feed answers back. This takes priority
+		// over the plan picker — the agent needs answers before it can
+		// finalize.
+		if (pendingQuestions.length > 0 && ctx.hasUI) {
+			const questions = [...pendingQuestions];
+			pendingQuestions = [];
+			runDetached("ask dialog", ctx, () => showAskDialog(ctx, questions));
+			return;
+		}
 
 		// Plan phase: auto-pop picker once the agent has built a plan.
 		// Phase "awaiting-choice" is set here so we fire exactly once per
