@@ -317,6 +317,22 @@ export default function (pi: ExtensionAPI) {
 		return `${current}/${cap}`;
 	}
 
+	/**
+	 * Return a pretty model label for the footer. Prefers the model's display
+	 * `name` (e.g. "Claude Sonnet 4.5"), falls back to the id with any
+	 * provider prefix stripped.
+	 */
+	function formatModelLabel(ctx: ExtensionContext): string | null {
+		const model = ctx.model;
+		if (!model) return null;
+		const pretty = (model as { name?: string }).name?.trim();
+		if (pretty) return pretty;
+		const id = model.id;
+		if (!id) return null;
+		const slash = id.lastIndexOf("/");
+		return slash >= 0 ? id.slice(slash + 1) : id;
+	}
+
 	function installFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const cwd = ctx.cwd ?? "";
@@ -341,13 +357,18 @@ export default function (pi: ExtensionAPI) {
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
-					// Right: context usage + mode label.
+					// Right: context usage · model + mode label.
 					const ctxLabel = formatContextUsage(ctx);
+					const modelLabel = formatModelLabel(ctx);
+					const usageLabel =
+						ctxLabel && modelLabel
+							? `${ctxLabel} · ${modelLabel}`
+							: (ctxLabel ?? modelLabel);
 
 					if (!modeState) {
-						if (!ctxLabel) return [truncateToWidth(leftText, width)];
-						const right = theme.fg("muted", ctxLabel);
-						const rw = visibleWidth(ctxLabel);
+						if (!usageLabel) return [truncateToWidth(leftText, width)];
+						const right = theme.fg("muted", usageLabel);
+						const rw = visibleWidth(usageLabel);
 						const sl = truncateToWidth(leftText, Math.max(0, width - rw - 1));
 						const g = Math.max(1, width - visibleWidth(sl) - rw);
 						return [sl + " ".repeat(g) + right];
@@ -356,11 +377,11 @@ export default function (pi: ExtensionAPI) {
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
 					const rightParts: string[] = [];
-					if (ctxLabel) rightParts.push(theme.fg("muted", ctxLabel));
+					if (usageLabel) rightParts.push(theme.fg("muted", usageLabel));
 					rightParts.push(theme.bold(theme.fg(color, label)));
 					const rightText = rightParts.join("  ");
 
-					const rightVisible = ctxLabel ? `${ctxLabel}  ${label}` : label;
+					const rightVisible = usageLabel ? `${usageLabel}  ${label}` : label;
 					const rightWidth = visibleWidth(rightVisible);
 					const safeLeft = truncateToWidth(
 						leftText,
