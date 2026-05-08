@@ -287,6 +287,24 @@ export default function (pi: ExtensionAPI) {
 	 * (git branch + other extension statuses) and the current mode label
 	 * right-aligned on the same line.
 	 */
+	function formatContextUsage(ctx: ExtensionContext): string | null {
+		const usage = ctx.getContextUsage();
+		if (!usage) return null;
+
+		const settings = readRelevantSettings(ctx.cwd);
+		const rawCompactAt = settings.extensionConfig?.["smart-compact"]?.compactAt;
+		const compactAt =
+			typeof rawCompactAt === "number" ? rawCompactAt : undefined;
+
+		const limit = compactAt ?? usage.contextWindow;
+		if (!limit) return null;
+
+		const current =
+			usage.tokens !== null ? `${Math.round(usage.tokens / 1000)}k` : "?";
+		const cap = `${Math.round(limit / 1000)}k`;
+		return `${current}/${cap}`;
+	}
+
 	function installFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const cwd = ctx.cwd ?? "";
@@ -297,7 +315,7 @@ export default function (pi: ExtensionAPI) {
 					tui.requestRender();
 				},
 				render(width) {
-					// Left: path (branch) + other extensions' status entries.
+					// Left: path (branch) + context usage + other extensions.
 					const branch = footerData.getGitBranch();
 					const statuses = footerData.getExtensionStatuses();
 					const leftParts: string[] = [];
@@ -307,6 +325,10 @@ export default function (pi: ExtensionAPI) {
 						: cwd;
 					const location = branch ? `${shortPath} (${branch})` : shortPath;
 					leftParts.push(theme.fg("muted", location));
+
+					const ctxLabel = formatContextUsage(ctx);
+					if (ctxLabel) leftParts.push(theme.fg("muted", ctxLabel));
+
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
@@ -318,7 +340,6 @@ export default function (pi: ExtensionAPI) {
 					const modeText = theme.bold(theme.fg(color, ` ${label} `));
 
 					const rightWidth = visibleWidth(` ${label} `);
-					// Truncate left to guarantee total width never exceeds terminal width.
 					const safeLeft = truncateToWidth(
 						leftText,
 						Math.max(0, width - rightWidth - 1),
@@ -1665,6 +1686,12 @@ export default function (pi: ExtensionAPI) {
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			await runPostExecPicker(ctx);
 		});
+	});
+
+	// ---- Refresh footer context usage after each LLM turn ----------------
+
+	pi.on("turn_end", () => {
+		footerTui?.requestRender();
 	});
 
 	// ---- Track plan text snapshot ----------------------------------------
