@@ -1,5 +1,5 @@
 /**
- * Bash command classifier for plan and default modes.
+ * Bash command classifier for plan and ask modes.
  *
  * Three-tier classification:
  *   1. Static allowlist — instant bypass for obviously safe commands.

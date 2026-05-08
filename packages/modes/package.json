@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "Permission-mode cycle (plan / default / auto) with integrated git workflow.",
+  "description": "Permission-mode cycle (plan / ask / auto) with integrated git workflow.",
   "pi": {
     "extensions": ["./index.ts"]
   },

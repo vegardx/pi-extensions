@@ -5,7 +5,7 @@
  *
  *   plan     — read-only tools, bash write guard, system prompt injection.
  *              Use plan_step to build and track the plan.
- *   default  — all tools; confirm before every edit/write/mutating bash.
+ *   ask      — all tools; confirm before every edit/write/mutating bash.
  *   auto     — all tools; no confirmation. Fully autonomous.
  *
  * Commands:
@@ -52,11 +52,18 @@ const STATE_ENTRY = "modes-state";
 const CUSTOM_MODE_CONTEXT = "modes-context";
 
 // Tools available in plan mode. edit/write are absent entirely.
-const PLAN_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"] as const;
+const PLAN_ONLY_TOOLS = [
+	"read",
+	"bash",
+	"grep",
+	"find",
+	"ls",
+	"exasearch",
+] as const;
 
 // ---- Types ----------------------------------------------------------------
 
-type Mode = "plan" | "default" | "auto";
+type Mode = "plan" | "ask" | "auto";
 type Phase =
 	| "idle"
 	| "planning"
@@ -157,7 +164,7 @@ export default function (pi: ExtensionAPI) {
 	declareExtension({
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
-		doc: "Permission-mode cycle (plan / default / auto) with integrated git workflow.",
+		doc: "Permission-mode cycle (plan / ask / auto) with integrated git workflow.",
 		configSchema: [
 			{
 				key: "review.enable",
@@ -213,6 +220,11 @@ export default function (pi: ExtensionAPI) {
 				latest = entry.data as ModeState;
 			}
 		}
+		// TODO(cleanup): remove after existing sessions have been migrated.
+		// "default" was renamed to "ask" — migrate persisted state from old sessions.
+		if (latest && (latest.mode as string) === "default") {
+			latest.mode = "ask";
+		}
 		modeState = latest ?? null;
 	}
 
@@ -236,12 +248,12 @@ export default function (pi: ExtensionAPI) {
 	// Mode display labels and their theme colour tokens.
 	const MODE_LABELS: Record<Mode, string> = {
 		plan: "mode: plan",
-		default: "mode: default",
+		ask: "mode: ask",
 		auto: "mode: auto",
 	};
 	const MODE_COLORS: Record<Mode, "warning" | "muted" | "accent"> = {
 		plan: "warning",
-		default: "muted",
+		ask: "muted",
 		auto: "accent",
 	};
 
@@ -878,7 +890,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		modeState.phase = "idle";
 		restorePriorTools();
-		modeState.mode = "default";
+		modeState.mode = "ask";
 		persist();
 		updateWidget(ctx);
 		notify(
@@ -1128,12 +1140,12 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		if (modeState.mode === "default") {
+		if (modeState.mode === "ask") {
 			return {
 				message: {
 					customType: CUSTOM_MODE_CONTEXT,
 					content: [
-						"[DEFAULT MODE — confirm before changes]",
+						"[ASK MODE — confirm before changes]",
 						"",
 						"The user will be asked to confirm each file edit and non-trivial",
 						"shell command before it executes. Work methodically; explain each",
@@ -1150,7 +1162,7 @@ export default function (pi: ExtensionAPI) {
 								]
 							: []),
 					].join("\n"),
-					details: { modeMarker: "default" as const },
+					details: { modeMarker: "ask" as const },
 					display: false,
 				},
 			};
@@ -1209,7 +1221,7 @@ export default function (pi: ExtensionAPI) {
 					block: true,
 					reason:
 						"modes: edit/write are disabled in plan mode. " +
-						"Switch to default or auto mode to make changes.",
+						"Switch to ask or auto mode to make changes.",
 				};
 			}
 			if (event.toolName === "bash") {
@@ -1230,14 +1242,14 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		if (modeState.mode === "default") {
+		if (modeState.mode === "ask") {
 			// Headless: no UI for confirm dialogs — use classifier to decide.
 			if (!ctx.hasUI) {
 				if (event.toolName === "edit" || event.toolName === "write") {
 					return {
 						block: true,
 						reason:
-							"modes: default mode requires UI for confirmation (running headless)",
+							"modes: ask mode requires UI for confirmation (running headless)",
 					};
 				}
 				if (event.toolName === "bash") {
@@ -1683,7 +1695,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerShortcut("shift+tab", {
 		description:
-			"Cycle permission mode (plan → picker / default → auto / auto → plan)",
+			"Cycle permission mode (plan → picker / ask → auto / auto → plan)",
 		handler: async (ctx) => {
 			if (!modeState) {
 				modeState = {
@@ -1709,13 +1721,13 @@ export default function (pi: ExtensionAPI) {
 						runPicker(ctx as ExtensionCommandContext),
 					);
 				} else {
-					setMode("default", ctx);
-					notify(ctx, "default mode", "info");
+					setMode("ask", ctx);
+					notify(ctx, "ask mode", "info");
 				}
 				return;
 			}
 
-			if (modeState.mode === "default") {
+			if (modeState.mode === "ask") {
 				setMode("auto", ctx);
 				notify(ctx, "auto mode", "info");
 				return;

@@ -12,12 +12,12 @@ Monorepo for pi.dev extensions. npm workspaces, `packages/*`, one extension per 
 
 ## Adding an extension
 
-Prefer `make new-ext NAME=foo` — it scaffolds `packages/foo/` with the right `package.json` (per-package `pi` manifest + peerDeps) and a minimal `index.ts`.
+Create `packages/<name>/` with a `package.json` (per-package `pi` manifest + peerDeps) and an `index.ts` that exports a factory function. See an existing package like `packages/session-title/` for the minimal template.
 
 ## Verification
 
 ```bash
-make check      # lint + typecheck + test
+npm run check   # lint + typecheck + test
 pi -e ./packages/<name>
 ```
 
