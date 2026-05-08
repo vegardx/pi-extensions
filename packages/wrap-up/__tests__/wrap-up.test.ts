@@ -10,7 +10,7 @@ import {
 	resolveHandoverDir,
 	type WrapUpContext,
 } from "../context.js";
-import { buildWrapUpPrompt } from "../prompt.js";
+import { buildPausePrompt } from "../prompt.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,6 +27,7 @@ function makeCtx(overrides: Partial<WrapUpContext> = {}): WrapUpContext {
 		remoteUrl: "git@github.com:vegardx/pi-extensions.git",
 		prInfo: null,
 		resources: [],
+		sessionCwd: "/Users/vegardx/src/github.com/vegardx/pi-extensions",
 		date: "2026-05-06",
 		sessionId: "abcdef1234567890",
 		sessionFile: "/Users/vegardx/.pi/agent/sessions/pi-extensions/abc123.jsonl",
@@ -150,12 +151,12 @@ describe("resolveHandoverConfig", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildWrapUpPrompt — structure
+// buildPausePrompt — structure
 // ---------------------------------------------------------------------------
 
-describe("buildWrapUpPrompt", () => {
+describe("buildPausePrompt", () => {
 	it("includes the branch name in the snapshot", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ branch: "feat/my-feature" }),
 			makeHandover(),
 		);
@@ -163,11 +164,11 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes the date in the handover heading", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ date: "2026-05-06" }),
 			makeHandover(),
 		);
-		expect(prompt).toContain("Session Wrap-Up — 2026-05-06");
+		expect(prompt).toContain("Session Handover — 2026-05-06");
 	});
 
 	it("includes the full handover path in the save step", () => {
@@ -175,14 +176,14 @@ describe("buildWrapUpPrompt", () => {
 			fullPath:
 				"/home/user/.pi/agent/handovers/handover-2026-05-06-abcd1234.md",
 		});
-		const prompt = buildWrapUpPrompt(makeCtx(), handover);
+		const prompt = buildPausePrompt(makeCtx(), handover);
 		expect(prompt).toContain(
 			"/home/user/.pi/agent/handovers/handover-2026-05-06-abcd1234.md",
 		);
 	});
 
 	it("includes the session ID in the snapshot", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ sessionId: "abcdef1234567890" }),
 			makeHandover(),
 		);
@@ -190,7 +191,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes the session file path in the snapshot", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({
 				sessionFile:
 					"/Users/vegardx/.pi/agent/sessions/pi-extensions/abc123.jsonl",
@@ -201,7 +202,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes the session name when set", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ sessionName: "Add exa skill" }),
 			makeHandover(),
 		);
@@ -209,17 +210,17 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes the recent git log", () => {
-		const prompt = buildWrapUpPrompt(makeCtx(), makeHandover());
+		const prompt = buildPausePrompt(makeCtx(), makeHandover());
 		expect(prompt).toContain("abc1234 feat: add thing");
 	});
 
 	it("includes the working tree status", () => {
-		const prompt = buildWrapUpPrompt(makeCtx(), makeHandover());
+		const prompt = buildPausePrompt(makeCtx(), makeHandover());
 		expect(prompt).toContain("packages/foo/index.ts");
 	});
 
 	it("includes the upstream tracking branch", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ upstream: "origin/feat/my-feature" }),
 			makeHandover(),
 		);
@@ -227,7 +228,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes the remote URL", () => {
-		const prompt = buildWrapUpPrompt(makeCtx(), makeHandover());
+		const prompt = buildPausePrompt(makeCtx(), makeHandover());
 		expect(prompt).toContain("git@github.com:vegardx/pi-extensions.git");
 	});
 
@@ -239,7 +240,7 @@ describe("buildWrapUpPrompt", () => {
 			state: "OPEN",
 			isDraft: false,
 		});
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ prInfo: prJson }),
 			makeHandover(),
 		);
@@ -257,7 +258,7 @@ describe("buildWrapUpPrompt", () => {
 			state: "OPEN",
 			isDraft: true,
 		});
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ prInfo: prJson }),
 			makeHandover(),
 		);
@@ -266,7 +267,7 @@ describe("buildWrapUpPrompt", () => {
 
 	it("snapshot always present (session ID always known)", () => {
 		// Even with no branch/upstream/remote/PR, session ID is always there
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({
 				branch: null,
 				upstream: null,
@@ -281,7 +282,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("omits the staged section when stagedDiffStat is empty", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ stagedDiffStat: "" }),
 			makeHandover(),
 		);
@@ -289,7 +290,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes staged section when stagedDiffStat is set", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ stagedDiffStat: "packages/foo/index.ts | 2 ++" }),
 			makeHandover(),
 		);
@@ -297,7 +298,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("includes pi --resume hint when sessionFile is set", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({
 				sessionFile: "/some/session.jsonl",
 				sessionId: "abcdef12xyz",
@@ -308,7 +309,7 @@ describe("buildWrapUpPrompt", () => {
 	});
 
 	it("omits pi --resume hint when sessionFile is null", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ sessionFile: null }),
 			makeHandover(),
 		);
@@ -317,12 +318,12 @@ describe("buildWrapUpPrompt", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildWrapUpPrompt — autoSave variants
+// buildPausePrompt — autoSave variants
 // ---------------------------------------------------------------------------
 
-describe("buildWrapUpPrompt — autoSave", () => {
+describe("buildPausePrompt — autoSave", () => {
 	it("autoSave: false — asks before writing", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx(),
 			makeHandover({ autoSave: false }),
 		);
@@ -331,7 +332,7 @@ describe("buildWrapUpPrompt — autoSave", () => {
 	});
 
 	it("autoSave: true — writes immediately without asking", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx(),
 			makeHandover({ autoSave: true }),
 		);
@@ -340,7 +341,7 @@ describe("buildWrapUpPrompt — autoSave", () => {
 	});
 
 	it("autoSave: true — includes 'Do not ask for confirmation'", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx(),
 			makeHandover({ autoSave: true }),
 		);
@@ -349,20 +350,17 @@ describe("buildWrapUpPrompt — autoSave", () => {
 });
 
 // ---------------------------------------------------------------------------
-// buildWrapUpPrompt — resource cleanup section
+// buildPausePrompt — resource cleanup section
 // ---------------------------------------------------------------------------
 
-describe("buildWrapUpPrompt — resources", () => {
+describe("buildPausePrompt — resources", () => {
 	it("omits resource cleanup step when no resources detected", () => {
-		const prompt = buildWrapUpPrompt(
-			makeCtx({ resources: [] }),
-			makeHandover(),
-		);
+		const prompt = buildPausePrompt(makeCtx({ resources: [] }), makeHandover());
 		expect(prompt).not.toContain("Resource cleanup");
 	});
 
 	it("includes resource cleanup step when resources are present", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({ resources: [{ label: "Terraform", path: "main.tf" }] }),
 			makeHandover(),
 		);
@@ -370,7 +368,7 @@ describe("buildWrapUpPrompt — resources", () => {
 	});
 
 	it("lists each detected resource by label", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({
 				resources: [
 					{ label: "Terraform", path: "main.tf" },
@@ -384,7 +382,7 @@ describe("buildWrapUpPrompt — resources", () => {
 	});
 
 	it("includes the triggering path for each resource", () => {
-		const prompt = buildWrapUpPrompt(
+		const prompt = buildPausePrompt(
 			makeCtx({
 				resources: [{ label: "Docker Compose", path: "docker-compose.yml" }],
 			}),
@@ -394,8 +392,8 @@ describe("buildWrapUpPrompt — resources", () => {
 	});
 
 	it("save step is renumbered when no resources (Step 4, not Step 5)", () => {
-		const noRes = buildWrapUpPrompt(makeCtx({ resources: [] }), makeHandover());
-		const withRes = buildWrapUpPrompt(
+		const noRes = buildPausePrompt(makeCtx({ resources: [] }), makeHandover());
+		const withRes = buildPausePrompt(
 			makeCtx({ resources: [{ label: "Terraform", path: "main.tf" }] }),
 			makeHandover(),
 		);

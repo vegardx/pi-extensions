@@ -1,12 +1,18 @@
 /**
  * pi-ext-wrap-up
  *
- * Registers the `/wrap-up` command. When run:
- *   1. Gathers git context and detects cost-incurring resource signals
- *      synchronously in the command handler.
+ * Registers `/pause` and `/continue` commands.
+ *
+ * /pause:
+ *   1. Gathers git context and detects cost-incurring resource signals.
  *   2. Injects a rich instruction message and triggers an agent turn.
- *   3. The agent writes a structured handover document, asks about
- *      detected resources, and offers to save to `.pi/handover-<date>.md`.
+ *   3. The agent writes a structured handover document with YAML
+ *      frontmatter, asks about detected resources, and saves to disk.
+ *
+ * /continue:
+ *   1. Scans the handover directory for handover files.
+ *   2. Ranks candidates by branch/repo/date relevance.
+ *   3. Injects the best match and asks the user how to proceed.
  */
 
 import { fileURLToPath } from "node:url";
@@ -18,9 +24,12 @@ import {
 	readRelevantSettings,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { gatherContext, resolveHandoverConfig } from "./context.js";
-import { buildWrapUpPrompt } from "./prompt.js";
+import { discoverHandovers } from "./discover.js";
+import { buildContinuePrompt, buildPausePrompt } from "./prompt.js";
 
 const EXT_ID = "wrap-up";
+const PAUSE_CMD = "pause";
+const CONTINUE_CMD = "continue";
 
 export default function (pi: ExtensionAPI) {
 	declareExtension({
@@ -43,15 +52,14 @@ export default function (pi: ExtensionAPI) {
 		],
 	});
 
-	pi.registerCommand(EXT_ID, {
+	pi.registerCommand(PAUSE_CMD, {
 		description:
-			"Wrap up the current session: write a detailed handover document " +
+			"Pause the current session: write a detailed handover document " +
 			"(goal, done, in-progress, exact resume steps, next steps), ask about " +
-			"any running cloud resources, and offer to save to .pi/handover-<date>.md.",
+			"any running cloud resources, and save to disk for /continue.",
 		handler: async (_args, ctx) => {
 			ctx.ui.notify("Gathering session context…", "info");
 
-			// Read config from settings.json → extensionConfig.wrap-up
 			const settings = readRelevantSettings(ctx.cwd);
 			const configuredDir = getExtensionConfigString(
 				settings,
@@ -95,9 +103,77 @@ export default function (pi: ExtensionAPI) {
 			pi.sendMessage(
 				{
 					customType: EXT_ID,
-					content: buildWrapUpPrompt(wrapCtx, handover),
+					content: buildPausePrompt(wrapCtx, handover),
 					display: false,
 					details: {},
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+		},
+	});
+
+	pi.registerCommand(CONTINUE_CMD, {
+		description:
+			"Resume from a previous session's handover document. " +
+			"Finds the most relevant handover file, injects it, and asks how to proceed.",
+		handler: async (_args, ctx) => {
+			const settings = readRelevantSettings(ctx.cwd);
+			const configuredDir = getExtensionConfigString(
+				settings,
+				EXT_ID,
+				"handoverDir",
+				"",
+			);
+
+			const candidates = discoverHandovers(ctx.cwd, {
+				configuredDir: configuredDir || undefined,
+			});
+
+			if (candidates.length === 0) {
+				ctx.ui.notify(
+					"No handover files found. Run /pause at the end of a session first.",
+					"warning",
+				);
+				return;
+			}
+
+			let chosen = candidates[0];
+
+			// If the top candidate has no relevance signal at all, or
+			// multiple candidates tie, let the user pick explicitly.
+			const needsPicker =
+				candidates[0].score === 0 ||
+				(candidates.length > 1 && candidates[0].score === candidates[1].score);
+			if (needsPicker) {
+				const labels = candidates.slice(0, 10).map((c) => {
+					const parts = [c.meta.date];
+					if (c.meta.branch) parts.push(c.meta.branch);
+					if (c.meta.repo) parts.push(c.meta.repo);
+					parts.push(c.meta.session_id);
+					return parts.join(" · ");
+				});
+
+				const picked = await ctx.ui.select(
+					"Multiple handovers found — which one?",
+					labels,
+				);
+				if (picked === undefined) return;
+				const pickedIdx = labels.indexOf(picked);
+				if (pickedIdx === -1) return;
+				chosen = candidates[pickedIdx];
+			}
+
+			ctx.ui.notify(
+				`Loading handover: ${chosen.meta.date}${chosen.meta.branch ? ` (${chosen.meta.branch})` : ""}`,
+				"info",
+			);
+
+			pi.sendMessage(
+				{
+					customType: EXT_ID,
+					content: buildContinuePrompt(chosen.body),
+					display: false,
+					details: { handoverFile: chosen.filePath },
 				},
 				{ deliverAs: "followUp", triggerTurn: true },
 			);

@@ -1,35 +1,96 @@
 # pi-ext-wrap-up
 
-End-of-session `/wrap-up` command for pi. Produces a detailed handover
-document from session history and git state, asks about cost-incurring
-resources, and offers to save everything to a file before you sign off.
+Session handover commands: `/pause` and `/continue`.
 
-## What it does
+## Commands
 
-Run `/wrap-up` at the end of any session. The extension:
+### `/pause`
 
-1. **Gathers context** synchronously — current branch, recent commits,
-   working tree status, upstream tracking branch, PR info (via `gh`),
-   and a scan for infrastructure/cloud resource signals.
-2. **Triggers an agent turn** that:
-   - Reviews the full session history for what was worked on
-   - Writes a structured handover document:
-     - Goal · Done · In progress · How to resume (exact steps) · Next steps · Blockers
-   - For each detected resource signal, asks whether anything is running
-     and should be stopped before signing off
-   - Offers to save the document to `.pi/handover-<date>.md`
+End-of-session command. Produces a detailed handover document from session
+history and git state, asks about cost-incurring resources, and saves to disk.
 
-## Why detailed?
+The handover file includes YAML frontmatter with structured metadata
+(date, session ID, repo, branch, cwd) so that `/continue` can
+automatically find the most relevant one later.
 
-The handover is intentionally verbose. It assumes the next session starts
-either from a compacted context or a completely fresh one — so it captures
-load-bearing decisions, dead ends, file paths, commit SHAs, and exact
-resume steps rather than a brief summary.
+### `/continue`
+
+Start-of-session command. Scans the handover directory for previous
+handover files, ranks them by relevance to the current context (branch
+match > repo match > recency), and injects the best match. The agent
+then summarizes where things left off and asks how to proceed.
+
+If multiple handovers tie for relevance, a picker is shown.
+
+## Typical workflow
+
+```
+# End of session
+/pause
+  → agent writes handover doc with YAML frontmatter
+  → asks about running resources
+  → saves to ~/.pi/agent/handovers/handover-<date>-<id>.md
+
+# Next session (same repo, same branch)
+/continue
+  → finds the most relevant handover
+  → summarizes: goal, done, in-progress, blockers
+  → asks: "Pick up next steps? Re-plan? Review?"
+```
+
+## Handover file format
+
+```markdown
+---
+date: "2026-05-08"
+session_id: "019df8aa"
+repo: "git@github.com:vegardx/pi-extensions.git"
+branch: "feat/webhook-support"
+cwd: "/Users/vegardx/.pi/agent/handovers"
+---
+
+## Session Handover — 2026-05-08
+
+### Goal
+...
+
+### Done
+...
+
+### In progress
+...
+
+### How to resume
+...
+
+### Next steps
+...
+
+### Blockers / open questions
+...
+```
+
+## Scoring (how `/continue` picks the right file)
+
+| Signal | Points |
+|--------|--------|
+| Exact branch match | +100 |
+| Same repo (normalized) | +50 |
+| Recency (0–9 days old) | +10 to +1 |
+
+## Configuration
+
+In `settings.json` under `extensionConfig.wrap-up`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `handoverDir` | string | `~/.pi/agent/handovers` | Directory for handover files |
+| `autoSave` | boolean | `false` | Skip save confirmation in `/pause` |
 
 ## Resource signals detected
 
 | Signal | Triggered by |
-|---|---|
+|--------|-------------|
 | Terraform | `main.tf`, `terraform.tf`, `terraform/`, `infra/main.tf` |
 | AWS CDK | `cdk.json` |
 | Pulumi | `pulumi.yaml`, `pulumi.yml` |
@@ -43,23 +104,3 @@ resume steps rather than a brief summary.
 | Render | `render.yaml` |
 | Kubernetes | `k8s/`, `kubernetes/` |
 | Helm | `helm/`, `Chart.yaml` |
-
-## Usage
-
-```
-/wrap-up
-```
-
-No arguments. Run it at the end of a session before closing the terminal.
-
-## The saved file
-
-If you choose to save, the handover lands at `.pi/handover-<date>.md` in
-your project root. Start the next session by reading it:
-
-```
-/new
-Read .pi/handover-2026-05-06.md and continue where we left off.
-```
-
-Or add a startup skill that auto-loads it if it exists.
