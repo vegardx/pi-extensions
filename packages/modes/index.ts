@@ -622,6 +622,13 @@ export default function (pi: ExtensionAPI) {
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			notify(ctx, `reviewer pool start failed: ${msg}`, "warning");
+			// Dispose any partially-created agents to avoid leaking processes.
+			if (reviewerPool) {
+				await reviewerPool.dispose().catch(() => {});
+			}
+			if (subagentPool) {
+				await subagentPool.dispose().catch(() => {});
+			}
 			reviewerPool = null;
 			subagentPool = null;
 		}
@@ -639,9 +646,13 @@ export default function (pi: ExtensionAPI) {
 		if (!reviewerPool) return;
 		try {
 			const ref = lastReviewedRef ?? "HEAD~1";
-			const result = runCommand("git", ["diff", ref, "HEAD"], { cwd });
+			// Include both committed and working-tree changes since last review.
+			const result = runCommand("git", ["diff", ref], { cwd });
 			const diff = result.ok ? result.stdout.trim() : "";
 			if (!diff) return;
+			// Advance ref to current HEAD (working-tree changes will show
+			// again if not committed, which is fine — the reviewer sees
+			// the latest state).
 			const newRef = runCommand("git", ["rev-parse", "HEAD"], { cwd });
 			lastReviewedRef = newRef.ok ? newRef.stdout.trim() : lastReviewedRef;
 			// Fire review + safety compaction (non-blocking).
@@ -652,7 +663,9 @@ export default function (pi: ExtensionAPI) {
 					stepNumber,
 				});
 				await reviewerPool.compactIfNeeded();
-			})();
+			})().catch(() => {
+				/* reviewer failure is non-critical */
+			});
 		} catch {
 			// Non-critical — don't break the flow.
 		}
@@ -1416,9 +1429,10 @@ export default function (pi: ExtensionAPI) {
 					// Get the full branch diff for the orchestrator.
 					const defaultBranch =
 						modeState?.defaultBranch ?? detectDefaultBranch(ctx.cwd);
+					// Include working-tree changes (no "HEAD" endpoint).
 					const diffResult = runCommand(
 						"git",
-						["diff", defaultBranch ?? "HEAD~5", "HEAD"],
+						["diff", defaultBranch ?? "HEAD~5"],
 						{ cwd: ctx.cwd },
 					);
 					const fullDiff = diffResult.ok ? diffResult.stdout : "";
@@ -1540,14 +1554,19 @@ export default function (pi: ExtensionAPI) {
 				} catch (err) {
 					notify(
 						ctx,
-						`persistent review failed: ${err instanceof Error ? err.message : String(err)}`,
+						`persistent review failed: ${err instanceof Error ? err.message : String(err)} — falling back to batch review`,
 						"warning",
 					);
+					// Fall through to the batch auto-review path below.
 				}
 
-				await new Promise<void>((resolve) => setImmediate(resolve));
-				await runPostExecPicker(ctx);
-				return;
+				// If persistent review succeeded with no pending work, show
+				// the picker and stop.
+				if (!reviewerPool || modeState?.autoReviewRan) {
+					await new Promise<void>((resolve) => setImmediate(resolve));
+					await runPostExecPicker(ctx);
+					return;
+				}
 			}
 
 			// ---- Fallback: old batch auto-review path ----

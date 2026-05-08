@@ -204,8 +204,9 @@ export class ReviewerPool {
 	}
 
 	/**
-	 * Wait for one agent to finish and parse all its findings.
-	 * The agent emits a JSON array per step; we concatenate them.
+	 * Wait for one agent to finish, then prompt it to consolidate all
+	 * findings into a single JSON array. This ensures we get findings
+	 * from ALL steps, not just the last one.
 	 */
 	private async collectFrom(
 		agent: PersistentAgent | null,
@@ -216,18 +217,27 @@ export class ReviewerPool {
 		try {
 			await agent.waitForIdle(timeoutMs);
 		} catch {
-			// Timeout or error — collect whatever we have.
+			// Timeout or error — try to collect anyway.
 		}
 
-		// Get the full message history and extract all JSON arrays.
-		// Each turn's response is a JSON array of findings for that step.
+		// Ask the agent to consolidate all findings from all steps into
+		// a single JSON array. This handles the case where each step
+		// produced its own array in a separate turn.
+		try {
+			await agent.prompt(
+				"Emit a single consolidated JSON array of ALL findings from " +
+					"every step you reviewed. Deduplicate: if the same issue was " +
+					"flagged in multiple steps, include it only once. If you have " +
+					"no findings, emit `[]`.",
+			);
+			await agent.waitForIdle(timeoutMs);
+		} catch {
+			// Fall back to the last message if consolidation fails.
+		}
+
 		const text = await agent.getLastText();
 		if (!text) return [];
 
-		// The last message might be the findings for the last step only.
-		// For accumulated findings across all steps, we'd need all messages.
-		// For now, ask the agent to emit a consolidated summary.
-		// TODO: Use getMessages() to parse all turns.
 		const parsed = parseReviewerOutput(text);
 		return parsed ?? [];
 	}
