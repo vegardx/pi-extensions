@@ -187,6 +187,14 @@ export default function (pi: ExtensionAPI) {
 	let steps: PlanStep[] = [];
 	let nextStepId = 1;
 
+	// Persistent reviewer pool — alive during plan execution.
+	// Typed as `any` to avoid importing heavy modules at the top level;
+	// actual types are checked at the dynamic import sites.
+	let reviewerPool: any = null;
+	let subagentPool: any = null;
+	/** Tracks the git ref at which the last step review was sent. */
+	let lastReviewedRef: string | null = null;
+
 	// Stored TUI instance from the footer factory, used to trigger re-renders
 	// when the mode changes without reinstalling the footer.
 	let footerTui: { requestRender(): void } | null = null;
@@ -540,6 +548,129 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	// ---- Persistent reviewers ---------------------------------------------
+
+	/** Start the persistent reviewer pool (best-effort, non-blocking). */
+	async function startReviewerPool(ctx: ExtensionContext): Promise<void> {
+		// Dispose any previously running pool to avoid leaking processes.
+		await stopReviewerPool();
+		try {
+			const settings = readRelevantSettings(ctx.cwd);
+			// Respect the review.enable opt-out.
+			const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
+			const reviewObj =
+				reviewCfg && typeof reviewCfg === "object" && !Array.isArray(reviewCfg)
+					? (reviewCfg as Record<string, unknown>)
+					: {};
+			const enable =
+				typeof reviewObj.enable === "boolean" ? reviewObj.enable : true;
+			if (!enable) return;
+
+			const primarySpec = settings.backgroundModels?.primary?.heavy;
+			if (!primarySpec) return;
+
+			const { parseModelSpec } = await import(
+				"@vegardx/pi-extensions-shared/model-resolver.js"
+			);
+
+			const primaryParsed = parseModelSpec(primarySpec);
+			if (!primaryParsed) return;
+			const primary = {
+				provider: primaryParsed.provider,
+				model: primaryParsed.modelId,
+			};
+
+			const secondarySpec = settings.backgroundModels?.secondary?.heavy;
+			const secondaryParsed = secondarySpec
+				? parseModelSpec(secondarySpec)
+				: null;
+			const secondary = secondaryParsed
+				? { provider: secondaryParsed.provider, model: secondaryParsed.modelId }
+				: undefined;
+
+			const { SubagentPool } = await import(
+				"@vegardx/pi-extensions-shared/subagent-pool.js"
+			);
+			const { ReviewerPool } = await import(
+				"pi-ext-review/persistent-reviewer"
+			);
+
+			subagentPool = new SubagentPool();
+			reviewerPool = new ReviewerPool({
+				pool: subagentPool,
+				primary,
+				...(secondary ? { secondary } : {}),
+				cwd: ctx.cwd,
+				onProgress: (progress) => {
+					if (!ctx.hasUI) return;
+					if (progress.lastToolSummary) {
+						ctx.ui.setWidget("reviewer-activity", [
+							`🔍 ${progress.agentId}: ${progress.lastToolSummary}`,
+						]);
+					} else if (!progress.busy) {
+						ctx.ui.setWidget("reviewer-activity", undefined);
+					}
+				},
+			});
+
+			await reviewerPool.start();
+			const refResult = runCommand("git", ["rev-parse", "HEAD"], {
+				cwd: ctx.cwd,
+			});
+			lastReviewedRef = refResult.ok ? refResult.stdout.trim() : null;
+			notify(ctx, "persistent reviewers started", "info");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			notify(ctx, `reviewer pool start failed: ${msg}`, "warning");
+			reviewerPool = null;
+			subagentPool = null;
+		}
+	}
+
+	/**
+	 * Send the incremental diff since the last review to persistent
+	 * reviewers. Non-blocking — fires and forgets.
+	 */
+	function sendStepForReview(
+		stepText: string,
+		stepNumber: number,
+		cwd: string,
+	): void {
+		if (!reviewerPool) return;
+		try {
+			const ref = lastReviewedRef ?? "HEAD~1";
+			const result = runCommand("git", ["diff", ref, "HEAD"], { cwd });
+			const diff = result.ok ? result.stdout.trim() : "";
+			if (!diff) return;
+			const newRef = runCommand("git", ["rev-parse", "HEAD"], { cwd });
+			lastReviewedRef = newRef.ok ? newRef.stdout.trim() : lastReviewedRef;
+			// Fire review + safety compaction (non-blocking).
+			void (async () => {
+				await reviewerPool.reviewStep({
+					diff,
+					stepDescription: stepText,
+					stepNumber,
+				});
+				await reviewerPool.compactIfNeeded();
+			})();
+		} catch {
+			// Non-critical — don't break the flow.
+		}
+	}
+
+	/** Shut down the reviewer pool (plan complete or session end). */
+	async function stopReviewerPool(): Promise<void> {
+		if (reviewerPool) {
+			await reviewerPool.dispose();
+			reviewerPool = null;
+		}
+		if (subagentPool) {
+			await subagentPool.dispose();
+			subagentPool = null;
+		}
+		lastReviewedRef = null;
+	}
+
 	// ---- Implement path ---------------------------------------------------
 
 	async function doImplement(
@@ -581,6 +712,11 @@ export default function (pi: ExtensionAPI) {
 		setMode("auto", ctx);
 		persist();
 		updateWidget(ctx);
+
+		// Start persistent reviewers (best-effort, non-blocking for the user
+		// but awaited before the implement message is sent so the pool is
+		// ready before the first step completes).
+		await startReviewerPool(ctx);
 
 		const hasSteps = steps.length > 0;
 		notify(
@@ -849,6 +985,11 @@ export default function (pi: ExtensionAPI) {
 					}
 					found.done = !found.done;
 					updateWidget(ctx);
+					// Send the step diff to persistent reviewers (non-blocking).
+					if (found.done && modeState?.phase === "executing") {
+						const doneCount = steps.filter((s) => s.done).length;
+						sendStepForReview(found.text, doneCount, ctx.cwd);
+					}
 					return {
 						content: [
 							{
@@ -933,6 +1074,8 @@ export default function (pi: ExtensionAPI) {
 		// session switches (/new, /resume, /fork).
 		if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 		footerTui = null;
+		// Shut down persistent reviewers.
+		await stopReviewerPool();
 	});
 
 	// ---- System prompt injection ------------------------------------------
@@ -1229,6 +1372,185 @@ export default function (pi: ExtensionAPI) {
 		// Auto-review then post-exec picker — detached to avoid deadlocking
 		// pi's idle flip.
 		runDetached("post-exec", ctx, async () => {
+			// ---- Persistent reviewer path (new) ----
+			if (reviewerPool) {
+				try {
+					const { runOrchestrator } = await import(
+						"pi-ext-review/orchestrator"
+					);
+					const { runStaticAnalysis } = await import(
+						"pi-ext-review/static-checker"
+					);
+					const {
+						readStaticAnalysisConfig,
+						buildAutoReviewFixPrompt,
+						buildAutoReviewDiscussionPrompt,
+						buildAutoReviewReport,
+						partitionFindings,
+					} = await import("pi-ext-review/auto-review");
+					const { parseModelSpec } = await import(
+						"@vegardx/pi-extensions-shared/model-resolver.js"
+					);
+
+					notify(ctx, "collecting reviewer findings…", "info");
+					const collected = await reviewerPool.collect(300_000);
+
+					// Run static analysis on the final state.
+					const staticCfg = readStaticAnalysisConfig(ctx.cwd);
+					const staticResults = await runStaticAnalysis(ctx.cwd, staticCfg);
+					const allStaticFindings = [...staticResults.byLane.values()].flat();
+
+					// Build orchestrator inputs.
+					const settings = readRelevantSettings(ctx.cwd);
+					const primarySpec = settings.backgroundModels?.primary?.heavy ?? "";
+					const orchInputs = [
+						{ source: "primary", findings: collected.primary },
+						...(collected.secondary
+							? [{ source: "secondary", findings: collected.secondary }]
+							: []),
+						...(allStaticFindings.length > 0
+							? [{ source: "static", findings: allStaticFindings }]
+							: []),
+					];
+
+					// Get the full branch diff for the orchestrator.
+					const defaultBranch =
+						modeState?.defaultBranch ?? detectDefaultBranch(ctx.cwd);
+					const diffResult = runCommand(
+						"git",
+						["diff", defaultBranch ?? "HEAD~5", "HEAD"],
+						{ cwd: ctx.cwd },
+					);
+					const fullDiff = diffResult.ok ? diffResult.stdout : "";
+
+					// Parse the primary spec for orchestrator model.
+					const orchParsed = parseModelSpec(primarySpec);
+					const orchProvider = orchParsed?.provider ?? "";
+					const orchModel = orchParsed?.modelId ?? "";
+
+					let findings: Awaited<
+						ReturnType<typeof runOrchestrator>
+					>["findings"] = [];
+					let orchestratorRan = false;
+					let orchestratorError: string | undefined;
+
+					if (orchProvider && orchModel && orchInputs.length > 0) {
+						notify(ctx, "running orchestrator synthesis…", "info");
+						const orchResult = await runOrchestrator({
+							pool: subagentPool,
+							provider: orchProvider,
+							model: orchModel,
+							inputs: orchInputs,
+							diff: fullDiff,
+							scopeLabel: `branch vs. ${defaultBranch ?? "HEAD~5"}`,
+							cwd: ctx.cwd,
+						});
+						findings = orchResult.findings;
+						orchestratorRan = orchResult.ran;
+						orchestratorError = orchResult.error;
+					}
+
+					// Split findings by confidence.
+					const { autoApplied, surfaced } = partitionFindings(findings);
+
+					// Send report.
+					const secondarySpec = settings.backgroundModels?.secondary?.heavy;
+					pi.sendMessage(
+						{
+							customType: "auto-review-report",
+							content: buildAutoReviewReport({
+								scopeLabel: `branch vs. ${defaultBranch ?? "HEAD~5"}`,
+								roles: ["persistent-reviewer"],
+								multiModel: !!secondarySpec,
+								primaryModel: primarySpec,
+								...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+								findings,
+								autoApplied,
+								surfaced,
+								orchestratorRan,
+								...(orchestratorError ? { orchestratorError } : {}),
+								staticToolsRan: staticResults.toolResults.filter(
+									(r) => r.available && r.enabled,
+								).length,
+								totalInvocations: collected.secondary ? 2 : 1,
+								diffSize: fullDiff.length,
+								totalCost: collected.usage.cost,
+								errors: [],
+							}),
+							display: true,
+							details: {
+								totalFindings: findings.length,
+								autoApplied: autoApplied.length,
+								surfaced: surfaced.length,
+							},
+						},
+						{ triggerTurn: false },
+					);
+
+					// Send fix prompt if auto-apply findings exist.
+					if (autoApplied.length > 0) {
+						pi.sendMessage(
+							{
+								customType: "auto-review-followup",
+								content: buildAutoReviewFixPrompt(
+									autoApplied,
+									primarySpec,
+									secondarySpec,
+								),
+								display: false,
+							},
+							{
+								deliverAs: "followUp",
+								triggerTurn: surfaced.length === 0,
+							},
+						);
+					}
+
+					// Send discussion prompt if surfaced findings exist.
+					if (surfaced.length > 0) {
+						pi.sendMessage(
+							{
+								customType: "auto-review-discussion",
+								content: buildAutoReviewDiscussionPrompt(
+									surfaced,
+									primarySpec,
+									secondarySpec,
+								),
+								display: false,
+							},
+							{ deliverAs: "followUp", triggerTurn: true },
+						);
+					}
+
+					const hasPendingWork = autoApplied.length > 0 || surfaced.length > 0;
+					if (hasPendingWork && modeState) {
+						modeState.phase =
+							surfaced.length > 0 ? "awaiting-discussion" : "awaiting-fix";
+					}
+
+					// Common cleanup regardless of pending work.
+					if (modeState) {
+						modeState.autoReviewRan = true;
+						persist();
+					}
+					updateWidget(ctx);
+					await reviewerPool.reset();
+
+					if (hasPendingWork) return;
+				} catch (err) {
+					notify(
+						ctx,
+						`persistent review failed: ${err instanceof Error ? err.message : String(err)}`,
+						"warning",
+					);
+				}
+
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				await runPostExecPicker(ctx);
+				return;
+			}
+
+			// ---- Fallback: old batch auto-review path ----
 			if (!pi.getCommands().some((c) => c.name === "review")) {
 				await runPostExecPicker(ctx);
 				return;
