@@ -247,9 +247,9 @@ export default function (pi: ExtensionAPI) {
 
 	// Mode display labels and their theme colour tokens.
 	const MODE_LABELS: Record<Mode, string> = {
-		plan: "mode: plan",
-		ask: "mode: ask",
-		auto: "mode: auto",
+		plan: "plan",
+		ask: "ask",
+		auto: "auto",
 	};
 	const MODE_COLORS: Record<Mode, "warning" | "muted" | "accent"> = {
 		plan: "warning",
@@ -326,27 +326,29 @@ export default function (pi: ExtensionAPI) {
 					const location = branch ? `${shortPath} (${branch})` : shortPath;
 					leftParts.push(theme.fg("muted", location));
 
-					const ctxLabel = formatContextUsage(ctx);
-					if (ctxLabel) leftParts.push(theme.fg("muted", ctxLabel));
-
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
-					// Right: mode indicator — empty when no state yet.
+					// Right: context usage + mode label.
 					if (!modeState) return [truncateToWidth(leftText, width)];
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
-					const modeText = theme.bold(theme.fg(color, ` ${label} `));
+					const ctxLabel = formatContextUsage(ctx);
+					const rightParts: string[] = [];
+					if (ctxLabel) rightParts.push(theme.fg("muted", ctxLabel));
+					rightParts.push(theme.bold(theme.fg(color, label)));
+					const rightText = rightParts.join("  ");
 
-					const rightWidth = visibleWidth(` ${label} `);
+					const rightVisible = ctxLabel ? `${ctxLabel}  ${label}` : label;
+					const rightWidth = visibleWidth(rightVisible);
 					const safeLeft = truncateToWidth(
 						leftText,
 						Math.max(0, width - rightWidth - 1),
 					);
 					const gap = Math.max(1, width - visibleWidth(safeLeft) - rightWidth);
 
-					return [safeLeft + " ".repeat(gap) + modeText];
+					return [safeLeft + " ".repeat(gap) + rightText];
 				},
 				dispose: footerData.onBranchChange(() => tui.requestRender()),
 			};
