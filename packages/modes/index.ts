@@ -376,10 +376,11 @@ export default function (pi: ExtensionAPI) {
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
-					const rightParts: string[] = [];
-					if (usageLabel) rightParts.push(theme.fg("muted", usageLabel));
-					rightParts.push(theme.bold(theme.fg(color, label)));
-					const rightText = rightParts.join(theme.fg("muted", " | "));
+					const sep = theme.fg("muted", " | ");
+					const modeText = theme.bold(theme.fg(color, label));
+					const rightText = usageLabel
+						? theme.fg("muted", usageLabel) + sep + modeText
+						: modeText;
 
 					const rightVisible = usageLabel ? `${usageLabel} | ${label}` : label;
 					const rightWidth = visibleWidth(rightVisible);
