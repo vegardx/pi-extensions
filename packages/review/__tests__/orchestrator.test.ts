@@ -7,6 +7,7 @@ import {
 	buildAutoReviewDiscussionPrompt,
 	buildAutoReviewFixPrompt,
 	buildAutoReviewReport,
+	formatTierAttribution,
 	shouldSkipOrchestrator,
 } from "../auto-review.js";
 import {
@@ -340,5 +341,150 @@ describe("shouldSkipOrchestrator", () => {
 	it("never skips when there are input findings", () => {
 		expect(shouldSkipOrchestrator(5, 0)).toBe(false);
 		expect(shouldSkipOrchestrator(1, 0.9)).toBe(false);
+	});
+});
+
+// ---- formatTierAttribution ---------------------------------------------
+
+describe("formatTierAttribution", () => {
+	it("maps tier labels to model specs", () => {
+		const result = formatTierAttribution(
+			["primary", "secondary"],
+			"anthropic/claude-sonnet-4-20250514",
+			"openai/gpt-4o",
+		);
+		expect(result).toBe("anthropic/claude-sonnet-4-20250514 + openai/gpt-4o");
+	});
+
+	it("falls back to raw tier when model spec is missing", () => {
+		const result = formatTierAttribution(["primary", "secondary"], "model-a");
+		expect(result).toBe("model-a + secondary");
+	});
+
+	it("returns empty string for empty tiers array", () => {
+		expect(formatTierAttribution([])).toBe("");
+	});
+
+	it("handles single tier", () => {
+		const result = formatTierAttribution(
+			["primary"],
+			"anthropic/claude-sonnet-4-20250514",
+			"openai/gpt-4o",
+		);
+		expect(result).toBe("anthropic/claude-sonnet-4-20250514");
+	});
+
+	it("dedupes repeated tier entries", () => {
+		const result = formatTierAttribution(
+			["primary", "primary"],
+			"anthropic/claude-sonnet-4-20250514",
+			"openai/gpt-4o",
+		);
+		expect(result).toBe("anthropic/claude-sonnet-4-20250514");
+	});
+});
+
+// ---- Model attribution in outputs --------------------------------------
+
+describe("model attribution in rendered outputs", () => {
+	it("buildAutoReviewReport includes model names in auto-apply listing", () => {
+		const finding = makeOF({
+			confidence: "high",
+			suggestedAction: "fix it",
+			confirmedByTiers: ["primary", "secondary"],
+			confirmedByRoles: ["code-reviewer"],
+		});
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			findings: [finding],
+			autoApplied: [finding],
+			surfaced: [],
+		});
+		const findingLine = report
+			.split("\n")
+			.find((l) => l.includes("some issue"));
+		expect(findingLine).toContain("{anthropic/claude-opus-4-5 + openai/gpt-5}");
+	});
+
+	it("buildAutoReviewReport includes model names in surfaced listing", () => {
+		const finding = makeOF({
+			confidence: "medium",
+			suggestedAction: "",
+			confirmedByTiers: ["secondary"],
+			confirmedByRoles: ["security-analyst"],
+		});
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			findings: [finding],
+			autoApplied: [],
+			surfaced: [finding],
+		});
+		expect(report).toContain("{openai/gpt-5}");
+	});
+
+	it("buildAutoReviewReport omits model tag when confirmedByTiers is empty", () => {
+		const finding = makeOF({
+			confidence: "high",
+			suggestedAction: "fix",
+			confirmedByTiers: [],
+			confirmedByRoles: ["code-reviewer"],
+		});
+		const report = buildAutoReviewReport({
+			...BASE_REPORT_OPTS,
+			findings: [finding],
+			autoApplied: [finding],
+			surfaced: [],
+		});
+		// No curly-brace model tag on the finding line
+		const lines = report.split("\n");
+		const findingLine = lines.find((l) => l.includes("some issue"));
+		expect(findingLine).not.toContain("{");
+	});
+
+	it("buildAutoReviewFixPrompt includes Models field", () => {
+		const finding = makeOF({
+			confidence: "high",
+			confirmedByTiers: ["primary", "secondary"],
+			confirmedByRoles: ["code-reviewer"],
+			suggestedAction: "do it",
+		});
+		const prompt = buildAutoReviewFixPrompt(
+			[finding],
+			"anthropic/claude-sonnet-4-20250514",
+			"openai/gpt-4o",
+		);
+		expect(prompt).toContain(
+			"Models: anthropic/claude-sonnet-4-20250514 + openai/gpt-4o",
+		);
+	});
+
+	it("buildAutoReviewFixPrompt omits Models field when tiers empty", () => {
+		const finding = makeOF({
+			confidence: "high",
+			confirmedByTiers: [],
+			confirmedByRoles: ["code-reviewer"],
+			suggestedAction: "do it",
+		});
+		const prompt = buildAutoReviewFixPrompt([finding], "model-a", "model-b");
+		expect(prompt).not.toContain("Models:");
+	});
+
+	it("buildAutoReviewDiscussionPrompt includes Models field", () => {
+		const finding = makeOF({
+			confidence: "medium",
+			suggestedAction: "",
+			confirmedByTiers: ["primary"],
+			confirmedByRoles: ["security-analyst"],
+		});
+		const prompt = buildAutoReviewDiscussionPrompt(
+			[finding],
+			"anthropic/claude-sonnet-4-20250514",
+			"openai/gpt-4o",
+		);
+		expect(prompt).toContain("Models: anthropic/claude-sonnet-4-20250514");
+		// The per-finding line should NOT include gpt-4o since only primary tier confirmed it
+		const findingLine = prompt.split("\n").find((l) => l.includes("Roles:"));
+		expect(findingLine).toContain("Models: anthropic/claude-sonnet-4-20250514");
+		expect(findingLine).not.toContain("openai/gpt-4o");
 	});
 });

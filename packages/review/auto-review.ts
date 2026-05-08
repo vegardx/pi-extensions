@@ -614,6 +614,29 @@ async function runOrchestratorPhase(opts: {
 	return { findings: parsed, orchestratorRan: true };
 }
 
+// ---- Tier → model label helper -----------------------------------------
+
+/**
+ * Format the `confirmedByTiers` array into a human-readable model
+ * attribution string. When model specs are available, maps tier
+ * labels to actual model names (e.g. "anthropic/claude-sonnet-4-20250514").
+ * Falls back to raw tier labels when model specs aren't provided.
+ */
+export function formatTierAttribution(
+	tiers: readonly string[],
+	primaryModel?: string,
+	secondaryModel?: string,
+): string {
+	if (tiers.length === 0) return "";
+	const unique = [...new Set(tiers)];
+	const labels = unique.map((t) => {
+		if (t === "primary" && primaryModel) return primaryModel;
+		if (t === "secondary" && secondaryModel) return secondaryModel;
+		return t;
+	});
+	return labels.join(" + ");
+}
+
 /**
  * Build the fix prompt the host agent receives once the orchestrator
  * has produced high-confidence findings with concrete fix suggestions.
@@ -638,9 +661,14 @@ export function buildAutoReviewFixPrompt(
 		const loc = f.line ? `${f.file}:${f.line}` : f.file;
 		const roles = f.confirmedByRoles.join(", ") || "(unknown)";
 		const conf = f.confidence;
+		const models = formatTierAttribution(
+			f.confirmedByTiers,
+			primaryModel,
+			secondaryModel,
+		);
 		lines.push(
 			`${idx + 1}. **[${f.severity}] \`${loc}\`** — ${f.title}`,
-			`   - Confidence: ${conf} | Roles: ${roles}`,
+			`   - Confidence: ${conf} | Roles: ${roles}${models ? ` | Models: ${models}` : ""}`,
 			`   - Why: ${f.description}`,
 		);
 		if (f.suggestedAction) {
@@ -763,8 +791,14 @@ export function buildAutoReviewReport(opts: {
 		opts.autoApplied.forEach((f, idx) => {
 			const loc = f.line ? `${f.file}:${f.line}` : f.file;
 			const staticTag = f.staticToolSource ? ` [${f.staticToolSource}]` : "";
+			const models = formatTierAttribution(
+				f.confirmedByTiers,
+				opts.primaryModel,
+				opts.secondaryModel,
+			);
+			const modelTag = models ? ` {${models}}` : "";
 			lines.push(
-				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.confirmedByRoles.join(", ") || "orchestrator"})${staticTag}`,
+				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.confirmedByRoles.join(", ") || "orchestrator"})${modelTag}${staticTag}`,
 			);
 		});
 	}
@@ -777,8 +811,14 @@ export function buildAutoReviewReport(opts: {
 			const confTag =
 				f.confidence === "low" ? ` \u26a0\ufe0f low confidence` : "";
 			const staticTag = f.staticToolSource ? ` [${f.staticToolSource}]` : "";
+			const models = formatTierAttribution(
+				f.confirmedByTiers,
+				opts.primaryModel,
+				opts.secondaryModel,
+			);
+			const modelTag = models ? ` {${models}}` : "";
 			lines.push(
-				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.confirmedByRoles.join(", ") || "orchestrator"})${confTag}${staticTag}`,
+				`${idx + 1}. [${f.severity}] \`${loc}\` — ${f.title} (${f.confirmedByRoles.join(", ") || "orchestrator"})${modelTag}${confTag}${staticTag}`,
 			);
 			if (f.orchestratorNote) {
 				lines.push(`   \u2192 ${f.orchestratorNote}`);
@@ -809,9 +849,14 @@ export function buildAutoReviewDiscussionPrompt(
 	surfaced.forEach((f, idx) => {
 		const loc = f.line ? `${f.file}:${f.line}` : f.file;
 		const conf = f.confidence === "low" ? " \u26a0\ufe0f low confidence" : "";
+		const models = formatTierAttribution(
+			f.confirmedByTiers,
+			primaryModel,
+			secondaryModel,
+		);
 		lines.push(
 			`${idx + 1}. **[${f.severity}] \`${loc}\`** \u2014 ${f.title}${conf}`,
-			`   - Roles: ${f.confirmedByRoles.join(", ") || "orchestrator"}`,
+			`   - Roles: ${f.confirmedByRoles.join(", ") || "orchestrator"}${models ? ` | Models: ${models}` : ""}`,
 			`   - Why: ${f.description}`,
 			``,
 		);
