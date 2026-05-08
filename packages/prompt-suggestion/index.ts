@@ -272,6 +272,11 @@ export default function (pi: ExtensionAPI): void {
 	// already answered.
 	pi.on("turn_start", () => {
 		if (predictor) predictor.sawTurnInThisSession = true;
+		// Any new agent turn means the previous ghost is stale (e.g. modes
+		// triggered a follow-up turn via sendMessage after the user picked
+		// "Implement").
+		predictor?.cancel();
+		editor?.clearGhost();
 	});
 
 	// Belt-and-suspenders: the editor's handleInput already clears the ghost
@@ -337,10 +342,12 @@ export default function (pi: ExtensionAPI): void {
 		// streaming flag to have settled.
 		if (!ctx.isIdle()) {
 			predictor.lastStatus = "post: agent-running";
+			editor?.clearGhost();
 			return;
 		}
 		if (ctx.hasPendingMessages()) {
 			predictor.lastStatus = "post: pending-messages";
+			editor?.clearGhost();
 			return;
 		}
 		if (ctx.ui.getEditorText() !== "") {

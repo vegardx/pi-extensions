@@ -11,7 +11,16 @@
   ],
   "pi": {
     "extensions": [
-      "packages/*/index.ts"
+      "packages/caffeinate/index.ts",
+      "packages/commit/index.ts",
+      "packages/exa/index.ts",
+      "packages/modes/index.ts",
+      "packages/prompt-suggestion/index.ts",
+      "packages/review/index.ts",
+      "packages/session-title/index.ts",
+      "packages/smart-compact/index.ts",
+      "packages/startup/index.ts",
+      "packages/wrap-up/index.ts"
     ],
     "skills": [
       "packages/*/skills/"
