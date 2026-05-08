@@ -678,6 +678,8 @@ export function buildAutoReviewReport(opts: {
 	totalInvocations: number;
 	/** Sum of additions + deletions in the diff. */
 	diffSize: number;
+	/** Aggregate cost across all reviewer subagents. */
+	totalCost?: number;
 	errors: ReadonlyArray<{
 		role: ReviewerRole;
 		tier: BackgroundTier;
@@ -699,6 +701,9 @@ export function buildAutoReviewReport(opts: {
 	}
 	if (opts.staticToolsRan > 0) {
 		lines.push(`**Static analysis**: ${opts.staticToolsRan} tool(s) ran`);
+	}
+	if (opts.totalCost !== undefined && opts.totalCost > 0) {
+		lines.push(`**Cost**: $${opts.totalCost.toFixed(4)}`);
 	}
 	lines.push("");
 	const totalFindings = opts.findings.length;
@@ -876,6 +881,32 @@ export function readStaticAnalysisConfig(
 	// Shallow-trust the user-supplied object; individual tool entries are
 	// validated and defaulted inside resolveConfig() in static-checker.ts.
 	return raw as StaticAnalysisConfig;
+}
+
+/**
+ * Partition orchestrated findings into auto-apply and needs-discussion
+ * buckets based on confidence and fix availability.
+ */
+export function partitionFindings(findings: readonly OrchestratedFinding[]): {
+	autoApplied: OrchestratedFinding[];
+	surfaced: OrchestratedFinding[];
+} {
+	const withFix = (f: OrchestratedFinding) =>
+		f.suggestedAction !== undefined && f.suggestedAction.trim() !== "";
+	const isHighOrMedium = (f: OrchestratedFinding) =>
+		f.confidence === "high" || f.confidence === "medium";
+
+	const autoApplied = findings.filter(
+		(f) => f.confidence === "high" && withFix(f),
+	);
+	const surfaced = findings.filter((f) => {
+		if (autoApplied.includes(f)) return false;
+		if (isHighOrMedium(f) && !withFix(f)) return true;
+		if (f.confidence === "medium" && withFix(f)) return true;
+		if (f.confidence === "low" && f.severity === "CRITICAL") return true;
+		return false;
+	});
+	return { autoApplied, surfaced };
 }
 
 /**

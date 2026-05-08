@@ -10,7 +10,10 @@
   "exports": {
     ".": "./index.ts",
     "./core": "./core.ts",
-    "./auto-review": "./auto-review.ts"
+    "./auto-review": "./auto-review.ts",
+    "./persistent-reviewer": "./persistent-reviewer.ts",
+    "./orchestrator": "./orchestrator.ts",
+    "./static-checker": "./static-checker.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
