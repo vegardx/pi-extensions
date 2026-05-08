@@ -1117,6 +1117,22 @@ export default function (pi: ExtensionAPI) {
 			useSubIssues = choice?.startsWith("Parent") ?? false;
 		}
 
+		// Offer to assign to GitHub Copilot. Copilot does NOT cascade from
+		// parent to sub-issues — it only works on the issue it's assigned to.
+		// So with sub-issues we assign each child (Copilot spins up a parallel
+		// coding-agent session per child, one premium request each); for a
+		// single issue we assign the tracking issue itself.
+		let assignCopilot = false;
+		if (ctx.hasUI) {
+			const detail = useSubIssues
+				? `Will assign @copilot to each of the ${steps.length} sub-issues. Copilot will spawn one coding-agent session per issue and run them in parallel — ${steps.length} premium requests, ${steps.length} PRs.`
+				: "Will assign @copilot to the issue. Copilot starts a coding-agent session and opens a PR when done (one premium request).";
+			assignCopilot = await ctx.ui.confirm(
+				"Assign to GitHub Copilot?",
+				`${detail}\n\nOnly works on github.com (not GHES).`,
+			);
+		}
+
 		// Read project assignment from settings if available.
 		const settings = readRelevantSettings(ctx.cwd);
 		const projectName = (
@@ -1140,29 +1156,28 @@ export default function (pi: ExtensionAPI) {
 
 		try {
 			writeFileSync(bodyFile, body, "utf8");
+			// When using sub-issues, the parent is a tracking-only issue — don't
+			// assign Copilot to it; assignments go on the sub-issues instead.
+			const assignParent = assignCopilot && !useSubIssues;
+			const createArgs = [
+				"issue",
+				"create",
+				"--title",
+				title,
+				"--body-file",
+				bodyFile,
+			];
+			if (assignParent) {
+				createArgs.push("--assignee", "@copilot");
+			}
 			const create = runCommand(
 				"gh",
-				[
-					"issue",
-					"create",
-					"--title",
-					title,
-					"--body-file",
-					bodyFile,
-					"--json",
-					"number,url",
-					"--jq",
-					".",
-				],
+				[...createArgs, "--json", "number,url", "--jq", "."],
 				{ cwd: ctx.cwd },
 			);
 
 			if (!create.ok) {
-				const plain = runCommand(
-					"gh",
-					["issue", "create", "--title", title, "--body-file", bodyFile],
-					{ cwd: ctx.cwd },
-				);
+				const plain = runCommand("gh", createArgs, { cwd: ctx.cwd });
 				if (!plain.ok) {
 					notify(
 						ctx,
@@ -1195,7 +1210,7 @@ export default function (pi: ExtensionAPI) {
 
 			// Create sub-issues if requested.
 			if (useSubIssues && num) {
-				await createSubIssues(ctx, num, steps, projectName);
+				await createSubIssues(ctx, num, steps, projectName, assignCopilot);
 			}
 		} finally {
 			try {
@@ -1237,6 +1252,7 @@ export default function (pi: ExtensionAPI) {
 		parentNumber: number,
 		planSteps: PlanStep[],
 		projectName?: string,
+		assignCopilot = false,
 	): Promise<void> {
 		const created: Array<{ step: PlanStep; number: number; id: number }> = [];
 		const errors: string[] = [];
@@ -1252,6 +1268,9 @@ export default function (pi: ExtensionAPI) {
 			];
 			if (projectName) {
 				args.push("--project", projectName);
+			}
+			if (assignCopilot) {
+				args.push("--assignee", "@copilot");
 			}
 
 			const result = runCommand("gh", args, { cwd: ctx.cwd });
