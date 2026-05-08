@@ -193,6 +193,12 @@ export default function (pi: ExtensionAPI) {
 				default: ["code-reviewer", "code-simplifier", "security-analyst"],
 				doc: "Reviewer roles to run. Each role is fanned out to both primary and secondary models. Valid: code-reviewer, code-simplifier, security-analyst, architect, scope-analyst, doc-reviewer, dependency-checker.",
 			},
+			{
+				key: "githubProject",
+				type: "string",
+				default: "",
+				doc: "GitHub Project title to assign issues to when /park creates them. Leave empty to skip project assignment.",
+			},
 		],
 	});
 
@@ -1075,6 +1081,25 @@ export default function (pi: ExtensionAPI) {
 		const dir = mkdtempSync(join(tmpdir(), "modes-park-"));
 		const bodyFile = join(dir, "issue.md");
 		const title = deriveIssueTitle(plan, branchSlug ?? "parked plan");
+
+		// Detect multi-step plans and offer sub-issue decomposition.
+		let useSubIssues = false;
+		if (steps.length > 1 && ctx.hasUI) {
+			const choice = await ctx.ui.select(
+				`Plan has ${steps.length} steps. Create as:`,
+				[
+					"Single issue (all steps in body)",
+					"Parent + sub-issues (one per step)",
+				],
+			);
+			useSubIssues = choice?.startsWith("Parent") ?? false;
+		}
+
+		// Read project assignment from settings if available.
+		const settings = readRelevantSettings(ctx.cwd);
+		const projectName = (
+			settings.extensionConfig?.[EXT_ID] as Record<string, unknown> | undefined
+		)?.githubProject as string | undefined;
 		const body = [
 			"This issue tracks an implementation plan parked from `/plan`.",
 			"A future agent session can resume from the plan below; the resulting PR",
@@ -1145,6 +1170,11 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			finalizePark(ctx, String(num), parsed.url ?? "", branchSlug);
+
+			// Create sub-issues if requested.
+			if (useSubIssues && num) {
+				await createSubIssues(ctx, num, steps, projectName);
+			}
 		} finally {
 			try {
 				rmSync(dir, { recursive: true, force: true });
@@ -1174,6 +1204,66 @@ export default function (pi: ExtensionAPI) {
 			`parked as issue #${issueNumber}${issueUrl ? ` (${issueUrl})` : ""}`,
 			"info",
 		);
+	}
+
+	/**
+	 * Create sub-issues for each plan step and link them to the parent.
+	 * Uses `gh issue create` for each step, then `gh api` to set parent.
+	 */
+	async function createSubIssues(
+		ctx: ExtensionCommandContext,
+		parentNumber: number,
+		planSteps: PlanStep[],
+		projectName?: string,
+	): Promise<void> {
+		const created: Array<{ step: PlanStep; number: number }> = [];
+
+		for (const step of planSteps) {
+			const args = [
+				"issue",
+				"create",
+				"--title",
+				step.text,
+				"--body",
+				`Sub-issue of #${parentNumber}\n\nStep ${step.id} from the parked plan.`,
+			];
+			if (projectName) {
+				args.push("--project", projectName);
+			}
+			args.push("--json", "number", "--jq", ".number");
+
+			const result = runCommand("gh", args, { cwd: ctx.cwd });
+			if (result.ok) {
+				const num = Number.parseInt(result.stdout.trim(), 10);
+				if (Number.isFinite(num)) {
+					created.push({ step, number: num });
+				}
+			}
+		}
+
+		// Link sub-issues to parent via API.
+		for (const { number } of created) {
+			runCommand(
+				"gh",
+				[
+					"api",
+					"--method",
+					"POST",
+					`/repos/{owner}/{repo}/issues/${parentNumber}/sub_issues`,
+					"-f",
+					`sub_issue_id=${number}`,
+				],
+				{ cwd: ctx.cwd },
+			);
+		}
+
+		if (created.length > 0) {
+			notify(
+				ctx,
+				`created ${created.length} sub-issues for #${parentNumber}`,
+				"info",
+			);
+		}
 	}
 
 	// ---- ask tool ---------------------------------------------------------
