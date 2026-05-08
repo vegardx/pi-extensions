@@ -145,7 +145,8 @@ export default function (pi: ExtensionAPI) {
 				candidates[0].score === 0 ||
 				(candidates.length > 1 && candidates[0].score === candidates[1].score);
 			if (needsPicker) {
-				const labels = candidates.slice(0, 10).map((c) => {
+				const top = candidates.slice(0, 10);
+				const labels = top.map((c) => {
 					const parts = [c.meta.date];
 					if (c.meta.branch) parts.push(c.meta.branch);
 					if (c.meta.repo) parts.push(c.meta.repo);
@@ -153,12 +154,20 @@ export default function (pi: ExtensionAPI) {
 					return parts.join(" · ");
 				});
 
+				// Disambiguate duplicate labels with a numeric suffix
+				const seen = new Map<string, number>();
+				const uniqueLabels = labels.map((label) => {
+					const count = seen.get(label) ?? 0;
+					seen.set(label, count + 1);
+					return count > 0 ? `${label} (${count + 1})` : label;
+				});
+
 				const picked = await ctx.ui.select(
 					"Multiple handovers found — which one?",
-					labels,
+					uniqueLabels,
 				);
 				if (picked === undefined) return;
-				const pickedIdx = labels.indexOf(picked);
+				const pickedIdx = uniqueLabels.indexOf(picked);
 				if (pickedIdx === -1) return;
 				chosen = candidates[pickedIdx];
 			}

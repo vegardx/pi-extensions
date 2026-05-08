@@ -46,7 +46,7 @@ date: "2026-05-08"
 session_id: "019df8aa"
 repo: "git@github.com:vegardx/pi-extensions.git"
 branch: "feat/webhook-support"
-cwd: "/Users/vegardx/.pi/agent/handovers"
+cwd: "/Users/vegardx/src/github.com/vegardx/pi-extensions"
 ---
 
 ## Session Handover — 2026-05-08
