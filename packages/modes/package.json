@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Permission-mode cycle (plan / ask / auto) with integrated git workflow.",
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./index.ts"],
+    "skills": ["./skills/"]
   },
   "peerDependencies": {
     "@mariozechner/pi-ai": "*",
