@@ -1,0 +1,20 @@
+{
+	"name": "@vegardx/pi-structured-dialog",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Shared tabbed TUI component for structured multi-item decisions with optional preview panes",
+	"exports": {
+		".": "./index.ts",
+		"./types": "./types.ts",
+		"./state": "./state.ts"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"@mariozechner/pi-tui": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-coding-agent": { "optional": true },
+		"@mariozechner/pi-tui": { "optional": true }
+	}
+}
