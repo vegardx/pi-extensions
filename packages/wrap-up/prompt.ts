@@ -1,5 +1,5 @@
 /**
- * Pure prompt builder for /wrap-up.
+ * Pure prompt builders for /pause and /continue.
  *
  * No I/O, no imports from pi — takes a WrapUpContext and returns the
  * instruction string to send to the agent.
@@ -14,6 +14,23 @@ import type { HandoverConfig, WrapUpContext } from "./context.js";
 function fence(lang: string, content: string): string {
 	if (!content.trim()) return "(none)";
 	return `\`\`\`${lang}\n${content.trim()}\n\`\`\``;
+}
+
+/**
+ * Sanitize a value for our simple YAML frontmatter format.
+ * Strips characters that would break the naive parser in frontmatter.ts:
+ * double quotes, backslashes, and newlines.
+ */
+function fmSafe(value: string): string {
+	return value.replace(/["\\\n\r]/g, "");
+}
+
+/**
+ * Strip embedded credentials from a git remote URL.
+ * e.g. https://x-access-token:ghp_xxx@github.com/o/r.git → https://github.com/o/r.git
+ */
+function stripCredentials(url: string): string {
+	return url.replace(/\/\/[^@]+@/, "//");
 }
 
 /** Parse `gh pr view --json` output into a one-liner, best-effort. */
@@ -41,17 +58,17 @@ function formatPr(prJson: string): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the full /wrap-up prompt. Pure function — given the same context
+ * Build the full /pause prompt. Pure function — given the same context
  * it always returns the same string.
  */
-export function buildWrapUpPrompt(
+export function buildPausePrompt(
 	ctx: WrapUpContext,
 	handover: HandoverConfig,
 ): string {
 	const lines: string[] = [];
 
 	lines.push(
-		"You are running the `/wrap-up` flow. Your job is to produce a detailed",
+		"You are running the `/pause` flow. Your job is to produce a detailed",
 		"handover document so that a future session — whether it starts fresh or",
 		"from a compacted context — can pick up exactly where this one left off.",
 		"",
@@ -126,14 +143,32 @@ export function buildWrapUpPrompt(
 		}
 	}
 
+	// Build the YAML frontmatter values the agent must emit.
+	const fmLines: string[] = [];
+	fmLines.push(`date: "${fmSafe(ctx.date)}"`);
+	fmLines.push(`session_id: "${fmSafe(ctx.sessionId.slice(0, 8))}"`);
+	if (ctx.remoteUrl)
+		fmLines.push(`repo: "${fmSafe(stripCredentials(ctx.remoteUrl))}"`);
+	if (ctx.branch) fmLines.push(`branch: "${fmSafe(ctx.branch)}"`);
+	fmLines.push(`cwd: "${fmSafe(ctx.sessionCwd)}"`);
+
 	lines.push(
 		"## Step 3 — Write the handover document",
 		"",
-		"Produce a handover document in the following structure. Be specific and",
+		"The file MUST start with a YAML frontmatter block (fenced by `---`).",
+		"Use exactly these values:",
+		"",
+		"```yaml",
+		"---",
+		...fmLines,
+		"---",
+		"```",
+		"",
+		"Then produce the body in the following structure. Be specific and",
 		"verbose — assume the next session has no memory of this one.",
 		"",
 		"```",
-		`## Session Wrap-Up — ${ctx.date}`,
+		`## Session Handover — ${ctx.date}`,
 		"",
 		"### Goal",
 		"What the session set out to accomplish.",
@@ -210,12 +245,57 @@ export function buildWrapUpPrompt(
 	lines.push(
 		"## Rules",
 		"",
+		"- The YAML frontmatter MUST be the very first thing in the file, exactly",
+		"  as shown above. Do not change the keys or values.",
 		"- Write the handover document first, then ask about resources, then save.",
 		"  Do not ask permission before writing the document itself.",
 		"- Keep the document factual and actionable. No filler.",
 		"- If you are uncertain about something (e.g. what the original goal was),",
 		"  say so explicitly in the document rather than guessing.",
 		"- Finish the turn after all questions are answered or the user says done.",
+	);
+
+	return lines.join("\n");
+}
+
+/**
+ * Build the /continue prompt. Injects the handover body and asks the
+ * agent to summarize it and ask the user how to proceed.
+ */
+export function buildContinuePrompt(handoverBody: string): string {
+	const lines: string[] = [];
+
+	lines.push(
+		"You are running the `/continue` flow. A previous session's handover",
+		"document has been loaded. Your job is to orient the user and ask what",
+		"they want to do next.",
+		"",
+		"## Handover document",
+		"",
+		handoverBody,
+		"",
+		"## Instructions",
+		"",
+		"1. Read the handover above carefully.",
+		"2. Present a concise summary to the user:",
+		"   - What was the goal",
+		"   - What's done vs. still in progress",
+		"   - Key blockers or open questions",
+		"3. Then ask the user how they'd like to proceed. Offer concrete options",
+		"   based on what's in the handover, for example:",
+		'   - "Pick up the next steps?"',
+		'   - "Re-plan the remaining work?"',
+		'   - "Review what was done first?"',
+		'   - "Something else?"',
+		"4. Wait for the user to respond before taking any action.",
+		"",
+		"## Rules",
+		"",
+		"- Be concise. The user wrote the handover — they don't need it read back",
+		"  verbatim. Summarize the key state in a few lines.",
+		"- Do NOT start editing files or running commands until the user tells you",
+		"  what to do.",
+		"- Do NOT enter any mode (plan/auto) automatically.",
 	);
 
 	return lines.join("\n");

@@ -3,7 +3,7 @@
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
-	"description": "End-of-session wrap-up command for pi. Gathers git context, writes a detailed handover document, and prompts about cost-incurring resources before you sign off.",
+	"description": "Session handover commands for pi: /pause to write a handover document, /continue to resume from one.",
 	"pi": {
 		"extensions": ["./index.ts"]
 	},

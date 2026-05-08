@@ -118,6 +118,8 @@ export interface WrapUpContext {
 	prInfo: string | null;
 	/** Cost-incurring resource signals found in the project. */
 	resources: ResourceSignal[];
+	/** The working directory of the session (project root). */
+	sessionCwd: string;
 	/** ISO date string at time of gathering, e.g. "2026-05-06". */
 	date: string;
 	/** pi session ID (always present). */
@@ -252,6 +254,7 @@ export function gatherContext(
 		remoteUrl,
 		prInfo,
 		resources: detectResources(cwd),
+		sessionCwd: cwd,
 		date: new Date().toISOString().slice(0, 10),
 		sessionId: opts.sessionId,
 		sessionFile: opts.sessionFile ?? null,
