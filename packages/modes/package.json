@@ -13,6 +13,7 @@
     "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*",
     "@vegardx/pi-extensions-shared": "*",
+    "@vegardx/pi-structured-dialog": "*",
     "pi-ext-commit": "*",
     "pi-ext-review": "*"
   },
@@ -22,6 +23,7 @@
     "@mariozechner/pi-tui": { "optional": true },
     "@sinclair/typebox": { "optional": true },
     "@vegardx/pi-extensions-shared": { "optional": true },
+    "@vegardx/pi-structured-dialog": { "optional": true },
     "pi-ext-commit": { "optional": true },
     "pi-ext-review": { "optional": true }
   }
