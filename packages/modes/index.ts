@@ -1216,7 +1216,8 @@ export default function (pi: ExtensionAPI) {
 		planSteps: PlanStep[],
 		projectName?: string,
 	): Promise<void> {
-		const created: Array<{ step: PlanStep; number: number }> = [];
+		const created: Array<{ step: PlanStep; number: number; id: number }> = [];
+		const errors: string[] = [];
 
 		for (const step of planSteps) {
 			const args = [
@@ -1230,31 +1231,71 @@ export default function (pi: ExtensionAPI) {
 			if (projectName) {
 				args.push("--project", projectName);
 			}
-			args.push("--json", "number", "--jq", ".number");
 
 			const result = runCommand("gh", args, { cwd: ctx.cwd });
-			if (result.ok) {
-				const num = Number.parseInt(result.stdout.trim(), 10);
-				if (Number.isFinite(num)) {
-					created.push({ step, number: num });
-				}
+			if (!result.ok) {
+				errors.push(
+					`step ${step.id} (${step.text}): ${result.stderr.trim() || "unknown error"}`,
+				);
+				continue;
 			}
+			// `gh issue create` outputs the issue URL on success: https://github.com/owner/repo/issues/123
+			const urlMatch = result.stdout.match(/\/issues\/(\d+)/);
+			if (!urlMatch) {
+				errors.push(
+					`step ${step.id}: could not parse issue number from "${result.stdout.trim()}"`,
+				);
+				continue;
+			}
+			const num = Number.parseInt(urlMatch[1], 10);
+			if (!Number.isFinite(num)) {
+				errors.push(`step ${step.id}: invalid issue number ${urlMatch[1]}`);
+				continue;
+			}
+
+			// The sub_issues API needs the internal numeric `id`, not the
+			// user-facing `number`. Look it up via REST.
+			const restView = runCommand(
+				"gh",
+				["api", `/repos/{owner}/{repo}/issues/${num}`, "--jq", ".id"],
+				{ cwd: ctx.cwd },
+			);
+			if (!restView.ok) {
+				errors.push(
+					`step ${step.id}: REST id lookup for #${num} failed: ${restView.stderr.trim()}`,
+				);
+				continue;
+			}
+			const id = Number.parseInt(restView.stdout.trim(), 10);
+			if (!Number.isFinite(id)) {
+				errors.push(
+					`step ${step.id}: invalid REST id "${restView.stdout.trim()}"`,
+				);
+				continue;
+			}
+			created.push({ step, number: num, id });
 		}
 
-		// Link sub-issues to parent via API.
-		for (const { number } of created) {
-			runCommand(
+		// Link sub-issues to parent via the GitHub sub-issues API.
+		// `-F` sends the value as a number (vs. `-f` which always sends strings).
+		for (const { step, number, id } of created) {
+			const link = runCommand(
 				"gh",
 				[
 					"api",
 					"--method",
 					"POST",
 					`/repos/{owner}/{repo}/issues/${parentNumber}/sub_issues`,
-					"-f",
-					`sub_issue_id=${number}`,
+					"-F",
+					`sub_issue_id=${id}`,
 				],
 				{ cwd: ctx.cwd },
 			);
+			if (!link.ok) {
+				errors.push(
+					`link #${number} (${step.text}) to parent #${parentNumber}: ${link.stderr.trim() || "unknown error"}`,
+				);
+			}
 		}
 
 		if (created.length > 0) {
@@ -1263,6 +1304,9 @@ export default function (pi: ExtensionAPI) {
 				`created ${created.length} sub-issues for #${parentNumber}`,
 				"info",
 			);
+		}
+		if (errors.length > 0) {
+			notify(ctx, `sub-issue errors:\n  ${errors.join("\n  ")}`, "warning");
 		}
 	}
 
