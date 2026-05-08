@@ -3,11 +3,19 @@
   "private": true,
   "type": "module",
   "description": "Monorepo of pi.dev extensions",
-  "workspaces": ["packages/*"],
-  "keywords": ["pi-package"],
+  "workspaces": [
+    "packages/*"
+  ],
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
-    "extensions": ["packages/*/index.ts"],
-    "skills": ["packages/*/skills/"]
+    "extensions": [
+      "packages/*/index.ts"
+    ],
+    "skills": [
+      "packages/*/skills/"
+    ]
   },
   "scripts": {
     "check": "biome check . && tsc --noEmit && vitest run",
@@ -16,7 +24,8 @@
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest watch"
+    "test:watch": "vitest watch",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.12",
@@ -25,10 +34,15 @@
     "@mariozechner/pi-tui": "^0.73.0",
     "@sinclair/typebox": "^0.34.49",
     "@types/node": "^22",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.2",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "lint-staged": {
+    "*.ts": "biome check --write --no-errors-on-unmatched"
   }
 }
