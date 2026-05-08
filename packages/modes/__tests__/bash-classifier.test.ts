@@ -24,9 +24,35 @@ describe("classifyStatic", () => {
 		it("allows gh CLI read operations", () => {
 			expect(classifyStatic("gh pr list --state open")?.verdict).toBe("allow");
 			expect(classifyStatic("gh issue view 42")?.verdict).toBe("allow");
-			expect(classifyStatic("gh api repos/org/repo/pulls")?.verdict).toBe(
+			expect(classifyStatic("gh run list --branch main")?.verdict).toBe(
 				"allow",
 			);
+			expect(classifyStatic("gh search issues foo")?.verdict).toBe("allow");
+		});
+
+		it("defers gh api to LLM (can mutate)", () => {
+			expect(classifyStatic("gh api repos/org/repo/pulls")).toBeNull();
+		});
+
+		it("allows gh commands even when body contains deny-list words", () => {
+			expect(
+				classifyStatic(
+					'gh issue create --title "cleanup" --body "rm the old config files"',
+				)?.verdict,
+			).toBe("allow");
+			expect(
+				classifyStatic(
+					'gh pr comment 42 --body "DELETE the stale rows from the table"',
+				)?.verdict,
+			).toBe("allow");
+			expect(
+				classifyStatic(
+					'gh issue edit 99 --body "kill the background worker and restart"',
+				)?.verdict,
+			).toBe("allow");
+			expect(
+				classifyStatic('gh search issues "DROP TABLE users"')?.verdict,
+			).toBe("allow");
 		});
 
 		it("defers curl to LLM (ambiguous)", () => {
@@ -61,6 +87,22 @@ describe("classifyStatic", () => {
 			expect(classifyStatic("echo hi || git push origin main")?.verdict).toBe(
 				"block",
 			);
+		});
+
+		it("blocks gh commands chained with dangerous segments", () => {
+			expect(classifyStatic("gh pr list; rm -rf ~/work")?.verdict).toBe(
+				"block",
+			);
+			expect(
+				classifyStatic("gh issue view 1 && git push origin main")?.verdict,
+			).toBe("block");
+		});
+
+		it("defers gh commands with substitutions to LLM", () => {
+			expect(classifyStatic("gh api repos/foo $(rm -rf /tmp/x)")).toBeNull();
+			expect(
+				classifyStatic("gh issue create --body `cat /etc/passwd`"),
+			).toBeNull();
 		});
 
 		it("blocks time-prefixed destructive commands", () => {

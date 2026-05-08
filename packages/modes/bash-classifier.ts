@@ -1,12 +1,27 @@
 /**
  * Bash command classifier for plan and ask modes.
  *
- * Three-tier classification:
- *   1. Static allowlist — instant bypass for obviously safe commands.
- *   2. Static denylist  — instant block for known-dangerous patterns.
- *   3. LLM classifier   — fast-tier model for ambiguous commands.
+ * ⚠️  NOT A SECURITY BOUNDARY.
  *
- * When no fast model is configured, tiers 1+2 are the only gate.
+ * This classifier steers the agent toward correct behaviour in restricted
+ * modes (plan/ask). It is a best-effort heuristic — not a sandbox. A
+ * determined user or a prompt-injected agent can trivially bypass it
+ * (base64-encoded payloads, polyglot scripts, indirect invocation, etc.).
+ *
+ * Actual safety guarantees live outside this layer: host-level permissions,
+ * container isolation, network policies, and the pi host's own tool
+ * permission system. Do not rely on this classifier for security-critical
+ * enforcement.
+ *
+ * Four-tier classification:
+ *   1. Priority allowlist — unconditional bypass for trusted prefixes
+ *      (e.g. `gh` CLI) whose arguments may contain words that trip the
+ *      denylist (issue bodies, PR comments, search queries).
+ *   2. Static denylist    — instant block for known-dangerous patterns.
+ *   3. Static allowlist   — instant bypass for obviously safe commands.
+ *   4. LLM classifier     — fast-tier model for ambiguous commands.
+ *
+ * When no fast model is configured, tiers 1–3 are the only gate.
  * The philosophy: plan mode means "no writes", not "no bash". Commands
  * that gather information (even via network or script execution) are
  * allowed; commands that mutate state are blocked.
@@ -24,6 +39,43 @@ export interface ClassifyResult {
 	/** The pi tool to use instead; only set when verdict is "redirect". */
 	tool?: "read" | "grep" | "find" | "ls";
 }
+
+// ---- Priority allowlist -------------------------------------------------
+//
+// Checked BEFORE the denylist. These prefixes represent commands whose
+// arguments (issue bodies, PR comments, search queries) routinely contain
+// words that trip the denylist regexes ("rm", "DELETE", "kill", etc.).
+// Because the commands themselves cannot mutate local state, we short-
+// circuit them as safe regardless of argument content.
+
+const PRIORITY_ALLOW_PREFIXES: readonly string[] = [
+	// Read-only gh subcommands
+	"gh pr list ",
+	"gh pr view ",
+	"gh pr diff ",
+	"gh pr diff",
+	"gh pr checks ",
+	"gh pr checks",
+	"gh pr status",
+	"gh issue list ",
+	"gh issue list",
+	"gh issue view ",
+	"gh issue status",
+	"gh run list ",
+	"gh run list",
+	"gh run view ",
+	"gh repo view ",
+	"gh repo view",
+	"gh auth status ",
+	"gh auth status",
+	"gh search ",
+	// Remote coordination — intentionally allowed in plan mode.
+	// These can't mutate local state; body content may contain deny words.
+	"gh issue create ",
+	"gh issue comment ",
+	"gh issue edit ",
+	"gh pr comment ",
+];
 
 // ---- Static allowlist ---------------------------------------------------
 //
@@ -85,13 +137,6 @@ const ALLOW_PREFIXES: readonly string[] = [
 	"df ",
 	"env",
 	"printenv",
-	"gh pr ",
-	"gh issue ",
-	"gh api ",
-	"gh run ",
-	"gh repo view",
-	"gh auth status",
-	"gh search ",
 ];
 
 /**
@@ -186,9 +231,13 @@ export function classifyStatic(command: string): ClassifyResult | null {
 	const trimmed = command.trim();
 	const firstToken = trimmed.split(/\s+/)[0] ?? "";
 
-	// ---- Denylist first (always takes priority) ----------------------------
-	// Check for shell command separators — if chained, check each segment.
-	if (/[;|]|&&|\|\|/.test(trimmed)) {
+	// ---- Chain / substitution detection -----------------------------------
+	// Must run before the priority allowlist so `gh pr list; rm -rf /` isn't
+	// short-circuited by the trusted prefix.
+	const hasChain = /[;|]|&&|\|\|/.test(trimmed);
+	const hasSubstitution = /\$\(|`/.test(trimmed);
+
+	if (hasChain) {
 		const segments = trimmed.split(/\s*(?:&&|\|\||[;|])\s*/);
 		for (const seg of segments) {
 			const segResult = classifyStatic(seg.trim());
@@ -201,6 +250,23 @@ export function classifyStatic(command: string): ClassifyResult | null {
 		}
 		return { verdict: "allow", reason: "all chained commands are safe" };
 	}
+
+	if (hasSubstitution) {
+		// Commands with substitutions are inherently ambiguous — defer to LLM.
+		return null;
+	}
+
+	// ---- Priority allowlist ------------------------------------------------
+	// Only checked for simple (non-chained, non-substituted) commands.
+	// These prefixes are safe but their arguments may contain words that
+	// trip the denylist (e.g. "rm" in an issue body).
+	for (const prefix of PRIORITY_ALLOW_PREFIXES) {
+		if (trimmed.startsWith(prefix)) {
+			return { verdict: "allow", reason: "trusted command prefix" };
+		}
+	}
+
+	// ---- Denylist ----------------------------------------------------------
 
 	// Check denylist patterns against the full command
 	for (const pattern of DENY_PATTERNS) {
