@@ -73,3 +73,7 @@ pi install git:github.com/vegardx/pi-extensions
 
 - [Configuring background models](docs/configuring-models.md)
 - [pi extension API](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md)
+
+## Inspired by
+
+- [mattpocock/skills](https://github.com/mattpocock/skills) (MIT) — `diagnose` and `improve` skills adapted from Matt Pocock's engineering skills for coding agents

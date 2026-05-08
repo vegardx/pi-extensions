@@ -14,14 +14,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
-		name: "exasearch",
-		label: "Exa Search",
+		name: "websearch",
+		label: "Web Search",
 		description:
 			"Search the web using Exa's semantic search API. Returns relevant results for technical queries.",
 		promptSnippet:
 			"Search the web for current information, prior art, libraries, or documentation",
 		promptGuidelines: [
-			"Use exasearch when you need current information that may be beyond your training data — " +
+			"Use websearch when you need current information that may be beyond your training data — " +
 				"library comparisons, recent documentation, implementation examples, or best practices.",
 			"Prefer specific, technical queries over broad ones. Run multiple focused searches rather than one broad query.",
 			"Use includeContent when you need to understand page content, not just confirm a page exists.",

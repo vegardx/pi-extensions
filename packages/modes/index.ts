@@ -58,7 +58,8 @@ const PLAN_ONLY_TOOLS = [
 	"grep",
 	"find",
 	"ls",
-	"exasearch",
+	"websearch",
+	"webfetch",
 ] as const;
 
 // ---- Types ----------------------------------------------------------------
@@ -192,6 +193,12 @@ export default function (pi: ExtensionAPI) {
 				default: ["code-reviewer", "code-simplifier", "security-analyst"],
 				doc: "Reviewer roles to run. Each role is fanned out to both primary and secondary models. Valid: code-reviewer, code-simplifier, security-analyst, architect, scope-analyst, doc-reviewer, dependency-checker.",
 			},
+			{
+				key: "githubProject",
+				type: "string",
+				default: "",
+				doc: "GitHub Project title to assign issues to when /park creates them. Leave empty to skip project assignment.",
+			},
 		],
 	});
 
@@ -310,6 +317,22 @@ export default function (pi: ExtensionAPI) {
 		return `${current}/${cap}`;
 	}
 
+	/**
+	 * Return a pretty model label for the footer. Prefers the model's display
+	 * `name` (e.g. "Claude Sonnet 4.5"), falls back to the id with any
+	 * provider prefix stripped.
+	 */
+	function formatModelLabel(ctx: ExtensionContext): string | null {
+		const model = ctx.model;
+		if (!model) return null;
+		const pretty = (model as { name?: string }).name?.trim();
+		if (pretty) return pretty;
+		const id = model.id;
+		if (!id) return null;
+		const slash = id.lastIndexOf("/");
+		return slash >= 0 ? id.slice(slash + 1) : id;
+	}
+
 	function installFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const cwd = ctx.cwd ?? "";
@@ -334,13 +357,18 @@ export default function (pi: ExtensionAPI) {
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
-					// Right: context usage + mode label.
+					// Right: context usage | model | mode label.
 					const ctxLabel = formatContextUsage(ctx);
+					const modelLabel = formatModelLabel(ctx);
+					const usageLabel =
+						ctxLabel && modelLabel
+							? `${ctxLabel} | ${modelLabel}`
+							: (ctxLabel ?? modelLabel);
 
 					if (!modeState) {
-						if (!ctxLabel) return [truncateToWidth(leftText, width)];
-						const right = theme.fg("muted", ctxLabel);
-						const rw = visibleWidth(ctxLabel);
+						if (!usageLabel) return [truncateToWidth(leftText, width)];
+						const right = theme.fg("muted", usageLabel);
+						const rw = visibleWidth(usageLabel);
 						const sl = truncateToWidth(leftText, Math.max(0, width - rw - 1));
 						const g = Math.max(1, width - visibleWidth(sl) - rw);
 						return [sl + " ".repeat(g) + right];
@@ -348,12 +376,13 @@ export default function (pi: ExtensionAPI) {
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
-					const rightParts: string[] = [];
-					if (ctxLabel) rightParts.push(theme.fg("muted", ctxLabel));
-					rightParts.push(theme.bold(theme.fg(color, label)));
-					const rightText = rightParts.join("  ");
+					const sep = theme.fg("muted", " | ");
+					const modeText = theme.bold(theme.fg(color, label));
+					const rightText = usageLabel
+						? theme.fg("muted", usageLabel) + sep + modeText
+						: modeText;
 
-					const rightVisible = ctxLabel ? `${ctxLabel}  ${label}` : label;
+					const rightVisible = usageLabel ? `${usageLabel} | ${label}` : label;
 					const rightWidth = visibleWidth(rightVisible);
 					const safeLeft = truncateToWidth(
 						leftText,
@@ -1074,6 +1103,25 @@ export default function (pi: ExtensionAPI) {
 		const dir = mkdtempSync(join(tmpdir(), "modes-park-"));
 		const bodyFile = join(dir, "issue.md");
 		const title = deriveIssueTitle(plan, branchSlug ?? "parked plan");
+
+		// Detect multi-step plans and offer sub-issue decomposition.
+		let useSubIssues = false;
+		if (steps.length > 1 && ctx.hasUI) {
+			const choice = await ctx.ui.select(
+				`Plan has ${steps.length} steps. Create as:`,
+				[
+					"Single issue (all steps in body)",
+					"Parent + sub-issues (one per step)",
+				],
+			);
+			useSubIssues = choice?.startsWith("Parent") ?? false;
+		}
+
+		// Read project assignment from settings if available.
+		const settings = readRelevantSettings(ctx.cwd);
+		const projectName = (
+			settings.extensionConfig?.[EXT_ID] as Record<string, unknown> | undefined
+		)?.githubProject as string | undefined;
 		const body = [
 			"This issue tracks an implementation plan parked from `/plan`.",
 			"A future agent session can resume from the plan below; the resulting PR",
@@ -1144,6 +1192,11 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			finalizePark(ctx, String(num), parsed.url ?? "", branchSlug);
+
+			// Create sub-issues if requested.
+			if (useSubIssues && num) {
+				await createSubIssues(ctx, num, steps, projectName);
+			}
 		} finally {
 			try {
 				rmSync(dir, { recursive: true, force: true });
@@ -1173,6 +1226,110 @@ export default function (pi: ExtensionAPI) {
 			`parked as issue #${issueNumber}${issueUrl ? ` (${issueUrl})` : ""}`,
 			"info",
 		);
+	}
+
+	/**
+	 * Create sub-issues for each plan step and link them to the parent.
+	 * Uses `gh issue create` for each step, then `gh api` to set parent.
+	 */
+	async function createSubIssues(
+		ctx: ExtensionCommandContext,
+		parentNumber: number,
+		planSteps: PlanStep[],
+		projectName?: string,
+	): Promise<void> {
+		const created: Array<{ step: PlanStep; number: number; id: number }> = [];
+		const errors: string[] = [];
+
+		for (const step of planSteps) {
+			const args = [
+				"issue",
+				"create",
+				"--title",
+				step.text,
+				"--body",
+				`Sub-issue of #${parentNumber}\n\nStep ${step.id} from the parked plan.`,
+			];
+			if (projectName) {
+				args.push("--project", projectName);
+			}
+
+			const result = runCommand("gh", args, { cwd: ctx.cwd });
+			if (!result.ok) {
+				errors.push(
+					`step ${step.id} (${step.text}): ${result.stderr.trim() || "unknown error"}`,
+				);
+				continue;
+			}
+			// `gh issue create` outputs the issue URL on success: https://github.com/owner/repo/issues/123
+			const urlMatch = result.stdout.match(/\/issues\/(\d+)/);
+			if (!urlMatch) {
+				errors.push(
+					`step ${step.id}: could not parse issue number from "${result.stdout.trim()}"`,
+				);
+				continue;
+			}
+			const num = Number.parseInt(urlMatch[1], 10);
+			if (!Number.isFinite(num)) {
+				errors.push(`step ${step.id}: invalid issue number ${urlMatch[1]}`);
+				continue;
+			}
+
+			// The sub_issues API needs the internal numeric `id`, not the
+			// user-facing `number`. Look it up via REST.
+			const restView = runCommand(
+				"gh",
+				["api", `/repos/{owner}/{repo}/issues/${num}`, "--jq", ".id"],
+				{ cwd: ctx.cwd },
+			);
+			if (!restView.ok) {
+				errors.push(
+					`step ${step.id}: REST id lookup for #${num} failed: ${restView.stderr.trim()}`,
+				);
+				continue;
+			}
+			const id = Number.parseInt(restView.stdout.trim(), 10);
+			if (!Number.isFinite(id)) {
+				errors.push(
+					`step ${step.id}: invalid REST id "${restView.stdout.trim()}"`,
+				);
+				continue;
+			}
+			created.push({ step, number: num, id });
+		}
+
+		// Link sub-issues to parent via the GitHub sub-issues API.
+		// `-F` sends the value as a number (vs. `-f` which always sends strings).
+		for (const { step, number, id } of created) {
+			const link = runCommand(
+				"gh",
+				[
+					"api",
+					"--method",
+					"POST",
+					`/repos/{owner}/{repo}/issues/${parentNumber}/sub_issues`,
+					"-F",
+					`sub_issue_id=${id}`,
+				],
+				{ cwd: ctx.cwd },
+			);
+			if (!link.ok) {
+				errors.push(
+					`link #${number} (${step.text}) to parent #${parentNumber}: ${link.stderr.trim() || "unknown error"}`,
+				);
+			}
+		}
+
+		if (created.length > 0) {
+			notify(
+				ctx,
+				`created ${created.length} sub-issues for #${parentNumber}`,
+				"info",
+			);
+		}
+		if (errors.length > 0) {
+			notify(ctx, `sub-issue errors:\n  ${errors.join("\n  ")}`, "warning");
+		}
 	}
 
 	// ---- ask tool ---------------------------------------------------------
