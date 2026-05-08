@@ -330,11 +330,19 @@ export default function (pi: ExtensionAPI) {
 					const leftText = leftParts.join("  ");
 
 					// Right: context usage + mode label.
-					if (!modeState) return [truncateToWidth(leftText, width)];
+					const ctxLabel = formatContextUsage(ctx);
+
+					if (!modeState) {
+						if (!ctxLabel) return [truncateToWidth(leftText, width)];
+						const right = theme.fg("muted", ctxLabel);
+						const rw = visibleWidth(ctxLabel);
+						const sl = truncateToWidth(leftText, Math.max(0, width - rw - 1));
+						const g = Math.max(1, width - visibleWidth(sl) - rw);
+						return [sl + " ".repeat(g) + right];
+					}
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
-					const ctxLabel = formatContextUsage(ctx);
 					const rightParts: string[] = [];
 					if (ctxLabel) rightParts.push(theme.fg("muted", ctxLabel));
 					rightParts.push(theme.bold(theme.fg(color, label)));
