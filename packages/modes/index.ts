@@ -357,12 +357,12 @@ export default function (pi: ExtensionAPI) {
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
-					// Right: context usage · model + mode label.
+					// Right: context usage | model | mode label.
 					const ctxLabel = formatContextUsage(ctx);
 					const modelLabel = formatModelLabel(ctx);
 					const usageLabel =
 						ctxLabel && modelLabel
-							? `${ctxLabel} · ${modelLabel}`
+							? `${ctxLabel} | ${modelLabel}`
 							: (ctxLabel ?? modelLabel);
 
 					if (!modeState) {
@@ -379,9 +379,9 @@ export default function (pi: ExtensionAPI) {
 					const rightParts: string[] = [];
 					if (usageLabel) rightParts.push(theme.fg("muted", usageLabel));
 					rightParts.push(theme.bold(theme.fg(color, label)));
-					const rightText = rightParts.join("  ");
+					const rightText = rightParts.join(theme.fg("muted", " | "));
 
-					const rightVisible = usageLabel ? `${usageLabel}  ${label}` : label;
+					const rightVisible = usageLabel ? `${usageLabel} | ${label}` : label;
 					const rightWidth = visibleWidth(rightVisible);
 					const safeLeft = truncateToWidth(
 						leftText,
