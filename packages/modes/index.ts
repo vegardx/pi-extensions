@@ -69,9 +69,9 @@ type Phase =
 	| "planning"
 	| "awaiting-choice"
 	| "executing"
-	| "exec-complete"
-	| "awaiting-fix"
-	| "awaiting-discussion";
+	| "reviewing"
+	| "fixing"
+	| "exec-complete";
 
 /**
  * Persisted per-session state. Steps live in tool result details and are
@@ -91,9 +91,6 @@ interface ModeState {
 	priorTools: string[];
 	/** Snapshot of last assistant plan text; used by /park. */
 	planText: string | null;
-	/** Set when auto-review ran after execution; suppresses redundant
-	 *  /review offers in the post-exec picker and /commit flow. */
-	autoReviewRan?: boolean;
 }
 
 export interface PlanStep {
@@ -187,13 +184,13 @@ export default function (pi: ExtensionAPI) {
 				key: "review.enable",
 				type: "boolean",
 				default: true,
-				doc: "Run auto-review at the end of each auto-mode turn when the review extension is loaded. Set to false to disable.",
+				doc: "Run batch review after plan execution completes. Set to false to skip review and go straight to commit.",
 			},
 			{
 				key: "review.agents",
 				type: "string[]",
 				default: ["code-reviewer", "code-simplifier", "security-analyst"],
-				doc: "Reviewer roles to run during auto-review. Valid values: architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker. Unknown values are silently dropped.",
+				doc: "Reviewer roles to run. Each role is fanned out to both primary and secondary models. Valid: code-reviewer, code-simplifier, security-analyst, architect, scope-analyst, doc-reviewer, dependency-checker.",
 			},
 		],
 	});
@@ -202,22 +199,9 @@ export default function (pi: ExtensionAPI) {
 
 	let modeState: ModeState | null = null;
 
-	// Tracks whether the current agent loop was initiated by a user
-	// prompt (vs an extension-triggered followUp). Used by the
-	// "awaiting-discussion" phase to know when the user has responded.
-	let userInitiatedTurn = false;
-
 	// Steps are reconstructed from plan_step tool results on session events.
 	let steps: PlanStep[] = [];
 	let nextStepId = 1;
-
-	// Persistent reviewer pool — alive during plan execution.
-	// Typed as `any` to avoid importing heavy modules at the top level;
-	// actual types are checked at the dynamic import sites.
-	let reviewerPool: any = null;
-	let subagentPool: any = null;
-	/** Tracks the git ref at which the last step review was sent. */
-	let lastReviewedRef: string | null = null;
 
 	// Stored TUI instance from the footer factory, used to trigger re-renders
 	// when the mode changes without reinstalling the footer.
@@ -558,10 +542,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const installed = new Set(pi.getCommands().map((c) => c.name));
-		const reviewAlreadyRan = modeState?.autoReviewRan ?? false;
 		const options: string[] = [];
-		if (installed.has("review") && !reviewAlreadyRan)
-			options.push("Run /review");
 		if (installed.has("commit")) options.push("Run /commit");
 		options.push("Stay here");
 
@@ -582,25 +563,14 @@ export default function (pi: ExtensionAPI) {
 
 		if (!choice || choice.startsWith("Stay")) return;
 
-		if (choice.startsWith("Run /review")) {
-			try {
-				const mod = await import("pi-ext-review/core");
-				await mod.runReview({ ctx, pi, arg: "" });
-			} catch (err) {
-				notify(
-					ctx,
-					`review failed: ${err instanceof Error ? err.message : String(err)}`,
-					"error",
-				);
-			}
-		} else if (choice.startsWith("Run /commit")) {
+		if (choice.startsWith("Run /commit")) {
 			try {
 				const mod = await import("pi-ext-commit/core");
 				await mod.runCommit({
 					ctx,
 					pi,
 					guidance: "",
-					skipReviewOffer: reviewAlreadyRan,
+					skipReviewOffer: true,
 				});
 			} catch (err) {
 				notify(
@@ -612,140 +582,310 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	// ---- Persistent reviewers ---------------------------------------------
-
-	/** Start the persistent reviewer pool (best-effort, non-blocking). */
-	async function startReviewerPool(ctx: ExtensionContext): Promise<void> {
-		// Dispose any previously running pool to avoid leaking processes.
-		await stopReviewerPool();
-		try {
-			const settings = readRelevantSettings(ctx.cwd);
-			// Respect the review.enable opt-out.
-			const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
-			const reviewObj =
-				reviewCfg && typeof reviewCfg === "object" && !Array.isArray(reviewCfg)
-					? (reviewCfg as Record<string, unknown>)
-					: {};
-			const enable =
-				typeof reviewObj.enable === "boolean" ? reviewObj.enable : true;
-			if (!enable) return;
-
-			const primarySpec = settings.backgroundModels?.primary?.heavy;
-			if (!primarySpec) return;
-
-			const { parseModelSpec } = await import(
-				"@vegardx/pi-extensions-shared/model-resolver.js"
-			);
-
-			const primaryParsed = parseModelSpec(primarySpec);
-			if (!primaryParsed) return;
-			const primary = {
-				provider: primaryParsed.provider,
-				model: primaryParsed.modelId,
-			};
-
-			const secondarySpec = settings.backgroundModels?.secondary?.heavy;
-			const secondaryParsed = secondarySpec
-				? parseModelSpec(secondarySpec)
-				: null;
-			const secondary = secondaryParsed
-				? { provider: secondaryParsed.provider, model: secondaryParsed.modelId }
-				: undefined;
-
-			const { SubagentPool } = await import(
-				"@vegardx/pi-extensions-shared/subagent-pool.js"
-			);
-			const { ReviewerPool } = await import(
-				"pi-ext-review/persistent-reviewer"
-			);
-
-			subagentPool = new SubagentPool();
-			reviewerPool = new ReviewerPool({
-				pool: subagentPool,
-				primary,
-				...(secondary ? { secondary } : {}),
-				cwd: ctx.cwd,
-				onProgress: (progress) => {
-					if (!ctx.hasUI) return;
-					if (progress.lastToolSummary) {
-						ctx.ui.setWidget("reviewer-activity", [
-							`🔍 ${progress.agentId}: ${progress.lastToolSummary}`,
-						]);
-					} else if (!progress.busy) {
-						ctx.ui.setWidget("reviewer-activity", undefined);
-					}
-				},
-			});
-
-			await reviewerPool.start();
-			const refResult = runCommand("git", ["rev-parse", "HEAD"], {
-				cwd: ctx.cwd,
-			});
-			lastReviewedRef = refResult.ok ? refResult.stdout.trim() : null;
-			notify(ctx, "persistent reviewers started", "info");
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			notify(ctx, `reviewer pool start failed: ${msg}`, "warning");
-			// Dispose any partially-created agents to avoid leaking processes.
-			if (reviewerPool) {
-				await reviewerPool.dispose().catch(() => {});
-			}
-			if (subagentPool) {
-				await subagentPool.dispose().catch(() => {});
-			}
-			reviewerPool = null;
-			subagentPool = null;
-		}
-	}
+	// ---- Batch review -----------------------------------------------------
 
 	/**
-	 * Send the incremental diff since the last review to persistent
-	 * reviewers. Non-blocking — fires and forgets.
+	 * Run the batch review flow:
+	 * 1. Fan out reviewers (3 roles × 2 models)
+	 * 2. Collect findings, deduplicate, consensus
+	 * 3. Cross-validate disputed critical/high
+	 * 4. Show triage dialog for disputed findings
+	 * 5. Send fix prompt for all accepted findings
 	 */
-	function sendStepForReview(
-		stepText: string,
-		stepNumber: number,
-		cwd: string,
-	): void {
-		if (!reviewerPool) return;
-		try {
-			const ref = lastReviewedRef ?? "HEAD~1";
-			// Include both committed and working-tree changes since last review.
-			const result = runCommand("git", ["diff", ref], { cwd });
-			const diff = result.ok ? result.stdout.trim() : "";
-			if (!diff) return;
-			// Advance ref to current HEAD (working-tree changes will show
-			// again if not committed, which is fine — the reviewer sees
-			// the latest state).
-			const newRef = runCommand("git", ["rev-parse", "HEAD"], { cwd });
-			lastReviewedRef = newRef.ok ? newRef.stdout.trim() : lastReviewedRef;
-			// Fire review + safety compaction (non-blocking).
-			void (async () => {
-				await reviewerPool.reviewStep({
-					diff,
-					stepDescription: stepText,
-					stepNumber,
-				});
-				await reviewerPool.compactIfNeeded();
-			})().catch(() => {
-				/* reviewer failure is non-critical */
-			});
-		} catch {
-			// Non-critical — don't break the flow.
-		}
-	}
+	async function runBatchReview(ctx: ExtensionContext): Promise<void> {
+		if (!modeState) return;
 
-	/** Shut down the reviewer pool (plan complete or session end). */
-	async function stopReviewerPool(): Promise<void> {
-		if (reviewerPool) {
-			await reviewerPool.dispose();
-			reviewerPool = null;
+		const settings = readRelevantSettings(ctx.cwd);
+		const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
+		const reviewObj =
+			reviewCfg && typeof reviewCfg === "object" && !Array.isArray(reviewCfg)
+				? (reviewCfg as Record<string, unknown>)
+				: {};
+		const enable =
+			typeof reviewObj.enable === "boolean" ? reviewObj.enable : true;
+		if (!enable) return;
+
+		const { parseModelSpec } = await import(
+			"@vegardx/pi-extensions-shared/model-resolver.js"
+		);
+
+		const primarySpec = settings.backgroundModels?.primary?.heavy;
+		if (!primarySpec) return;
+		const primaryParsed = parseModelSpec(primarySpec);
+		if (!primaryParsed) return;
+
+		const secondarySpec = settings.backgroundModels?.secondary?.heavy;
+		const secondaryParsed = secondarySpec
+			? parseModelSpec(secondarySpec)
+			: null;
+
+		// Get branch diff.
+		const defaultBranch =
+			modeState.defaultBranch ?? detectDefaultBranch(ctx.cwd);
+		const diffResult = runCommand("git", ["diff", defaultBranch ?? "HEAD~5"], {
+			cwd: ctx.cwd,
+		});
+		if (!diffResult.ok || !diffResult.stdout.trim()) {
+			notify(ctx, "no diff to review", "info");
+			return;
 		}
-		if (subagentPool) {
-			await subagentPool.dispose();
-			subagentPool = null;
+		const diff = diffResult.stdout;
+
+		// Get changed files.
+		const filesResult = runCommand(
+			"git",
+			["diff", "--name-only", defaultBranch ?? "HEAD~5"],
+			{ cwd: ctx.cwd },
+		);
+		const changedFiles = filesResult.ok
+			? filesResult.stdout.trim().split("\n").filter(Boolean)
+			: [];
+
+		// Import review infrastructure.
+		const { runReviewer, reviewTimeoutMs } = await import(
+			"pi-ext-review/reviewer-client"
+		);
+		const { dedupeFindings } = await import("pi-ext-review/findings");
+		const {
+			REVIEW_ROLES,
+			buildReviewTask,
+			buildChallengeTask,
+			buildFixPrompt,
+			classifyFindings,
+			partitionChallengeResults,
+		} = await import("./review-runner.js");
+
+		// Use configured roles or defaults.
+		const rawAgents = reviewObj.agents;
+		const roles =
+			Array.isArray(rawAgents) && rawAgents.every((a) => typeof a === "string")
+				? (rawAgents as string[])
+				: [...REVIEW_ROLES];
+
+		const scopeLabel = `branch vs. ${defaultBranch ?? "HEAD~5"}`;
+		const task = buildReviewTask({ diff, changedFiles, scopeLabel });
+		const timeout = reviewTimeoutMs(diff.length);
+
+		// Build invocation list: 3 roles × N models.
+		type Invocation = {
+			role: string;
+			tier: "primary" | "secondary";
+			provider: string;
+			model: string;
+		};
+		const invocations: Invocation[] = [];
+		for (const role of roles) {
+			invocations.push({
+				role,
+				tier: "primary",
+				provider: primaryParsed.provider,
+				model: primaryParsed.modelId,
+			});
+			if (secondaryParsed) {
+				invocations.push({
+					role,
+					tier: "secondary",
+					provider: secondaryParsed.provider,
+					model: secondaryParsed.modelId,
+				});
+			}
 		}
-		lastReviewedRef = null;
+
+		// Show progress.
+		modeState.phase = "reviewing";
+		persist();
+		updateWidget(ctx);
+		if (ctx.hasUI) {
+			ctx.ui.setWidget(
+				"review-progress",
+				invocations.map((inv) => `⏳ ${inv.role} (${inv.tier})`),
+			);
+		}
+		notify(ctx, `reviewing with ${invocations.length} agents…`, "info");
+
+		// Fan out reviewers in parallel.
+		let completed = 0;
+		const outcomes = await Promise.all(
+			invocations.map(async (inv) => {
+				const outcome = await runReviewer({
+					role: inv.role as any,
+					task,
+					provider: inv.provider,
+					model: inv.model,
+					cwd: ctx.cwd,
+					timeoutMs: timeout,
+				});
+				completed++;
+				if (ctx.hasUI) {
+					const lines = invocations.map((inv2, i) => {
+						const done = i < completed;
+						return `${done ? "✅" : "⏳"} ${inv2.role} (${inv2.tier})`;
+					});
+					ctx.ui.setWidget("review-progress", lines);
+				}
+				return { ...outcome, tier: inv.tier as "primary" | "secondary" };
+			}),
+		);
+
+		if (ctx.hasUI) ctx.ui.setWidget("review-progress", undefined);
+
+		// Deduplicate findings.
+		const bundles = outcomes
+			.filter((o) => !o.error)
+			.map((o) => ({
+				role: o.role,
+				findings: o.findings,
+				tier: o.tier,
+			}));
+		const deduped = dedupeFindings(bundles);
+
+		if (deduped.length === 0) {
+			notify(ctx, "review complete — no findings", "info");
+			modeState.phase = "exec-complete";
+			persist();
+			updateWidget(ctx);
+			return;
+		}
+
+		// Classify findings.
+		const {
+			consensus,
+			needsChallenge,
+			skip: _skipped,
+		} = classifyFindings(deduped);
+
+		// Cross-validate critical/high single-agent findings.
+		let confirmed: typeof consensus = [];
+		let disputed: typeof consensus = [];
+
+		if (needsChallenge.length > 0) {
+			notify(
+				ctx,
+				`cross-validating ${needsChallenge.length} findings…`,
+				"info",
+			);
+			const challengeResults = await Promise.all(
+				needsChallenge.map(async (finding) => {
+					// Use the opposite model tier for cross-validation.
+					const challengerProvider = secondaryParsed
+						? secondaryParsed.provider
+						: primaryParsed.provider;
+					const challengerModel = secondaryParsed
+						? secondaryParsed.modelId
+						: primaryParsed.modelId;
+
+					const challengeTask = buildChallengeTask({ finding, diff });
+					const result = await runReviewer({
+						role: "code-reviewer", // Challenger uses code-reviewer prompt variant
+						task: challengeTask,
+						provider: challengerProvider,
+						model: challengerModel,
+						cwd: ctx.cwd,
+						timeoutMs: timeout,
+					});
+
+					// Parse challenger output (expects {agree, reason, suggestedAction?})
+					const agree = result.findings.length > 0 || !result.error;
+					return {
+						finding,
+						agree,
+						reason: result.error ?? "cross-validation passed",
+						suggestedAction: result.findings[0]?.suggestedAction,
+					};
+				}),
+			);
+			const partitioned = partitionChallengeResults(challengeResults);
+			confirmed = partitioned.confirmed;
+			disputed = partitioned.disputed;
+		}
+
+		// All findings to fix (consensus + confirmed by cross-validation).
+		const toFix = [...consensus, ...confirmed];
+
+		// Show triage dialog for disputed findings if any.
+		if (disputed.length > 0 && ctx.hasUI) {
+			try {
+				const dialogMod = await import("@vegardx/pi-structured-dialog");
+				const items = disputed.map((f) => ({
+					id: `${f.file}:${f.line ?? 0}:${f.title}`,
+					label: f.title.length > 30 ? `${f.title.slice(0, 27)}…` : f.title,
+					prompt: `**[${f.severity}]** ${f.title}\n\n${f.description}`,
+					options: [
+						{ value: "fix", label: "Fix" },
+						{ value: "skip", label: "Skip" },
+					],
+					textInput: { placeholder: "Notes (optional)…" },
+					preview: {
+						kind: "code" as const,
+						content: f.suggestedAction ?? f.description,
+						title: `${f.file}${f.line ? `:${f.line}` : ""}`,
+					},
+					metadata: [
+						{ key: "Raised by", value: f.flaggedBy.join(", ") },
+						{
+							key: "Cross-validation",
+							value: "Disputed — challenger disagreed",
+						},
+					],
+				}));
+
+				const result = await dialogMod.showStructuredDialog(ctx, {
+					title: `Review: ${toFix.length} consensus fixes + ${disputed.length} disputed`,
+					items,
+					requireAll: false,
+				});
+
+				if (!result.cancelled) {
+					for (const answer of result.answers) {
+						if (answer.value === "fix") {
+							const f = disputed.find(
+								(d) => `${d.file}:${d.line ?? 0}:${d.title}` === answer.id,
+							);
+							if (f) toFix.push(f);
+						}
+					}
+				}
+			} catch {
+				// structured-dialog not available; skip triage.
+			}
+		}
+
+		// Report summary.
+		const summary = [
+			`**Review complete** — ${deduped.length} findings total`,
+			`- Consensus (will fix): ${consensus.length}`,
+			`- Cross-validated (will fix): ${confirmed.length}`,
+			`- Disputed (user triaged): ${disputed.length}`,
+			`- Skipped (low severity/rejected): ${_skipped.length}`,
+		].join("\n");
+		pi.sendMessage(
+			{
+				customType: `${EXT_ID}-review-report`,
+				content: summary,
+				display: true,
+			},
+			{ triggerTurn: false },
+		);
+
+		// Send fix prompt if there are findings to fix.
+		if (toFix.length > 0) {
+			modeState.phase = "fixing";
+			persist();
+			updateWidget(ctx);
+			const fixPrompt = buildFixPrompt(toFix);
+			pi.sendMessage(
+				{
+					customType: `${EXT_ID}-review-fix`,
+					content: fixPrompt,
+					display: false,
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+		} else {
+			modeState.phase = "exec-complete";
+			persist();
+			updateWidget(ctx);
+		}
 	}
 
 	// ---- Ask dialog -------------------------------------------------------
@@ -877,11 +1017,6 @@ export default function (pi: ExtensionAPI) {
 		setMode("auto", ctx);
 		persist();
 		updateWidget(ctx);
-
-		// Start persistent reviewers (best-effort, non-blocking for the user
-		// but awaited before the implement message is sent so the pool is
-		// ready before the first step completes).
-		await startReviewerPool(ctx);
 
 		const hasSteps = steps.length > 0;
 		notify(
@@ -1210,11 +1345,6 @@ export default function (pi: ExtensionAPI) {
 					}
 					found.done = !found.done;
 					updateWidget(ctx);
-					// Send the step diff to persistent reviewers (non-blocking).
-					if (found.done && modeState?.phase === "executing") {
-						const doneCount = steps.filter((s) => s.done).length;
-						sendStepForReview(found.text, doneCount, ctx.cwd);
-					}
 					return {
 						content: [
 							{
@@ -1299,14 +1429,11 @@ export default function (pi: ExtensionAPI) {
 		// session switches (/new, /resume, /fork).
 		if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 		footerTui = null;
-		// Shut down persistent reviewers.
-		await stopReviewerPool();
 	});
 
 	// ---- System prompt injection ------------------------------------------
 
 	pi.on("before_agent_start", async () => {
-		userInitiatedTurn = true;
 		pendingQuestions = [];
 		if (!modeState) return;
 
@@ -1536,9 +1663,6 @@ export default function (pi: ExtensionAPI) {
 	// ---- Completion detection ---------------------------------------------
 
 	pi.on("agent_end", async (_event, ctx) => {
-		const wasUserInitiated = userInitiatedTurn;
-		userInitiatedTurn = false;
-
 		// If the agent queued questions via the `ask` tool, present them
 		// as a structured dialog and feed answers back. This takes priority
 		// over the plan picker — the agent needs answers before it can
@@ -1567,28 +1691,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// Auto-review queued only auto-apply fixes (no discussion); show
-		// picker once the fix turn ends.
-		if (modeState?.phase === "awaiting-fix") {
+		// Fixing phase complete — agent finished applying review fixes.
+		if (modeState?.phase === "fixing") {
 			modeState.phase = "exec-complete";
 			persist();
 			updateWidget(ctx);
 			runDetached("post-fix picker", ctx, () => runPostExecPicker(ctx));
-			return;
-		}
-
-		// Auto-review surfaced findings for discussion. The agent presented
-		// them and asked the user to respond. Don't pop the picker until
-		// the user has sent at least one message and that turn completes.
-		if (modeState?.phase === "awaiting-discussion") {
-			if (wasUserInitiated) {
-				modeState.phase = "exec-complete";
-				persist();
-				updateWidget(ctx);
-				runDetached("post-discussion picker", ctx, () =>
-					runPostExecPicker(ctx),
-				);
-			}
 			return;
 		}
 
@@ -1619,269 +1727,17 @@ export default function (pi: ExtensionAPI) {
 		pi.appendEntry(STEPS_CLEARED_ENTRY);
 		updateWidget(ctx);
 
-		// Auto-review then post-exec picker — detached to avoid deadlocking
-		// pi's idle flip.
+		// Run batch review then post-exec picker.
 		runDetached("post-exec", ctx, async () => {
-			// ---- Persistent reviewer path (new) ----
-			if (reviewerPool) {
-				try {
-					const { runOrchestrator } = await import(
-						"pi-ext-review/orchestrator"
-					);
-					const { runStaticAnalysis } = await import(
-						"pi-ext-review/static-checker"
-					);
-					const {
-						readStaticAnalysisConfig,
-						buildAutoReviewFixPrompt,
-						buildAutoReviewDiscussionPrompt,
-						buildAutoReviewReport,
-						partitionFindings,
-					} = await import("pi-ext-review/auto-review");
-					const { parseModelSpec } = await import(
-						"@vegardx/pi-extensions-shared/model-resolver.js"
-					);
-
-					notify(ctx, "collecting reviewer findings…", "info");
-					const collected = await reviewerPool.collect(300_000);
-
-					// Run static analysis on the final state.
-					const staticCfg = readStaticAnalysisConfig(ctx.cwd);
-					const staticResults = await runStaticAnalysis(ctx.cwd, staticCfg);
-					const allStaticFindings = [...staticResults.byLane.values()].flat();
-
-					// Build orchestrator inputs.
-					const settings = readRelevantSettings(ctx.cwd);
-					const primarySpec = settings.backgroundModels?.primary?.heavy ?? "";
-					const orchInputs = [
-						{ source: "primary", findings: collected.primary },
-						...(collected.secondary
-							? [{ source: "secondary", findings: collected.secondary }]
-							: []),
-						...(allStaticFindings.length > 0
-							? [{ source: "static", findings: allStaticFindings }]
-							: []),
-					];
-
-					// Get the full branch diff for the orchestrator.
-					const defaultBranch =
-						modeState?.defaultBranch ?? detectDefaultBranch(ctx.cwd);
-					// Include working-tree changes (no "HEAD" endpoint).
-					const diffResult = runCommand(
-						"git",
-						["diff", defaultBranch ?? "HEAD~5"],
-						{ cwd: ctx.cwd },
-					);
-					const fullDiff = diffResult.ok ? diffResult.stdout : "";
-
-					// Parse the primary spec for orchestrator model.
-					const orchParsed = parseModelSpec(primarySpec);
-					const orchProvider = orchParsed?.provider ?? "";
-					const orchModel = orchParsed?.modelId ?? "";
-
-					let findings: Awaited<
-						ReturnType<typeof runOrchestrator>
-					>["findings"] = [];
-					let orchestratorRan = false;
-					let orchestratorError: string | undefined;
-
-					if (orchProvider && orchModel && orchInputs.length > 0) {
-						notify(ctx, "running orchestrator synthesis…", "info");
-						const orchResult = await runOrchestrator({
-							pool: subagentPool,
-							provider: orchProvider,
-							model: orchModel,
-							inputs: orchInputs,
-							diff: fullDiff,
-							scopeLabel: `branch vs. ${defaultBranch ?? "HEAD~5"}`,
-							cwd: ctx.cwd,
-						});
-						findings = orchResult.findings;
-						orchestratorRan = orchResult.ran;
-						orchestratorError = orchResult.error;
-					}
-
-					// Split findings by confidence.
-					const { autoApplied, surfaced } = partitionFindings(findings);
-
-					// Send report.
-					const secondarySpec = settings.backgroundModels?.secondary?.heavy;
-					pi.sendMessage(
-						{
-							customType: "auto-review-report",
-							content: buildAutoReviewReport({
-								scopeLabel: `branch vs. ${defaultBranch ?? "HEAD~5"}`,
-								roles: ["persistent-reviewer"],
-								multiModel: !!secondarySpec,
-								primaryModel: primarySpec,
-								...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
-								findings,
-								autoApplied,
-								surfaced,
-								orchestratorRan,
-								...(orchestratorError ? { orchestratorError } : {}),
-								staticToolsRan: staticResults.toolResults.filter(
-									(r) => r.available && r.enabled,
-								).length,
-								totalInvocations: collected.secondary ? 2 : 1,
-								diffSize: fullDiff.length,
-								totalCost: collected.usage.cost,
-								errors: [],
-							}),
-							display: true,
-							details: {
-								totalFindings: findings.length,
-								autoApplied: autoApplied.length,
-								surfaced: surfaced.length,
-							},
-						},
-						{ triggerTurn: false },
-					);
-
-					// Send fix prompt if auto-apply findings exist.
-					if (autoApplied.length > 0) {
-						pi.sendMessage(
-							{
-								customType: "auto-review-followup",
-								content: buildAutoReviewFixPrompt(
-									autoApplied,
-									primarySpec,
-									secondarySpec,
-								),
-								display: false,
-							},
-							{
-								deliverAs: "followUp",
-								triggerTurn: surfaced.length === 0,
-							},
-						);
-					}
-
-					// Send discussion prompt if surfaced findings exist.
-					if (surfaced.length > 0) {
-						pi.sendMessage(
-							{
-								customType: "auto-review-discussion",
-								content: buildAutoReviewDiscussionPrompt(
-									surfaced,
-									primarySpec,
-									secondarySpec,
-								),
-								display: false,
-							},
-							{ deliverAs: "followUp", triggerTurn: true },
-						);
-					}
-
-					const hasPendingWork = autoApplied.length > 0 || surfaced.length > 0;
-					if (hasPendingWork && modeState) {
-						modeState.phase =
-							surfaced.length > 0 ? "awaiting-discussion" : "awaiting-fix";
-					}
-
-					// Common cleanup regardless of pending work.
-					if (modeState) {
-						modeState.autoReviewRan = true;
-						persist();
-					}
-					updateWidget(ctx);
-					await reviewerPool.reset();
-
-					if (hasPendingWork) return;
-				} catch (err) {
-					notify(
-						ctx,
-						`persistent review failed: ${err instanceof Error ? err.message : String(err)} — falling back to batch review`,
-						"warning",
-					);
-					// Fall through to the batch auto-review path below.
-				}
-
-				// If persistent review succeeded with no pending work, show
-				// the picker and stop.
-				if (!reviewerPool || modeState?.autoReviewRan) {
-					await new Promise<void>((resolve) => setImmediate(resolve));
-					await runPostExecPicker(ctx);
-					return;
-				}
-			}
-
-			// ---- Fallback: old batch auto-review path ----
-			if (!pi.getCommands().some((c) => c.name === "review")) {
-				await runPostExecPicker(ctx);
-				return;
-			}
-			let autoReviewMod: typeof import("pi-ext-review/auto-review") | null =
-				null;
 			try {
-				autoReviewMod = await import("pi-ext-review/auto-review");
-			} catch {
-				// Module not resolvable despite being in the command list — skip.
+				await runBatchReview(ctx);
+			} catch (err) {
+				notify(
+					ctx,
+					`review failed: ${err instanceof Error ? err.message : String(err)}`,
+					"warning",
+				);
 			}
-			if (autoReviewMod) {
-				const settings = readRelevantSettings(ctx.cwd);
-				const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
-				const reviewObj =
-					reviewCfg &&
-					typeof reviewCfg === "object" &&
-					!Array.isArray(reviewCfg)
-						? (reviewCfg as Record<string, unknown>)
-						: {};
-				const enable =
-					typeof reviewObj.enable === "boolean" ? reviewObj.enable : true;
-				const rawAgents = reviewObj.agents;
-				const agents =
-					Array.isArray(rawAgents) &&
-					rawAgents.every((a) => typeof a === "string") &&
-					rawAgents.every((a) =>
-						autoReviewMod?.VALID_REVIEWER_ROLES.includes(a as never),
-					)
-						? (rawAgents as string[])
-						: [...autoReviewMod.AUTO_REVIEW_ROLES];
-				if (enable) {
-					try {
-						const result = await autoReviewMod.runAutoReview({
-							ctx,
-							pi,
-							extensionName: EXT_ID,
-							roles: agents,
-							multiModel: true,
-						});
-						// If the auto-review queued a fix or discussion turn,
-						// the agent is now busy. Defer the picker until the
-						// work is done.
-						const hasSurfaced = (result.surfaced?.length ?? 0) > 0;
-						const hasAutoApplied = (result.autoApplied?.length ?? 0) > 0;
-						if (hasSurfaced || hasAutoApplied) {
-							if (modeState) {
-								modeState.autoReviewRan = true;
-								// Discussion findings need user interaction before
-								// the picker pops. Fix-only can proceed immediately.
-								modeState.phase = hasSurfaced
-									? "awaiting-discussion"
-									: "awaiting-fix";
-							}
-							persist();
-							updateWidget(ctx);
-							return;
-						}
-						if (result.ran && modeState) {
-							modeState.autoReviewRan = true;
-							persist();
-						}
-					} catch (err) {
-						notify(
-							ctx,
-							`auto-review failed: ${
-								err instanceof Error ? err.message : String(err)
-							}`,
-							"warning",
-						);
-					}
-				}
-			}
-			// Yield a macrotask tick so pi can finish processing any
-			// sendMessage calls before we open the select picker.
 			await new Promise<void>((resolve) => setImmediate(resolve));
 			await runPostExecPicker(ctx);
 		});

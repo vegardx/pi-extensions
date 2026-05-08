@@ -13,7 +13,9 @@
     "./auto-review": "./auto-review.ts",
     "./persistent-reviewer": "./persistent-reviewer.ts",
     "./orchestrator": "./orchestrator.ts",
-    "./static-checker": "./static-checker.ts"
+    "./static-checker": "./static-checker.ts",
+    "./findings": "./findings.ts",
+    "./reviewer-client": "./reviewer-client.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
