@@ -58,7 +58,8 @@ const PLAN_ONLY_TOOLS = [
 	"grep",
 	"find",
 	"ls",
-	"exasearch",
+	"websearch",
+	"webfetch",
 ] as const;
 
 // ---- Types ----------------------------------------------------------------

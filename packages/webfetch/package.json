@@ -1,0 +1,23 @@
+{
+	"name": "pi-ext-webfetch",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Fetch and extract content from web pages. Uses Defuddle for content extraction and an optional LLM sub-agent for focused summarization.",
+	"pi": {
+		"extensions": ["./index.ts"]
+	},
+	"dependencies": {
+		"defuddle": "^0.18.0"
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"@sinclair/typebox": "*",
+		"@vegardx/pi-extensions-shared": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-coding-agent": { "optional": true },
+		"@sinclair/typebox": { "optional": true },
+		"@vegardx/pi-extensions-shared": { "optional": true }
+	}
+}
