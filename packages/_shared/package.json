@@ -5,10 +5,12 @@
   "type": "module",
   "description": "Shared helpers used by the extensions in this monorepo (model resolution, settings reading).",
   "peerDependencies": {
+    "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
+    "@mariozechner/pi-agent-core": { "optional": true },
     "@mariozechner/pi-ai": { "optional": true },
     "@mariozechner/pi-coding-agent": { "optional": true }
   }
