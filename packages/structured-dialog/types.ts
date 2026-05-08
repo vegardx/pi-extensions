@@ -35,7 +35,10 @@ export interface DialogItem {
 	label: string;
 	/** Full description/prompt shown when this tab is active. */
 	prompt: string;
-	/** Available actions the user can pick. At least 2 required. */
+	/**
+	 * Available actions the user can pick. Can be empty when only a
+	 * text input is used.
+	 */
 	options: DialogOption[];
 	/** Optional preview pane content. */
 	preview?: DialogPreview;
@@ -46,16 +49,32 @@ export interface DialogItem {
 	 * tab bar (e.g. "CRITICAL", "NOTE"). Purely cosmetic.
 	 */
 	badge?: string;
+	/**
+	 * When present, an editable text field is rendered below the options.
+	 * Selecting an option pre-fills the text field with the option label.
+	 * The text field content becomes `DialogAnswer.text`.
+	 */
+	textInput?: DialogTextInput;
+}
+
+/** Configuration for an always-visible text input field on an item. */
+export interface DialogTextInput {
+	/** Placeholder shown when the field is empty. */
+	placeholder?: string;
+	/** Initial text pre-filled into the field. */
+	prefill?: string;
 }
 
 /** Per-item answer recorded by the user. */
 export interface DialogAnswer {
 	/** Matches `DialogItem.id`. */
 	id: string;
-	/** The selected option's `value`. */
+	/** The selected option's `value` (empty string when answered via text only). */
 	value: string;
 	/** The selected option's `label` (for display). */
 	label: string;
+	/** Free-text content from the text input field. */
+	text?: string;
 }
 
 /** The complete result returned when the dialog closes. */
