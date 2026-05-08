@@ -110,7 +110,14 @@ describe("OneshotResult", () => {
 		const result: OneshotResult = {
 			text: "",
 			error: "timeout",
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+				turns: 0,
+			},
 		};
 		expect(result.error).toBe("timeout");
 	});
@@ -119,9 +126,19 @@ describe("OneshotResult", () => {
 describe("PersistentAgent interface", () => {
 	it("exposes expected readonly properties", () => {
 		// Type-only assertion — we verify the shape compiles.
-		const agentShape: Pick<PersistentAgent, "id" | "usage" | "busy" | "disposed"> = {
+		const agentShape: Pick<
+			PersistentAgent,
+			"id" | "usage" | "busy" | "disposed"
+		> = {
 			id: "reviewer-primary",
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 },
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+				turns: 0,
+			},
 			busy: false,
 			disposed: false,
 		};
