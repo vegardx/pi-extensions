@@ -27,6 +27,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -307,9 +308,14 @@ function renderProgress(
 
 interface ResolvedTierModel {
 	tier: BackgroundTier;
-	provider: string;
-	modelId: string;
+	/** Display string: `"provider/id"`. */
 	spec: string;
+	/** Retained Model reference for the in-process orchestrator session.
+	 *  Avoids a second registry lookup that can fail if the provider
+	 *  re-registers models between resolution and use. Subagent paths
+	 *  (reviewer fan-out, consultation) pass provider/model strings to
+	 *  separate processes and are not affected. */
+	model: Model<Api>;
 }
 
 async function resolveTierModel(
@@ -326,9 +332,8 @@ async function resolveTierModel(
 	if (!resolved) return null;
 	return {
 		tier,
-		provider: resolved.model.provider,
-		modelId: resolved.model.id,
 		spec: `${resolved.model.provider}/${resolved.model.id}`,
+		model: resolved.model,
 	};
 }
 
@@ -505,8 +510,8 @@ async function runOrchestratorPhase(opts: {
 							tag: "consultation",
 							task: consultTask,
 							systemPromptPath: CHALLENGER_PROMPT_PATH,
-							provider: secondary.provider,
-							model: secondary.modelId,
+							provider: secondary.model.provider,
+							model: secondary.model.id,
 							cwd: ctx.cwd,
 							signal,
 							timeoutMs: reviewTimeoutMs(rc.diff.length),
@@ -528,19 +533,9 @@ async function runOrchestratorPhase(opts: {
 		: [];
 
 	// ---- Spin up in-process orchestrator session -------------------------
-	// Use the host's model registry so custom-provider models (e.g. radicalai)
-	// are visible. A fresh ModelRegistry.create() only sees built-in providers.
-	const model = ctx.modelRegistry.find(primary.provider, primary.modelId);
-
-	if (!model) {
-		const err = `orchestrator: could not resolve model ${primary.spec} from registry`;
-		notify(ctx, err, "warning");
-		if (ctx.hasUI) {
-			ctx.ui.setStatus(extensionName, undefined);
-			ctx.ui.setWidget(AUTO_REVIEW_WIDGET, undefined);
-		}
-		return { findings: [], orchestratorRan: false, error: err };
-	}
+	// Use the model reference retained by resolveTierModel so custom-provider
+	// models (e.g. radicalai) remain usable even if the provider re-registers
+	// its model list between resolution and use (async refresh race).
 
 	const systemPrompt = readFileSync(ORCHESTRATOR_PROMPT_PATH, "utf8");
 	const loader = new DefaultResourceLoader({
@@ -555,7 +550,7 @@ async function runOrchestratorPhase(opts: {
 
 	const { session } = await createAgentSession({
 		cwd: ctx.cwd,
-		model,
+		model: primary.model,
 		// Read-only built-in tools + the optional consult custom tool.
 		tools: ["read", "grep", "find", "ls"],
 		customTools,
@@ -1023,8 +1018,8 @@ export async function runAutoReview(
 								| "code-simplifier",
 						),
 					),
-					provider: inv.provider,
-					model: inv.modelId,
+					provider: inv.model.provider,
+					model: inv.model.id,
 					cwd: ctx.cwd,
 					signal: ctx.signal,
 					timeoutMs: reviewTimeoutMs(rc.diff.length),
