@@ -15,6 +15,7 @@
 import type {
 	AgentToolResult,
 	ExtensionAPI,
+	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import {
@@ -37,7 +38,7 @@ export interface PlanToolHooks {
 	/** Returns the active plan's slug, or null if no plan is active. */
 	getCurrentPlanSlug(): string | null;
 	/** Called after any successful mutation so modes can refresh widgets. */
-	onPlanChanged(plan: Plan): void;
+	onPlanChanged(plan: Plan, ctx: ExtensionContext): void;
 }
 
 function nowIso(): string {
@@ -151,7 +152,13 @@ export function registerPlanTools(
 			),
 		}),
 
-		async execute(_toolCallId, params): Promise<Result> {
+		async execute(
+			_toolCallId,
+			params,
+			_signal,
+			_onUpdate,
+			ctx,
+		): Promise<Result> {
 			const slug = hooks.getCurrentPlanSlug();
 			const planOrError = loadOrError(slug);
 			if (typeof planOrError === "string") {
@@ -222,7 +229,7 @@ export function registerPlanTools(
 					}
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [
 							{ type: "text", text: `Added phase \`${id}\`: ${phase.title}` },
@@ -266,7 +273,7 @@ export function registerPlanTools(
 					phase.updatedAt = nowIso();
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [{ type: "text", text: `Updated phase \`${phase.id}\`` }],
 						details: { action: "update", phase },
@@ -292,7 +299,7 @@ export function registerPlanTools(
 					const [removed] = plan.phases.splice(idx, 1);
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [
 							{ type: "text", text: `Removed phase \`${removed.id}\`` },
@@ -327,7 +334,7 @@ export function registerPlanTools(
 					plan.phases.splice(target, 0, phase);
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [
 							{
@@ -386,7 +393,13 @@ export function registerPlanTools(
 			),
 		}),
 
-		async execute(_toolCallId, params): Promise<Result> {
+		async execute(
+			_toolCallId,
+			params,
+			_signal,
+			_onUpdate,
+			ctx,
+		): Promise<Result> {
 			const slug = hooks.getCurrentPlanSlug();
 			const planOrError = loadOrError(slug);
 			if (typeof planOrError === "string") {
@@ -446,7 +459,7 @@ export function registerPlanTools(
 					phase.updatedAt = nowIso();
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [
 							{
@@ -483,7 +496,7 @@ export function registerPlanTools(
 					phase.updatedAt = nowIso();
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [{ type: "text", text: `Updated task \`${task.id}\`` }],
 						details: { action: "update", task, phaseId: phase.id },
@@ -514,7 +527,7 @@ export function registerPlanTools(
 					phase.updatedAt = nowIso();
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [
 							{
@@ -549,7 +562,7 @@ export function registerPlanTools(
 					phase.updatedAt = nowIso();
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [{ type: "text", text: `Removed task \`${removed.id}\`` }],
 						details: { action: "remove", task: removed, phaseId: phase.id },
@@ -607,7 +620,7 @@ export function registerPlanTools(
 					target.updatedAt = nowIso();
 					plan.updatedAt = nowIso();
 					savePlan(plan);
-					hooks.onPlanChanged(plan);
+					hooks.onPlanChanged(plan, ctx);
 					return {
 						content: [
 							{
