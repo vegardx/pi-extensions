@@ -6,9 +6,13 @@
  * `in-review` and persisting `phase.prNumber`.
  */
 
-import { runCommand, type ShellResult, workingTreeClean } from "../git.js";
+import {
+	runCommand as defaultRunCommand,
+	workingTreeClean as defaultWorkingTreeClean,
+	type ShellResult,
+} from "../git.js";
 import type { Plan, Phase as PlanPhase } from "./schema.js";
-import { worktreePath } from "./worktree.js";
+import { effectiveWorktreePath } from "./worktree.js";
 
 export interface ShipOptions {
 	/** Open PR as draft instead of ready-for-review. Default false. */
@@ -17,6 +21,14 @@ export interface ShipOptions {
 	commitMessage?: string;
 	/** Skip dirty-tree refusal — auto-commit pending changes. */
 	autoCommit?: boolean;
+	/** Injection seam for tests. Defaults to the real runCommand. */
+	run?: (
+		command: string,
+		args: readonly string[],
+		opts?: { cwd?: string; stdin?: string },
+	) => ShellResult;
+	/** Injection seam for tests. Defaults to the real workingTreeClean. */
+	isClean?: (cwd: string) => boolean;
 }
 
 export interface ShipResult {
@@ -29,18 +41,21 @@ export interface ShipResult {
 /**
  * Ship a phase: ensure committed, push branch, open PR, return PR info.
  *
- * Caller is responsible for flipping the phase status (`in-review`) and
- * persisting the plan after this returns ok=true with a prNumber.
+ * Operates in the phase's actual worktree (`phase.worktreePath`),
+ * falling back to the canonical path. Caller is responsible for
+ * flipping the phase status to `in-review` and persisting `prNumber`
+ * on success.
  */
 export async function shipPhase(
 	plan: Plan,
 	phase: PlanPhase,
 	options: ShipOptions = {},
 ): Promise<ShipResult> {
-	const path = worktreePath(plan, phase);
+	const run = options.run ?? defaultRunCommand;
+	const isClean = options.isClean ?? defaultWorkingTreeClean;
+	const path = effectiveWorktreePath(plan, phase);
 
-	// Step 1: handle uncommitted changes.
-	if (!workingTreeClean(path)) {
+	if (!isClean(path)) {
 		if (!options.autoCommit) {
 			return {
 				ok: false,
@@ -51,14 +66,11 @@ export async function shipPhase(
 		}
 		const message =
 			options.commitMessage ?? `${phase.title}\n\nGoal: ${phase.goal}`;
-		const stage = runCommand("git", ["add", "-A"], { cwd: path });
+		const stage = run("git", ["add", "-A"], { cwd: path });
 		if (!stage.ok) {
-			return {
-				ok: false,
-				error: `git add -A failed: ${stage.stderr.trim()}`,
-			};
+			return { ok: false, error: `git add -A failed: ${stage.stderr.trim()}` };
 		}
-		const commit = runCommand("git", ["commit", "-m", message], { cwd: path });
+		const commit = run("git", ["commit", "-m", message], { cwd: path });
 		if (!commit.ok) {
 			return {
 				ok: false,
@@ -67,53 +79,60 @@ export async function shipPhase(
 		}
 	}
 
-	// Step 2: push the branch.
-	const push = runCommand("git", ["push", "-u", "origin", phase.branch], {
+	const push = run("git", ["push", "-u", "origin", phase.branch], {
 		cwd: path,
 	});
 	if (!push.ok) {
-		return {
-			ok: false,
-			error: `git push failed: ${push.stderr.trim()}`,
-		};
+		return { ok: false, error: `git push failed: ${push.stderr.trim()}` };
 	}
 
-	// Step 3: open the PR.
-	const prTitle = phase.title;
-	const prBody = renderPrBody(plan, phase);
 	const prArgs = [
 		"pr",
 		"create",
 		"--title",
-		prTitle,
+		phase.title,
 		"--body",
-		prBody,
+		renderPrBody(plan, phase),
 		"--head",
 		phase.branch,
 	];
 	if (options.draft) prArgs.push("--draft");
 
-	const create = runCommand("gh", prArgs, { cwd: path });
+	const create = run("gh", prArgs, { cwd: path });
 	if (!create.ok) {
 		return {
 			ok: false,
 			error: `gh pr create failed: ${create.stderr.trim()}`,
 		};
 	}
-	const urlMatch = create.stdout.match(/\/pull\/(\d+)/);
-	const num = urlMatch ? Number.parseInt(urlMatch[1], 10) : Number.NaN;
-	const url = create.stdout.match(/https?:\/\/\S+/)?.[0] ?? "";
-
-	if (!Number.isFinite(num)) {
+	const parsed = parsePrCreateOutput(create.stdout);
+	if (!parsed) {
 		return {
 			ok: false,
 			error: `gh pr create returned unexpected output: ${create.stdout.trim()}`,
 		};
 	}
-	return { ok: true, prNumber: num, prUrl: url };
+	return { ok: true, prNumber: parsed.number, prUrl: parsed.url };
 }
 
-function renderPrBody(plan: Plan, phase: PlanPhase): string {
+/**
+ * Parse `gh pr create`'s stdout into a structured result. The expected
+ * output is a URL like `https://github.com/owner/repo/pull/42` plus
+ * possibly leading log lines. Exported for testing.
+ */
+export function parsePrCreateOutput(
+	stdout: string,
+): { number: number; url: string } | null {
+	const url = stdout.match(/https?:\/\/\S+/)?.[0] ?? "";
+	const numberMatch = stdout.match(/\/pull\/(\d+)/);
+	if (!numberMatch) return null;
+	const number = Number.parseInt(numberMatch[1], 10);
+	if (!Number.isFinite(number)) return null;
+	return { number, url };
+}
+
+/** Render a PR body for a phase. Exported for testing. */
+export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 	const lines: string[] = [];
 	lines.push("## Goal", "", phase.goal || "_(no goal set)_", "");
 	if (phase.tasks.length > 0) {
@@ -131,6 +150,3 @@ function renderPrBody(plan: Plan, phase: PlanPhase): string {
 	}
 	return lines.join("\n");
 }
-
-/** Re-export for callers wanting raw shell types. */
-export type { ShellResult };
