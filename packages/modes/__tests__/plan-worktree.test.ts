@@ -10,7 +10,6 @@ function makePlan(repoPath: string): Plan {
 		title: "feat work",
 		repo: { path: repoPath },
 		phases: [],
-		shipPolicy: "prompt",
 		createdAt: now,
 		updatedAt: now,
 	};

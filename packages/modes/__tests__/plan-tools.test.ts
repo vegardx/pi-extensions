@@ -30,7 +30,6 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		title: "Tools Test",
 		repo: { path: "/tmp/repo" },
 		phases: [],
-		shipPolicy: "prompt",
 		createdAt: now,
 		updatedAt: now,
 		...overrides,

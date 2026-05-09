@@ -353,7 +353,6 @@ export default function (pi: ExtensionAPI) {
 			title: `Plan for ${repoName}`,
 			repo: { path: ctx.cwd },
 			phases: [],
-			shipPolicy: "prompt",
 			createdAt: now,
 			updatedAt: now,
 		};
