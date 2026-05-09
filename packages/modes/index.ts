@@ -53,6 +53,7 @@ import {
 	WORKTREE_STATUSES,
 } from "./plan/schema.js";
 import { shipPhase } from "./plan/ship.js";
+import { buildSteeringPreamble } from "./plan/steering.js";
 import {
 	activePlanForRepo,
 	loadPlan,
@@ -2155,6 +2156,31 @@ export default function (pi: ExtensionAPI) {
 				return marker === currentMode;
 			}),
 		};
+	});
+
+	// ---- Steering message wrapping ---------------------------------------
+	//
+	// In auto mode, a free-text user message during /implement arrives as
+	// the most-recent / most-specific instruction and the agent reliably
+	// pivots to it. We don't *block* steering — sometimes the user really
+	// does want an immediate course correction — but we wrap it with the
+	// active phase's task list and a 4-way routing prompt so the agent has
+	// to decide between (a) refining the plan, (b) adding a task/phase,
+	// or (c) acting on it now.
+	//
+	// Slash commands, skills, templates, and extension-injected messages
+	// pass through unchanged — see buildSteeringPreamble for the rules.
+	pi.on("input", async (event) => {
+		if (!modeState) return { action: "continue" };
+		const plan = currentPlan();
+		const wrapped = buildSteeringPreamble({
+			text: event.text,
+			source: event.source,
+			mode: modeState.mode,
+			plan,
+		});
+		if (wrapped === null) return { action: "continue" };
+		return { action: "transform", text: wrapped };
 	});
 
 	// ---- Tool call enforcement --------------------------------------------
