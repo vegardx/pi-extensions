@@ -241,6 +241,55 @@ export default function (pi: ExtensionAPI) {
 	 * most recently updated active plan if one exists; otherwise creates a
 	 * fresh empty plan with a default title.
 	 */
+	async function doPlanList(ctx: ExtensionContext): Promise<void> {
+		const plans = await import("./plan/storage.js").then((m) => m.listPlans());
+		if (plans.length === 0) {
+			notify(ctx, "no plans yet", "info");
+			return;
+		}
+		const lines = plans.map((p) => {
+			const marker = p.active ? "●" : "○";
+			const hereMarker = p.repoPath === ctx.cwd ? " (this repo)" : "";
+			return `  ${marker} ${p.slug} — ${p.title}${hereMarker}`;
+		});
+		notify(ctx, `plans:\n${lines.join("\n")}`, "info");
+	}
+
+	async function doPlanResume(
+		slug: string,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		const plan = loadPlan(slug);
+		if (!plan) {
+			notify(ctx, `plan ${slug} not found`, "error");
+			return;
+		}
+		if (plan.repo.path !== ctx.cwd) {
+			notify(
+				ctx,
+				`plan ${slug} belongs to ${plan.repo.path} — cannot resume from ${ctx.cwd}`,
+				"warning",
+			);
+			return;
+		}
+		if (!modeState) {
+			modeState = {
+				mode: "ask",
+				stage: "idle",
+				branch: null,
+				defaultBranch: detectDefaultBranch(ctx.cwd),
+				priorTools: pi.getActiveTools(),
+				planText: null,
+				currentPlanSlug: slug,
+			};
+		} else {
+			modeState.currentPlanSlug = slug;
+		}
+		persist();
+		updateWidget(ctx);
+		notify(ctx, `resumed plan ${slug} (${plan.phases.length} phases)`, "info");
+	}
+
 	function ensurePlanForRepo(ctx: ExtensionContext): string {
 		const existing = activePlanForRepo(ctx.cwd);
 		if (existing) return existing.slug;
@@ -419,6 +468,20 @@ export default function (pi: ExtensionAPI) {
 		return slash >= 0 ? id.slice(slash + 1) : id;
 	}
 
+	/**
+	 * Active phase label for the footer: shows the active or needs-attention
+	 * phase if any. Returns null when nothing is in flight.
+	 */
+	function formatPhaseLabel(): string | null {
+		const plan = currentPlan();
+		if (!plan) return null;
+		const inflight = plan.phases.find(
+			(p) => p.status === "active" || p.status === "needs-attention",
+		);
+		if (!inflight) return null;
+		return `${inflight.id} (${inflight.status})`;
+	}
+
 	function installFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const cwd = ctx.cwd ?? "";
@@ -443,13 +506,14 @@ export default function (pi: ExtensionAPI) {
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
-					// Right: context usage | model | mode label.
+					// Right: context usage | model | active phase | mode label.
 					const ctxLabel = formatContextUsage(ctx);
 					const modelLabel = formatModelLabel(ctx);
+					const phaseLabel = formatPhaseLabel();
 					const usageLabel =
-						ctxLabel && modelLabel
-							? `${ctxLabel} | ${modelLabel}`
-							: (ctxLabel ?? modelLabel);
+						[ctxLabel, modelLabel, phaseLabel]
+							.filter((s): s is string => Boolean(s))
+							.join(" | ") || null;
 
 					if (!modeState) {
 						if (!usageLabel) return [truncateToWidth(leftText, width)];
@@ -2212,8 +2276,19 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("plan", {
 		description:
 			"Sync to the default branch and enter plan mode. " +
+			"Subcommands: /plan list (all plans), /plan resume <slug>. " +
 			"Optionally seed with a description.",
 		handler: async (args, ctx) => {
+			const sub = args?.trim().split(/\s+/) ?? [];
+			if (sub[0] === "list") {
+				await doPlanList(ctx);
+				return;
+			}
+			if (sub[0] === "resume" && sub[1]) {
+				await doPlanResume(sub[1], ctx);
+				return;
+			}
+
 			if (!isGitRepo(ctx.cwd)) {
 				// Outside a git repo — just enter plan mode without syncing.
 				if (!modeState) {

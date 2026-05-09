@@ -1,9 +1,9 @@
 {
   "name": "pi-ext-modes",
   "private": true,
-  "version": "0.0.1",
+  "version": "1.0.0",
   "type": "module",
-  "description": "Permission-mode cycle (plan / ask / auto) with integrated git workflow.",
+  "description": "Permission-mode cycle (plan / ask / auto) with phase/task plan model and worktree-bound execution.",
   "pi": {
     "extensions": ["./index.ts"],
     "skills": ["./skills/"]
