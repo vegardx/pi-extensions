@@ -539,20 +539,6 @@ export default function (pi: ExtensionAPI) {
 		return slash >= 0 ? id.slice(slash + 1) : id;
 	}
 
-	/**
-	 * Active phase label for the footer: shows the active or needs-attention
-	 * phase if any. Returns null when nothing is in flight.
-	 */
-	function formatPhaseLabel(): string | null {
-		const plan = currentPlan();
-		if (!plan) return null;
-		const inflight = plan.phases.find((p) =>
-			WORKTREE_STATUSES.includes(p.status),
-		);
-		if (!inflight) return null;
-		return `${inflight.id} (${inflight.status})`;
-	}
-
 	function installFooter(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
 		const cwd = ctx.cwd ?? "";
@@ -577,12 +563,13 @@ export default function (pi: ExtensionAPI) {
 					for (const [, val] of statuses) leftParts.push(val);
 					const leftText = leftParts.join("  ");
 
-					// Right: context usage | model | active phase | mode label.
+					// Right: context usage | model | mode label.
+					// Phase status lives in the widget (glyph + active-phase task
+					// list), so we deliberately don't duplicate it here.
 					const ctxLabel = formatContextUsage(ctx);
 					const modelLabel = formatModelLabel(ctx);
-					const phaseLabel = formatPhaseLabel();
 					const usageLabel =
-						[ctxLabel, modelLabel, phaseLabel]
+						[ctxLabel, modelLabel]
 							.filter((s): s is string => Boolean(s))
 							.join(" | ") || null;
 
