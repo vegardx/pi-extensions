@@ -48,10 +48,9 @@ plan: feat-payments-webhooks
 
 ```
 planned ─► active ─► in-review ─► ready-to-ship ─► shipped
-                   │             ▲
-                   │             │
-                   ▼             │
-                needs-attention ─┘
+                          │
+                          ▼
+                     needs-attention ─► ready-to-ship
 
 (any non-terminal) ─► abandoned
 ```
