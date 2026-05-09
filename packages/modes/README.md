@@ -104,13 +104,13 @@ The agent uses three tools to manage the plan:
 
 State persists in `~/.pi/plans/<slug>/plan.json`.
 
-## Enforcement layers
+## Plan-mode write protection
 
-Plan mode enforces read-only access through three independent layers:
+Plan mode steers the agent toward read-only behaviour through three layers. The first two are hard gates; the third is best-effort and is **not a security boundary** (see the disclaimer at the top of `bash-classifier.ts`).
 
 1. **Tool restriction** — `edit` and `write` are absent from the active tool set.
 2. **System prompt injection** — the agent is told what mode it's in and what's allowed.
-3. **Bash classifier** — the `tool_call` hook sends every `bash` invocation to a fast-tier LLM which classifies it as `allow`, `block`, or `redirect`. Falls closed.
+3. **Bash classifier** — the `tool_call` hook screens each `bash` invocation through a static priority allowlist, a denylist, and a static allowlist. Only commands that match none of these are sent to a fast-tier LLM for an `allow` / `block` / `redirect` verdict; when no fast model is configured, the LLM step is skipped entirely. The LLM call **falls open** on error (the static denylist has already passed at that point) — relying on this layer for security is a mistake.
 
 ## Settings
 
