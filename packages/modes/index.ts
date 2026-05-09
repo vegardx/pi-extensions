@@ -50,6 +50,7 @@ import {
 	repoNameFromPath,
 	slugify,
 } from "./plan/schema.js";
+import { shipPhase } from "./plan/ship.js";
 import {
 	activePlanForRepo,
 	loadPlan,
@@ -57,6 +58,12 @@ import {
 	savePlan,
 } from "./plan/storage.js";
 import { registerPlanTools } from "./plan/tools.js";
+import {
+	createWorktree,
+	removeWorktree,
+	worktreeExists,
+	worktreePath,
+} from "./plan/worktree.js";
 
 const EXT_ID = "modes";
 const STATE_ENTRY = "modes-state";
@@ -259,6 +266,61 @@ export default function (pi: ExtensionAPI) {
 		};
 		savePlan(plan);
 		return slug;
+	}
+
+	/**
+	 * Reconcile worktrees with phase statuses.
+	 *
+	 * Invariant: a phase has a worktree iff its status is active or
+	 * needs-attention. This function brings the filesystem in line with
+	 * the plan after any mutation.
+	 */
+	function reconcileWorktrees(plan: Plan, ctx: ExtensionContext): void {
+		const defaultBranch =
+			modeState?.defaultBranch ?? detectDefaultBranch(plan.repo.path) ?? "main";
+		for (const phase of plan.phases) {
+			const shouldExist =
+				phase.status === "active" || phase.status === "needs-attention";
+			const exists = worktreeExists(plan, phase);
+
+			if (shouldExist && !exists) {
+				if (!workingTreeClean(plan.repo.path)) {
+					notify(
+						ctx,
+						`cannot create worktree for phase ${phase.id}: main has uncommitted changes — commit or stash first`,
+						"warning",
+					);
+					continue;
+				}
+				const result = createWorktree(plan, phase, defaultBranch);
+				if (!result.ok) {
+					notify(
+						ctx,
+						`worktree create for ${phase.id} failed: ${result.error}`,
+						"warning",
+					);
+				} else {
+					notify(ctx, `worktree ready: ${result.path}`, "info");
+				}
+			} else if (!shouldExist && exists) {
+				const result = removeWorktree(plan, phase);
+				if (!result.ok) {
+					if (result.reason === "dirty") {
+						notify(
+							ctx,
+							`worktree for ${phase.id} not removed (uncommitted changes at ${worktreePath(plan, phase)})`,
+							"warning",
+						);
+					} else {
+						notify(
+							ctx,
+							`worktree remove for ${phase.id} failed: ${result.error}`,
+							"warning",
+						);
+					}
+				}
+			}
+		}
 	}
 
 	// ---- UI helpers -------------------------------------------------------
@@ -1098,6 +1160,250 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Park path --------------------------------------------------------
 
+	async function doShip(
+		args: string | undefined,
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
+		const slug = modeState?.currentPlanSlug;
+		if (!slug) {
+			notify(ctx, "no plan active — run /plan first", "warning");
+			return;
+		}
+		const plan = loadPlan(slug);
+		if (!plan) {
+			notify(ctx, `plan ${slug} not found on disk`, "error");
+			return;
+		}
+
+		// Pick phase: explicit arg > first active phase > error.
+		const arg = args?.trim();
+		const phase = arg
+			? plan.phases.find((p) => p.id === arg)
+			: plan.phases.find((p) => p.status === "active");
+		if (!phase) {
+			notify(
+				ctx,
+				arg
+					? `phase ${arg} not found in plan`
+					: "no active phase to ship — set one to active first or pass /ship <phaseId>",
+				"error",
+			);
+			return;
+		}
+		if (phase.status !== "active") {
+			notify(
+				ctx,
+				`phase ${phase.id} is in status ${phase.status}; can only ship active phases`,
+				"warning",
+			);
+			return;
+		}
+
+		notify(ctx, `shipping phase ${phase.id}…`, "info");
+		const result = await shipPhase(plan, phase);
+		if (!result.ok) {
+			notify(ctx, `ship failed: ${result.error}`, "error");
+			return;
+		}
+
+		phase.prNumber = result.prNumber;
+		phase.status = "in-review";
+		phase.updatedAt = new Date().toISOString();
+		plan.updatedAt = phase.updatedAt;
+		savePlan(plan);
+		reconcileWorktrees(plan, ctx);
+		updateWidget(ctx);
+		notify(
+			ctx,
+			`phase ${phase.id} ➜ in-review (PR #${result.prNumber}${result.prUrl ? ` ${result.prUrl}` : ""})`,
+			"info",
+		);
+	}
+
+	async function doSync(ctx: ExtensionCommandContext): Promise<void> {
+		const slug = modeState?.currentPlanSlug;
+		if (!slug) {
+			notify(ctx, "no plan active", "warning");
+			return;
+		}
+		const plan = loadPlan(slug);
+		if (!plan) {
+			notify(ctx, `plan ${slug} not found on disk`, "error");
+			return;
+		}
+		const before = plan.phases.map((p) => ({ id: p.id, status: p.status }));
+		syncPlanFromRemote(plan, ctx);
+		plan.lastSyncedAt = new Date().toISOString();
+		plan.updatedAt = plan.lastSyncedAt;
+		savePlan(plan);
+		reconcileWorktrees(plan, ctx);
+		updateWidget(ctx);
+
+		const changes = plan.phases
+			.map((p) => {
+				const prev = before.find((b) => b.id === p.id);
+				return prev && prev.status !== p.status
+					? `${p.id}: ${prev.status} → ${p.status}`
+					: null;
+			})
+			.filter((s): s is string => s !== null);
+		if (changes.length === 0) {
+			notify(ctx, "sync complete — no changes", "info");
+		} else {
+			notify(ctx, `sync complete:\n  ${changes.join("\n  ")}`, "info");
+		}
+	}
+
+	async function doWorktree(
+		args: string | undefined,
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
+		const slug = modeState?.currentPlanSlug;
+		if (!slug) {
+			notify(ctx, "no plan active", "warning");
+			return;
+		}
+		const plan = loadPlan(slug);
+		if (!plan) {
+			notify(ctx, `plan ${slug} not found on disk`, "error");
+			return;
+		}
+
+		const sub = (args ?? "list").trim().split(/\s+/);
+		const action = sub[0] || "list";
+
+		if (action === "list") {
+			const lines = plan.phases.map((p) => {
+				const path = worktreePath(plan, p);
+				const status = worktreeExists(plan, p) ? "exists" : "absent";
+				return `  ${p.id} [${p.status}] — ${status}: ${path}`;
+			});
+			notify(ctx, `worktrees:\n${lines.join("\n") || "  (none)"}`, "info");
+			return;
+		}
+
+		if (action === "prune") {
+			const orphans = plan.phases.filter(
+				(p) =>
+					worktreeExists(plan, p) &&
+					(p.status === "shipped" ||
+						p.status === "abandoned" ||
+						p.status === "ready-to-ship" ||
+						p.status === "in-review"),
+			);
+			if (orphans.length === 0) {
+				notify(ctx, "no orphan worktrees", "info");
+				return;
+			}
+			const removed: string[] = [];
+			const skipped: string[] = [];
+			for (const p of orphans) {
+				const proceed = ctx.hasUI
+					? await ctx.ui.confirm(
+							`Remove worktree for ${p.id}?`,
+							`Path: ${worktreePath(plan, p)}\nStatus: ${p.status}`,
+						)
+					: true;
+				if (!proceed) {
+					skipped.push(p.id);
+					continue;
+				}
+				const r = removeWorktree(plan, p);
+				if (r.ok) {
+					removed.push(p.id);
+				} else {
+					skipped.push(`${p.id} (${r.error})`);
+				}
+			}
+			notify(
+				ctx,
+				`pruned ${removed.length} worktree(s)${skipped.length > 0 ? `; skipped: ${skipped.join(", ")}` : ""}`,
+				"info",
+			);
+			return;
+		}
+
+		notify(ctx, `unknown /worktree action: ${action}`, "warning");
+	}
+
+	/**
+	 * Sync PR state on session start, fire-and-forget. Reports any newly
+	 * shipped or abandoned phases via notify().
+	 */
+	async function syncPlanOnStart(ctx: ExtensionContext): Promise<void> {
+		const slug = modeState?.currentPlanSlug;
+		if (!slug) return;
+		const plan = loadPlan(slug);
+		if (!plan) return;
+		const before = plan.phases.map((p) => ({ id: p.id, status: p.status }));
+		syncPlanFromRemote(plan, ctx);
+		plan.lastSyncedAt = new Date().toISOString();
+		plan.updatedAt = plan.lastSyncedAt;
+		savePlan(plan);
+		reconcileWorktrees(plan, ctx);
+		updateWidget(ctx);
+
+		const transitioned = plan.phases
+			.map((p) => {
+				const prev = before.find((b) => b.id === p.id);
+				if (
+					prev &&
+					prev.status !== p.status &&
+					(p.status === "shipped" || p.status === "abandoned")
+				) {
+					return `${p.id}: → ${p.status}`;
+				}
+				return null;
+			})
+			.filter((s): s is string => s !== null);
+		if (transitioned.length > 0) {
+			notify(
+				ctx,
+				`since last session:\n  ${transitioned.join("\n  ")}\n  Run /worktree prune to clean up.`,
+				"info",
+			);
+		}
+	}
+
+	/**
+	 * Walk the plan's phases and ask `gh` for each PR's current state.
+	 * Mutates `plan` in place.
+	 */
+	function syncPlanFromRemote(plan: Plan, ctx: ExtensionContext): void {
+		for (const phase of plan.phases) {
+			if (!phase.prNumber) continue;
+			if (phase.status === "shipped" || phase.status === "abandoned") continue;
+
+			const r = runCommand(
+				"gh",
+				[
+					"pr",
+					"view",
+					String(phase.prNumber),
+					"--json",
+					"state,merged,mergedAt",
+				],
+				{ cwd: ctx.cwd },
+			);
+			if (!r.ok) continue;
+			try {
+				const data = JSON.parse(r.stdout) as {
+					state: string;
+					merged: boolean;
+				};
+				if (data.merged) {
+					phase.status = "shipped";
+				} else if (data.state === "CLOSED") {
+					phase.status = "abandoned";
+				}
+			} catch {
+				/* ignore parse errors */
+			}
+		}
+	}
+
+	// ---- Park path --------------------------------------------------------
+
 	async function doPark(ctx: ExtensionCommandContext): Promise<void> {
 		if (!modeState) {
 			notify(ctx, "no active session — run /plan first", "warning");
@@ -1444,7 +1750,8 @@ export default function (pi: ExtensionAPI) {
 
 	registerPlanTools(pi, {
 		getCurrentPlanSlug: () => modeState?.currentPlanSlug ?? null,
-		onPlanChanged: (_plan, ctx) => {
+		onPlanChanged: (plan, ctx) => {
+			reconcileWorktrees(plan, ctx);
 			updateWidget(ctx);
 		},
 	});
@@ -1454,6 +1761,12 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		hydrateMode(ctx);
 		hydratePlan();
+
+		// Fire-and-forget sync of PR state for the active plan. Reports
+		// shipped/abandoned phases since last session.
+		syncPlanOnStart(ctx).catch(() => {
+			/* best-effort */
+		});
 
 		if (!modeState) {
 			// First session — capture baseline tools, default to auto mode.
@@ -2029,6 +2342,22 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Create a GitHub tracking issue from the current plan and exit plan mode.",
 		handler: async (_args, ctx) => doPark(ctx),
+	});
+
+	pi.registerCommand("ship", {
+		description:
+			"Commit, push, and open a PR for the active phase. Flips its status to in-review.",
+		handler: async (args, ctx) => doShip(args, ctx),
+	});
+
+	pi.registerCommand("sync", {
+		description: "Sync local plan state with GitHub PR/issue state.",
+		handler: async (_args, ctx) => doSync(ctx),
+	});
+
+	pi.registerCommand("worktree", {
+		description: "Manage worktrees: list, prune, keep <phase>.",
+		handler: async (args, ctx) => doWorktree(args, ctx),
 	});
 
 	pi.registerCommand("modes-status", {
