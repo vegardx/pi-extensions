@@ -367,9 +367,20 @@ export default function (pi: ExtensionAPI) {
 	 * needs-attention. This function brings the filesystem in line with
 	 * the plan after any mutation.
 	 */
-	function reconcileWorktrees(plan: Plan, ctx: ExtensionContext): void {
+	/**
+	 * Reconcile worktrees with phase statuses.
+	 *
+	 * Invariant: a phase has a worktree iff its status is active or
+	 * needs-attention, and `phase.worktreePath` records where it lives.
+	 * This function brings the filesystem and the plan in line after
+	 * any mutation, persisting the resolved path on the phase.
+	 *
+	 * Returns true if the plan was mutated and should be saved.
+	 */
+	function reconcileWorktrees(plan: Plan, ctx: ExtensionContext): boolean {
 		const defaultBranch =
 			modeState?.defaultBranch ?? detectDefaultBranch(plan.repo.path) ?? "main";
+		let mutated = false;
 		for (const phase of plan.phases) {
 			const shouldExist = WORKTREE_STATUSES.includes(phase.status);
 			const exists = worktreeExists(plan, phase);
@@ -390,7 +401,13 @@ export default function (pi: ExtensionAPI) {
 						`worktree create for ${phase.id} failed: ${result.error}`,
 						"warning",
 					);
-				} else {
+					continue;
+				}
+				if (phase.worktreePath !== result.path) {
+					phase.worktreePath = result.path;
+					mutated = true;
+				}
+				if (result.created) {
 					notify(ctx, `worktree ready: ${result.path}`, "info");
 				}
 			} else if (!shouldExist && exists) {
@@ -399,9 +416,17 @@ export default function (pi: ExtensionAPI) {
 					if (result.reason === "dirty") {
 						notify(
 							ctx,
-							`worktree for ${phase.id} not removed (uncommitted changes at ${worktreePath(plan, phase)})`,
+							`worktree for ${phase.id} not removed (uncommitted changes at ${phase.worktreePath ?? worktreePath(plan, phase)})`,
 							"warning",
 						);
+					} else if (result.reason === "main") {
+						// Branch lives in the main repo — nothing to remove.
+						// Just clear the persisted path so the phase no longer
+						// claims a worktree.
+						if (phase.worktreePath !== undefined) {
+							phase.worktreePath = undefined;
+							mutated = true;
+						}
 					} else {
 						notify(
 							ctx,
@@ -409,9 +434,13 @@ export default function (pi: ExtensionAPI) {
 							"warning",
 						);
 					}
+				} else if (phase.worktreePath !== undefined) {
+					phase.worktreePath = undefined;
+					mutated = true;
 				}
 			}
 		}
+		return mutated;
 	}
 
 	// ---- UI helpers -------------------------------------------------------
@@ -1237,14 +1266,11 @@ export default function (pi: ExtensionAPI) {
 		const phase = activePhase(plan) ?? nextPlannedPhase(plan);
 		let branch: string | null;
 		if (plan && phase) {
-			if (phase.status === "planned") {
-				phase.status = "active";
-				phase.updatedAt = new Date().toISOString();
-				plan.updatedAt = phase.updatedAt;
-				savePlan(plan);
-				reconcileWorktrees(plan, ctx);
-			}
 			branch = phase.branch;
+			// Check out the branch in the main repo dir FIRST. This locks
+			// the branch to the main worktree so the subsequent reconcile
+			// (via findCheckoutOf) reuses ctx.cwd instead of trying to
+			// `git worktree add` a second checkout, which git would refuse.
 			const checkout = runCommand("git", ["checkout", "-B", branch], {
 				cwd: ctx.cwd,
 			});
@@ -1255,6 +1281,14 @@ export default function (pi: ExtensionAPI) {
 					"error",
 				);
 				return;
+			}
+			if (phase.status === "planned") {
+				phase.status = "active";
+				phase.worktreePath = ctx.cwd;
+				phase.updatedAt = new Date().toISOString();
+				plan.updatedAt = phase.updatedAt;
+				savePlan(plan);
+				if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 			}
 		} else {
 			// No plan / no phases — fall back to the legacy description-derived branch.
@@ -1350,7 +1384,7 @@ export default function (pi: ExtensionAPI) {
 		phase.updatedAt = new Date().toISOString();
 		plan.updatedAt = phase.updatedAt;
 		savePlan(plan);
-		reconcileWorktrees(plan, ctx);
+		if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 		updateWidget(ctx);
 		notify(
 			ctx,
@@ -1375,7 +1409,7 @@ export default function (pi: ExtensionAPI) {
 		plan.lastSyncedAt = new Date().toISOString();
 		plan.updatedAt = plan.lastSyncedAt;
 		savePlan(plan);
-		reconcileWorktrees(plan, ctx);
+		if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 		updateWidget(ctx);
 
 		const changes = plan.phases
@@ -1475,7 +1509,7 @@ export default function (pi: ExtensionAPI) {
 		plan.lastSyncedAt = new Date().toISOString();
 		plan.updatedAt = plan.lastSyncedAt;
 		savePlan(plan);
-		reconcileWorktrees(plan, ctx);
+		if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 		updateWidget(ctx);
 
 		const transitioned = plan.phases
@@ -1941,7 +1975,14 @@ export default function (pi: ExtensionAPI) {
 	registerPlanTools(pi, {
 		getCurrentPlanSlug: () => modeState?.currentPlanSlug ?? null,
 		onPlanChanged: (plan, ctx) => {
-			reconcileWorktrees(plan, ctx);
+			// Plan mode advertises read-only access through three layers (tool
+			// gating, system prompt, bash classifier). Don't let plan_phase
+			// side-effects bypass that contract by mutating the filesystem.
+			// Worktree reconciliation only runs in ask/auto, where the agent
+			// is allowed to make changes anyway.
+			if (modeState && modeState.mode !== "plan") {
+				if (reconcileWorktrees(plan, ctx)) savePlan(plan);
+			}
 			updateWidget(ctx);
 		},
 	});
