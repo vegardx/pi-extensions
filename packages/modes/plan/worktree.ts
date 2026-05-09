@@ -36,8 +36,13 @@ export function worktreePath(plan: Plan, phase: PlanPhase): string {
 }
 
 /**
- * Create a worktree for a phase. The branch is created if it doesn't
- * exist; if it does, the worktree checks it out from there.
+ * Create a worktree for a phase.
+ *
+ * If the branch is already checked out somewhere (typically the main
+ * repo dir, after `git checkout -b`), reuse that location instead of
+ * creating a new worktree — git refuses to check out the same branch
+ * in two worktrees, and "the worktree for this phase" is just "wherever
+ * the phase branch is currently checked out".
  *
  * Returns the absolute worktree path on success, or a failure result.
  */
@@ -51,6 +56,14 @@ export function createWorktree(
 
 	if (existsSync(path)) {
 		return { ok: true, path };
+	}
+
+	// If the branch is already checked out in some worktree (commonly the
+	// main repo dir), reuse that path. git won't let us check out the
+	// same branch twice anyway.
+	const existingWorktree = findCheckoutOf(repoPath, phase.branch);
+	if (existingWorktree) {
+		return { ok: true, path: existingWorktree };
 	}
 
 	// Ensure parent directory tree exists. `git worktree add` requires the
@@ -80,6 +93,28 @@ export function createWorktree(
 		};
 	}
 	return { ok: true, path };
+}
+
+/**
+ * Find the existing worktree where `branch` is currently checked out,
+ * or null if no worktree has it. Parses `git worktree list --porcelain`.
+ */
+function findCheckoutOf(repoPath: string, branch: string): string | null {
+	const r = runCommand("git", ["worktree", "list", "--porcelain"], {
+		cwd: repoPath,
+	});
+	if (!r.ok) return null;
+	let currentWorktree: string | null = null;
+	const target = `refs/heads/${branch}`;
+	for (const line of r.stdout.split("\n")) {
+		if (line.startsWith("worktree ")) {
+			currentWorktree = line.slice("worktree ".length).trim();
+		} else if (line.startsWith("branch ") && currentWorktree) {
+			const ref = line.slice("branch ".length).trim();
+			if (ref === target) return currentWorktree;
+		}
+	}
+	return null;
 }
 
 /**

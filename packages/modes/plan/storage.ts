@@ -22,10 +22,44 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Plan } from "./schema.js";
+import { TERMINAL_STATUSES } from "./schema.js";
 
 let plansRoot = join(homedir(), ".pi", "plans");
+
+/**
+ * Allowed slug pattern: lowercase alphanumerics and hyphens only. This
+ * forbids path separators, dot-segments, and any character that could
+ * traverse outside `plansRoot`.
+ */
+const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,127}$/;
+
+function assertValidSlug(slug: string): void {
+	if (!SLUG_RE.test(slug)) {
+		throw new Error(
+			`invalid plan slug: ${JSON.stringify(slug)} — must match ${SLUG_RE}`,
+		);
+	}
+}
+
+/**
+ * Defence-in-depth: after resolving any plan path, verify it stays
+ * inside `plansRoot`. Catches edge cases the regex might miss (e.g.
+ * symlink shenanigans on platforms that normalise differently).
+ */
+function assertInsideRoot(path: string): void {
+	const rootResolved = resolve(plansRoot);
+	const pathResolved = resolve(path);
+	if (
+		pathResolved !== rootResolved &&
+		!pathResolved.startsWith(`${rootResolved}/`)
+	) {
+		throw new Error(
+			`refusing to operate on plan path outside ${rootResolved}: ${pathResolved}`,
+		);
+	}
+}
 
 function indexFile(): string {
 	return join(plansRoot, "index.json");
@@ -38,7 +72,10 @@ function ensurePlansRoot(): void {
 }
 
 function planDir(slug: string): string {
-	return join(plansRoot, slug);
+	assertValidSlug(slug);
+	const path = join(plansRoot, slug);
+	assertInsideRoot(path);
+	return path;
 }
 
 function planFile(slug: string): string {
@@ -47,11 +84,13 @@ function planFile(slug: string): string {
 
 /** True if a plan with this slug exists on disk. */
 export function planExists(slug: string): boolean {
+	if (!SLUG_RE.test(slug)) return false;
 	return existsSync(planFile(slug));
 }
 
-/** Load a plan by slug. Returns null if it doesn't exist or is malformed. */
+/** Load a plan by slug. Returns null if the slug is invalid, missing, or malformed. */
 export function loadPlan(slug: string): Plan | null {
+	if (!SLUG_RE.test(slug)) return null;
 	const path = planFile(slug);
 	if (!existsSync(path)) return null;
 	try {
@@ -132,13 +171,19 @@ export function rebuildIndex(): void {
 	const entries: PlanIndexEntry[] = [];
 	for (const name of readdirSync(plansRoot)) {
 		if (name === "index.json") continue;
+		// Skip any directory whose name isn't a valid slug — a defence in
+		// depth against attacker-planted directories under plansRoot.
+		if (!SLUG_RE.test(name)) continue;
 		const path = planFile(name);
 		if (!existsSync(path)) continue;
 		try {
 			const plan = JSON.parse(readFileSync(path, "utf8")) as Plan;
-			const active = plan.phases.some(
-				(ph) => ph.status !== "shipped" && ph.status !== "abandoned",
-			);
+			// A plan is "active" (reusable for /plan in this repo) if it has
+			// no phases yet OR at least one phase is still working. Otherwise
+			// every phase is shipped/abandoned and the plan is done.
+			const active =
+				plan.phases.length === 0 ||
+				plan.phases.some((ph) => !TERMINAL_STATUSES.includes(ph.status));
 			entries.push({
 				slug: plan.slug,
 				title: plan.title,

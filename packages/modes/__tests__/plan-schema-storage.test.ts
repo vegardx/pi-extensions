@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -175,6 +175,27 @@ describe("storage", () => {
 		expect(active?.slug).toBe("active");
 	});
 
+	it("empty plans are treated as active so /plan can reuse them", () => {
+		savePlan(
+			makePlan({ slug: "empty", repo: { path: "/r-empty" }, phases: [] }),
+		);
+		const active = activePlanForRepo("/r-empty");
+		expect(active?.slug).toBe("empty");
+	});
+
+	it("loadPlan rejects path-traversal slugs", () => {
+		expect(loadPlan("../../etc/passwd")).toBeNull();
+		expect(loadPlan("..")).toBeNull();
+		expect(loadPlan("foo/bar")).toBeNull();
+		expect(loadPlan("")).toBeNull();
+		expect(loadPlan("UPPERCASE")).toBeNull();
+	});
+
+	it("savePlan rejects invalid slugs", () => {
+		expect(() => savePlan(makePlan({ slug: "../evil" }))).toThrow();
+		expect(() => savePlan(makePlan({ slug: "foo/bar" }))).toThrow();
+	});
+
 	it("deletePlan removes from disk and index", () => {
 		savePlan(makePlan());
 		expect(planExists("test-plan")).toBe(true);
@@ -187,10 +208,7 @@ describe("storage", () => {
 		savePlan(makePlan());
 		// Corrupt the file: create an unrelated dir with broken plan.json
 		mkdirSync(join(tmp, "broken"), { recursive: true });
-		require("node:fs").writeFileSync(
-			join(tmp, "broken", "plan.json"),
-			"not json",
-		);
+		writeFileSync(join(tmp, "broken", "plan.json"), "not json");
 		rebuildIndex();
 		expect(listPlans().map((p) => p.slug)).toEqual(["test-plan"]);
 	});
