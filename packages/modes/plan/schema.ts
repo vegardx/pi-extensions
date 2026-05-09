@@ -7,9 +7,9 @@
  * Status flow:
  *
  *   planned ─► active ─► in-review ─► ready-to-ship ─► shipped
- *                ▲           │
- *                │           ▼
- *                └── needs-attention
+ *                            │
+ *                            ▼
+ *                       needs-attention ─► ready-to-ship
  *
  * Plus a terminal `abandoned` reachable from any non-terminal state.
  *
@@ -60,22 +60,25 @@ export interface Phase {
 	status: PhaseStatus;
 	/** Git branch — typically `feat/<phase-id>`. */
 	branch: string;
+	/**
+	 * Absolute path to the worktree where this phase's branch is currently
+	 * checked out. Undefined while no worktree exists. May point at the
+	 * main repo dir when the branch was checked out there directly
+	 * (e.g. by /implement). Set when status enters WORKTREE_STATUSES,
+	 * cleared when it leaves.
+	 */
+	worktreePath?: string;
 	/** GitHub issue number after /park; undefined before. */
 	issueNumber?: number;
 	tasks: Task[];
 	/** PR number once /ship has opened it. */
 	prNumber?: number;
-	/** Findings count from the once-only review. Undefined until reviewed. */
-	reviewFindingsCount?: number;
-	/** True after the once-only review has run. Prevents re-runs. */
-	reviewRun?: boolean;
 	createdAt: string;
 	updatedAt: string;
 }
 
 export interface PlanRepo {
 	path: string;
-	remote?: string;
 }
 
 export interface Plan {
@@ -85,7 +88,6 @@ export interface Plan {
 	/** GitHub plan-tracking issue (parent of phase sub-issues) after /park. */
 	parentIssueNumber?: number;
 	phases: Phase[];
-	shipPolicy: "auto" | "prompt";
 	/** Last successful PR-state sync via gh. */
 	lastSyncedAt?: string;
 	createdAt: string;

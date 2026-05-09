@@ -1,19 +1,9 @@
 /**
- * /ship — commit, push, open PR, and flip phase status to in-review.
+ * Ship a phase: commit (only if `autoCommit` is set), push, open PR.
+ * Refuses on dirty trees by default.
  *
- * Refuses if the worktree has uncommitted *user-edited* changes that
- * shouldn't be silently auto-committed. The "auto-commit" behaviour
- * applies only to changes the agent made: if there's anything else,
- * the user must resolve first (commit, stash, or discard).
- *
- * In practice we can't reliably tell agent-from-user changes, so we
- * follow a simpler rule: if `--ship-mark` was given (modes calls /ship
- * after the agent has finished its tasks), we commit everything that's
- * staged or modified under the agent's authority. If the user has
- * uncommitted changes outside of that we refuse.
- *
- * For now: refuse on any dirty tree, ask user to commit first via the
- * normal /commit skill. We can revisit auto-commit later.
+ * On success the caller is responsible for flipping `phase.status` to
+ * `in-review` and persisting `phase.prNumber`.
  */
 
 import { runCommand, type ShellResult, workingTreeClean } from "../git.js";
