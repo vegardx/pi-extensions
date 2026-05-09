@@ -2610,7 +2610,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("worktree", {
-		description: "Manage worktrees: list, prune, keep <phase>.",
+		description: "Manage worktrees: list, prune.",
 		handler: async (args, ctx) => doWorktree(args, ctx),
 	});
 
