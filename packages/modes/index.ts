@@ -118,6 +118,25 @@ const STATUS_GLYPH: Record<string, string> = {
 // ---- Types ----------------------------------------------------------------
 
 type Mode = "plan" | "ask" | "auto" | "hack";
+
+const ALL_MODES: readonly Mode[] = ["plan", "ask", "auto", "hack"] as const;
+
+/**
+ * Validate an extensionConfig.modes.defaultMode value. Falls back to
+ * "plan" on missing/invalid input. Caller is responsible for surfacing
+ * a notify when `valid` is false.
+ */
+export function resolveDefaultMode(raw: unknown): {
+	mode: Mode;
+	valid: boolean;
+} {
+	if (raw === undefined || raw === null) return { mode: "plan", valid: true };
+	if (typeof raw !== "string") return { mode: "plan", valid: false };
+	if ((ALL_MODES as readonly string[]).includes(raw)) {
+		return { mode: raw as Mode, valid: true };
+	}
+	return { mode: "plan", valid: false };
+}
 type Stage =
 	| "idle"
 	| "planning"
@@ -203,6 +222,12 @@ export default function (pi: ExtensionAPI) {
 				type: "number",
 				default: DEFAULT_MAX_CONTEXT_TOKENS,
 				doc: "Mid-phase compaction trigger threshold in tokens. When getContextUsage().tokens exceeds this on turn_end (in auto mode with an active phase), a phase-slice compaction fires. Default 170000.",
+			},
+			{
+				key: "defaultMode",
+				type: "string",
+				default: "plan",
+				doc: "Mode for fresh sessions: plan | ask | auto | hack. Existing persisted sessions keep their saved mode.",
 			},
 		],
 	});
@@ -1323,6 +1348,17 @@ export default function (pi: ExtensionAPI) {
 		return readCompactionNumber(ctx, "phaseTokens", DEFAULT_PHASE_TOKENS);
 	}
 
+	function readDefaultModeSetting(ctx: ExtensionContext): {
+		mode: Mode;
+		valid: boolean;
+	} {
+		const settings = readRelevantSettings(ctx.cwd);
+		const extCfg = settings.extensionConfig?.[EXT_ID] as
+			| Record<string, unknown>
+			| undefined;
+		return resolveDefaultMode(extCfg?.defaultMode);
+	}
+
 	function readMaxContextTokensSetting(ctx: ExtensionContext): number {
 		return readCompactionNumber(
 			ctx,
@@ -2314,9 +2350,18 @@ export default function (pi: ExtensionAPI) {
 		});
 
 		if (!modeState) {
-			// First session — capture baseline tools, default to auto mode.
+			// First session — capture baseline tools, default mode is
+			// configurable via extensionConfig.modes.defaultMode (default "plan").
+			const { mode: defaultMode, valid } = readDefaultModeSetting(ctx);
+			if (!valid) {
+				notify(
+					ctx,
+					'modes: invalid defaultMode setting (expected "plan" | "ask" | "auto" | "hack") — falling back to "plan"',
+					"warning",
+				);
+			}
 			modeState = {
-				mode: "auto",
+				mode: defaultMode,
 				stage: "idle",
 				branch: null,
 				defaultBranch: null,
@@ -2325,6 +2370,7 @@ export default function (pi: ExtensionAPI) {
 				currentPlanSlug: null,
 			};
 			// Don't persist yet — only persist when the user actively changes mode.
+			applyModeTools();
 			installFooter(ctx);
 			updateWidget(ctx);
 			return;
