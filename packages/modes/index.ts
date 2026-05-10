@@ -210,8 +210,8 @@ export default function (pi: ExtensionAPI) {
 			{
 				key: "review.enable",
 				type: "boolean",
-				default: true,
-				doc: "Run batch review after plan execution completes. Set to false to skip review and go straight to commit.",
+				default: false,
+				doc: "Run batch review after plan execution completes. Off by default — the pipeline runs end-to-end but the surrounding triage / feedback flow needs more design work before it's on for everyone (see TODO at runBatchReview). Opt in per-repo by setting this to true.",
 			},
 			{
 				key: "review.agents",
@@ -967,6 +967,18 @@ export default function (pi: ExtensionAPI) {
 	 * 3. Cross-validate disputed critical/high
 	 * 4. Show triage dialog for disputed findings
 	 * 5. Send fix prompt for all accepted findings
+	 *
+	 * TODO(autoreview): off by default — the pipeline runs end-to-end but
+	 * the surrounding agent flow needs design work before this is on for
+	 * everyone. Known issues to address before flipping the default back
+	 * on:
+	 *   - Triage UX: large finding dumps overwhelm the dialog; needs
+	 *     progressive disclosure / per-severity filtering.
+	 *   - Cross-validation cost: doubles inference budget per ship.
+	 *   - False-positive rate on stylistic findings drives noise.
+	 *   - Findings that don't apply to the current diff (e.g. scoped to
+	 *     the parent branch's changes) leak into the agent's fix prompt.
+	 * Opt in per-repo via extensionConfig.modes.review.enable: true.
 	 */
 	async function runBatchReview(ctx: ExtensionContext): Promise<void> {
 		if (!modeState) return;
@@ -978,7 +990,7 @@ export default function (pi: ExtensionAPI) {
 				? (reviewCfg as Record<string, unknown>)
 				: {};
 		const enable =
-			typeof reviewObj.enable === "boolean" ? reviewObj.enable : true;
+			typeof reviewObj.enable === "boolean" ? reviewObj.enable : false;
 		if (!enable) return;
 
 		const { parseModelSpec } = await import(

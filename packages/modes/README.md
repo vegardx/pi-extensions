@@ -161,7 +161,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
         "phaseTokens": 8000
       },
       "review": {
-        "enable": true,
+        "enable": false,
         "agents": ["code-reviewer", "code-simplifier", "security-analyst"]
       },
       "githubProject": "owner/repo/projects/N"
@@ -176,9 +176,11 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | `compaction.maxContextTokens` | `170000` | Mid-phase compaction trigger threshold. When `getContextUsage().tokens` exceeds this on `turn_end` (auto mode + active phase), a phase-slice compaction fires. |
 | `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
 | `compaction.phaseTokens` | `8000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
-| `review.enable` | `true` | Run batch review after plan execution completes. Set to false to skip review and go straight to commit. |
+| `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
 | `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
+
+> **Autoreview is off by default.** The pipeline (`/review`, post-execution batch) runs end-to-end but the surrounding triage and feedback flow needs more design work before it's on for everyone — see the `TODO(autoreview)` block on `runBatchReview` for the open issues. Opt in per-repo by setting `extensionConfig.modes.review.enable: true`.
 
 Optional peer dependencies:
 
