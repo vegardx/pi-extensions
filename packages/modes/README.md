@@ -174,6 +174,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 |---|---|---|
 | `defaultMode` | `"hack"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
 | `compaction.maxContextTokens` | `170000` | Mid-phase compaction trigger threshold. When `getContextUsage().tokens` exceeds this on `turn_end` (auto mode + active phase), a phase-slice compaction fires. |
+| `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
 | `compaction.phaseTokens` | `8000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
 | `review.enable` | `false` | Whether the post-execution review pass runs. |
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |

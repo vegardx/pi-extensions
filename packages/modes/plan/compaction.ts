@@ -72,6 +72,15 @@ export const DEFAULT_PHASE_TOKENS = 8000;
  */
 export const DEFAULT_MAX_CONTEXT_TOKENS = 170000;
 
+/**
+ * Default plan-mode footer cap in tokens. 0 is a sentinel meaning
+ * "use the active model's contextWindow" — plan mode is exempt from
+ * modes' mid-phase compaction (see `shouldCompactMidPhase`), so the
+ * cap is purely a footer display threshold. Override via:
+ *   extensionConfig.modes.compaction.planMaxContextTokens
+ */
+export const DEFAULT_PLAN_MAX_CONTEXT_TOKENS = 0;
+
 /** Stored on `CompactionEntry.details` to identify modes compactions. */
 export interface ModesCompactionDetails {
 	modesKind: "plan-to-implement" | "phase-slice" | "phase-end";
