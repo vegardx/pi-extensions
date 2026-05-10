@@ -2,71 +2,67 @@
  * Phase-boundary compaction for the modes plan/phase model.
  *
  * ---------------------------------------------------------------------
- * Two flows live in this file (transitionally).
+ * Mid-phase compaction flow.
  * ---------------------------------------------------------------------
  *
- * (A) Mid-phase compaction — the post-fix path.
+ * Driven by pi via `ctx.compact()` → `session_before_compact` event →
+ * our handler returns `{ compaction: { summary, firstKeptEntryId,
+ * tokensBefore, details } }`. Pi then runs `appendCompaction` AND
+ * rebuilds `agent.state.messages = sessionContext.messages` — the
+ * rebuild step that the pre-Phase-1 direct-write path skipped, which is
+ * the bug that made every prior modes compaction a runtime no-op
+ * (the LLM kept seeing the full pre-compaction transcript and the
+ * mid-phase trigger re-fired every turn).
  *
- *     Driven by pi via `ctx.compact()` → `session_before_compact` event
- *     → our handler returns `{ compaction: { summary, firstKeptEntryId,
- *     tokensBefore, details } }`. Pi then runs `appendCompaction` AND
- *     rebuilds `agent.state.messages = sessionContext.messages` — the
- *     rebuild step that the legacy direct-write path skipped, which is
- *     the bug that made every prior modes compaction a runtime no-op
- *     (the LLM kept seeing the full pre-compaction transcript and the
- *     mid-phase trigger re-fired every turn).
+ * Builder: `buildPhaseSliceCompactionResult(...)`. Pure. The
+ * `firstKeptEntryId` and `tokensBefore` come from pi's `preparation`
+ * (it computed them via `findCutPoint` and we trust it).
+ * `previousSummary` is read off the branch via
+ * `findLatestCompactionSummary` and prefixed to the new section,
+ * preserving the append-only invariant below.
  *
- *     Builder: `buildPhaseSliceCompactionResult(...)`. Pure. The
- *     `firstKeptEntryId` and `tokensBefore` come from pi's
- *     `preparation` (it computed them via `findCutPoint` and we trust
- *     it). `previousSummary` is read off the branch via
- *     `findLatestCompactionSummary` and prefixed to the new section,
- *     preserving the append-only invariant below.
- *
- * (B) Plan→implement compaction — legacy direct-write path.
- *
- *     `appendPlanToImplementCompaction` still calls
- *     `sm.appendCompaction` directly. It carries the same bug as the
- *     pre-fix mid-phase path (the agent.state.messages rebuild never
- *     happens), but is being deleted in Phase 2 of the plan in favour
- *     of a deterministic plan-doc seed written via `ctx.newSession({
- *     setup })`. Not worth fixing in the current PR.
- *
- *     Phase-end compaction at /ship has been deleted; per-phase
- *     summaries move onto the plan doc in Phase 2 (also see
- *     `compactPhaseEnd` in index.ts — currently a stub).
+ * Plan→implement compaction is gone (replaced by `seedPlanDoc` in
+ * `plan/seed.ts`). Phase-end compaction is gone (replaced by the
+ * per-phase `phase.summary` written at /ship time and inlined into
+ * future phases' seeds; see `buildPhaseEndSummaryPreamble`).
  *
  * ---------------------------------------------------------------------
- * Append-only summary invariant.
+ * Append-only summary invariant (within one auto session).
  * ---------------------------------------------------------------------
  *
- * Each compaction's summary reuses the previous compaction's summary
- * byte-for-byte as a prefix. Sections are never re-summarised. A phase
- * that ran long is captured as a chain of slices, each summarised once
- * from raw messages — no summary-of-summaries, no quality drift.
+ * Each mid-phase compaction's summary reuses the previous compaction's
+ * summary byte-for-byte as a prefix. Sections are never re-summarised.
+ * A phase that ran long is captured as a chain of slices, each
+ * summarised once from raw messages — no summary-of-summaries, no
+ * quality drift.
  *
  * Pi's `buildSessionContext` only emits the LATEST CompactionEntry on
  * the path (verified in dist/core/session-manager.js), so the most
  * recent summary IS the prompt prefix the model sees after the system
  * prompt. As long as we never regenerate old sections, the prefix stays
- * byte-identical and the prompt cache keeps hitting across phases.
+ * byte-identical and the prompt cache keeps hitting across mid-phase
+ * boundaries within the auto session.
  *
  * This module is intentionally pure: rendering helpers, tree
- * introspection, and builders/orchestrators that take an injected
- * `summarise` callback. The actual LLM client wiring lives at the call
- * site in index.ts.
+ * introspection, and builders that take an injected `summarise`
+ * callback. The actual LLM client wiring lives at the call site in
+ * index.ts.
  *
  * ---------------------------------------------------------------------
- * Three-bucket context budget model
+ * Four-bucket context budget model
  * ---------------------------------------------------------------------
  *
- * The live context is decomposed into three buckets, in prefix order
- * (sys → summary → work). Order matches the API request layout and the
- * direction the KV-cache reuses (longest stable prefix first):
+ * The live auto-session context is decomposed into four buckets, in
+ * prefix order (sys → seed → summary → work). Order matches the API
+ * request layout and the direction the KV-cache reuses (longest stable
+ * prefix first):
  *
- *   sys      — system prompt + active tool schemas. Stable prefix.
+ *   sys      — system prompt + active tool schemas. Stable.
+ *   seed     — plan-doc seed entry written at
+ *              `ctx.newSession({ setup })`. Stable for the phase's
+ *              lifetime.
  *   summary  — rolling compaction summary (latest CompactionEntry on
- *              the branch). Grows on each compaction.
+ *              the branch). Grows on each mid-phase compaction.
  *   work     — live messages since the most recent compaction. Hot
  *              tail; resets at every compaction.
  *
@@ -74,25 +70,22 @@
  *
  *   workingTokens  — covers `sys + work`. Mid-phase compaction fires
  *                    when this is exceeded.
- *   summaryTokens  — covers `summary`. Soft-warn when exceeded; not
- *                    enforced.
- *
- * (Phase 2 of the plan reframes `summaryTokens` as the cumulative
- * cross-phase carry-forward budget once per-phase summaries move onto
- * the plan doc. The shape of the soft-warn stays the same.)
+ *   summaryTokens  — cumulative cross-phase carry-forward cap (Σ
+ *                    `phase.summary` chars across shipped phases).
+ *                    Soft-warn when exceeded; not enforced.
  *
  * Total target ceiling = workingTokens + summaryTokens. Tune both so
  * the total fits the active model's contextWindow.
  *
  * Mid-phase trigger semantics:
  *
- *   fire iff (total - summary) > workingTokens
+ *   fire iff (total − summary − seed) > workingTokens
  *
- * i.e. the working portion (sys + work) crossed its budget. Summary
- * tokens never trigger compaction themselves — they live in their own
- * budget. Compaction shrinks `work` and grows `summary` by ~phaseTokens;
- * net effect is the working budget relaxes while the summary budget
- * incrementally fills.
+ * i.e. the working portion (sys + work) crossed its budget. Both the
+ * rolling summary AND the carry-forward seed are stable prefix content
+ * and never trigger compaction themselves. Compaction shrinks `work`
+ * and grows `summary` by ~phaseTokens; net effect is the working budget
+ * relaxes while the summary budget incrementally fills.
  */
 
 import type {
@@ -142,10 +135,14 @@ export const DEFAULT_PHASE_TOKENS = 10000;
 export const DEFAULT_WORKING_TOKENS = 150000;
 
 /**
- * Default rolling-summary budget in tokens. Each mid-phase compaction
- * adds to the summary. Soft-warns when exceeded; not enforced. Total
- * target ceiling = `workingTokens + summaryTokens` — tune so the total
- * fits the active model's `contextWindow`. Override via:
+ * Default cumulative cross-phase carry-forward budget in tokens.
+ * Bounds the sum of `phase.summary` chars across all shipped phases
+ * — i.e. the total carry-forward weight inlined into a future phase's
+ * `seedPlanDoc`. Soft-warns once when exceeded; not enforced (dropping
+ * older summaries silently would lose the discovery signal).
+ *
+ * Total target ceiling = `workingTokens + summaryTokens` — tune so the
+ * total fits the active model's `contextWindow`. Override via:
  *   extensionConfig.modes.compaction.summaryTokens
  */
 export const DEFAULT_SUMMARY_TOKENS = 100000;
@@ -544,6 +541,25 @@ export async function buildPhaseSliceCompactionResult(
 // Mid-phase compaction trigger gate
 // ---------------------------------------------------------------------------
 
+/**
+ * Cumulative cross-phase carry-forward summary chars. Sum of
+ * `phase.summary.length` across every shipped phase preceding the
+ * active one. This is what `compaction.summaryTokens` actually
+ * bounds in the post-Phase-2 model: the size of the carry-forward
+ * payload that future phases' seeds will inline. Pure; no I/O.
+ */
+export function computeCarryForwardSummaryChars(
+	plan: Pick<Plan, "phases">,
+): number {
+	let n = 0;
+	for (const phase of plan.phases) {
+		if (phase.status === "shipped" && phase.summary) {
+			n += phase.summary.length;
+		}
+	}
+	return n;
+}
+
 export interface MidPhaseTriggerInput {
 	/** Runtime probe result; false disables the entire feature. */
 	compactionApiAvailable: boolean;
@@ -568,6 +584,15 @@ export interface MidPhaseTriggerInput {
 	 * growth alone never triggers compaction.
 	 */
 	summaryTokens: number;
+	/**
+	 * Observed plan-doc seed token count for this auto session.
+	 * Estimated from the `modes:plan-seed` custom message entry.
+	 * Subtracted from `tokens` before comparing against `workingTokens`
+	 * so a large carry-forward seed doesn't penalise the working
+	 * budget. 0 when no seed is present (legacy / orphan / off-plan
+	 * sessions).
+	 */
+	seedTokens: number;
 }
 
 /**
@@ -581,11 +606,11 @@ export interface MidPhaseTriggerInput {
  *   2. mode === "auto" — only modes-driven execution; hack/plan/ask skip
  *   3. !compactionInFlight — re-entrancy guard for slow LLM calls
  *   4. plan + active phase exist
- *   5. (tokens − summaryTokens) > workingTokens
+ *   5. (tokens − summaryTokens − seedTokens) > workingTokens
  *
- * Step 5 isolates the working budget: summary tokens live in their
- * own budget (`summaryTokens`) and never trigger compaction
- * themselves. The trigger only fires when sys + work crosses
+ * Step 5 isolates the working budget: both the rolling summary AND the
+ * plan-doc seed are stable prefix content that never trigger compaction
+ * themselves. The trigger only fires when `sys + work` crosses
  * `workingTokens`.
  *
  * Caller is responsible for setting/clearing `compactionInFlight`
@@ -597,7 +622,7 @@ export function shouldCompactMidPhase(input: MidPhaseTriggerInput): boolean {
 	if (input.compactionInFlight) return false;
 	if (!input.hasActivePhase) return false;
 	if (typeof input.tokens !== "number") return false;
-	const workingUsed = input.tokens - input.summaryTokens;
+	const workingUsed = input.tokens - input.summaryTokens - input.seedTokens;
 	if (workingUsed <= input.workingTokens) return false;
 	return true;
 }
@@ -612,13 +637,22 @@ export function shouldCompactMidPhase(input: MidPhaseTriggerInput): boolean {
  * internal `estimateTokens` heuristic for text content.
  */
 export interface ContextBuckets {
-	/** System prompt + active tool schemas (stable prefix). */
+	/** System prompt + active tool schemas. Stable per session. */
 	sys: number;
+	/**
+	 * Plan-doc seed (the `modes:plan-seed` custom message entry written
+	 * at `ctx.newSession({ setup })` time). Stable for the phase's
+	 * lifetime. Reported separately from `sys` so the footer can show
+	 * carry-forward weight, but treated as part of the stable prefix
+	 * for the working-budget trigger — the trigger only cares about
+	 * the hot tail.
+	 */
+	seed: number;
 	/** Latest compaction summary (rolling summary text). */
 	summary: number;
 	/**
 	 * Live messages since last compaction breadcrumb.
-	 * Computed as `max(0, total − sys − summary)` when total is known.
+	 * Computed as `max(0, total − sys − seed − summary)` when total is known.
 	 */
 	work: number;
 	/** Authoritative total from `getContextUsage().tokens`, or null. */
@@ -626,7 +660,7 @@ export interface ContextBuckets {
 }
 
 /**
- * Compute the three-bucket breakdown from raw character counts plus
+ * Compute the four-bucket breakdown from raw character counts plus
  * pi's reported total. Pure, deterministic; no I/O.
  *
  * Inputs are character counts (not token estimates) so the chars/4
@@ -636,20 +670,27 @@ export interface ContextBuckets {
  *
  * When `total` is null (e.g. immediately after a compaction, before
  * the next LLM response), `work` is reported as 0 — the working
- * portion is genuinely unknown until pi reports a fresh count. `sys`
- * and `summary` remain valid (they don't depend on `total`).
+ * portion is genuinely unknown until pi reports a fresh count.
+ * `sys`, `seed`, and `summary` remain valid (they don't depend on
+ * `total`).
  */
 export function computeContextBuckets(input: {
 	total: number | null;
 	systemPromptChars: number;
 	toolSchemaChars: number;
 	summaryChars: number;
+	/**
+	 * Char count of the active session's `modes:plan-seed` entry, or 0
+	 * when no seed exists (plan-mode session, hack mode, off-plan auto).
+	 */
+	seedChars: number;
 }): ContextBuckets {
 	const sys = Math.ceil((input.systemPromptChars + input.toolSchemaChars) / 4);
+	const seed = Math.ceil(input.seedChars / 4);
 	const summary = Math.ceil(input.summaryChars / 4);
 	const work =
-		input.total === null ? 0 : Math.max(0, input.total - sys - summary);
-	return { sys, summary, work, total: input.total };
+		input.total === null ? 0 : Math.max(0, input.total - sys - seed - summary);
+	return { sys, seed, summary, work, total: input.total };
 }
 
 // ---------------------------------------------------------------------------

@@ -252,7 +252,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 |---|---|---|
 | `defaultMode` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
 | `compaction.workingTokens` | `150000` | Working budget covering `sys + work` (system prompt + tool schemas + live messages). Mid-phase compaction fires when `sys + work` exceeds this. Summary tokens live in their own budget. |
-| `compaction.summaryTokens` | `100000` | Cumulative rolling-summary budget. Soft-warns once when exceeded; not enforced. Total target ceiling = `workingTokens + summaryTokens` — should fit the active model's `contextWindow`. |
+| `compaction.summaryTokens` | `100000` | Cumulative cross-phase carry-forward budget (Σ `phase.summary` chars across shipped phases). Soft-warns once when exceeded; not enforced. Total target ceiling = `workingTokens + summaryTokens` — should fit the active model's `contextWindow`. |
 | `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
 | `compaction.phaseTokens` | `10000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
 | `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
@@ -270,27 +270,29 @@ Optional peer dependencies:
 
 ## Context management
 
-Modes owns context fully via three-tier compaction:
+Modes owns context via two compaction mechanisms:
 
-1. **plan → implement** — collapses planning chatter at `/implement`, producing the initial rolling summary (`## Plan` + `## Planning notes`).
-2. **mid-phase** — fires from `turn_end` when `sys + work > compaction.workingTokens` (auto mode, active phase). The summary token cost is subtracted before comparison so a growing rolling summary never triggers compaction itself.
-3. **phase-end** — freezes the just-completed phase at `/ship` as a section in the rolling summary.
+1. **mid-phase compaction** — fires from `turn_end` when `sys + work` exceeds `compaction.workingTokens` (auto mode, active phase). Routes through `ctx.compact()` and a `session_before_compact` handler so pi rebuilds `agent.state.messages` after appending the modes-flavoured summary. The rolling summary AND the plan-doc seed are subtracted before comparison so neither triggers compaction by itself.
+2. **per-phase summary** at `/ship` — summarises the auto session and stores the result on `phase.summary` (capped at `compaction.phaseTokens`). Future phases' seeds inline shipped phases' summaries verbatim so phase N walks in pre-loaded with what phases 1…N-1 discovered.
 
-### Three-bucket context budget
+### Four-bucket context budget
 
-The live context decomposes into three buckets, in prefix order (sys → summary → work). Order matches the API request layout and the direction the KV-cache reuses (longest stable prefix first):
+The live auto-session context decomposes into four buckets, in prefix order (sys → seed → summary → work). Order matches the API request layout and the direction the KV-cache reuses (longest stable prefix first):
 
 ```
-┌─ active model contextWindow ───────────────────────────────┐
-│  sys     summary               work             free       │
-│  ■■■■    ■■■■■■■■■■■■    ■■■■■■■■■■■■■■■■■■■■■■■■■                  │
-│  └─ summaryTokens ─┘└────────── workingTokens (sys + work) ─────┘│
+┌─ active model contextWindow ───────────────────────────────────┐
+│  sys   seed   summary       work             free              │
+│  ■■■   ■■■    ■■■■■■■■    ■■■■■■■■■■■■■■■■■■■■■■■■■■■           │
+│         └─ summaryTokens ─┘└── workingTokens (sys + work) ──┘  │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-- **sys** — system prompt + active tool schemas. Stable prefix; rarely changes.
-- **summary** — rolling compaction summary. Grows incrementally on each compaction; persists in the prefix.
-- **work** — live messages since the most recent compaction breadcrumb. Hot tail; resets at every compaction.
+- **sys** — system prompt + active tool schemas. Stable; rarely changes.
+- **seed** — plan-doc seed (active phase's tasks + prior shipped phases' summaries). Written once at `ctx.newSession({ setup })`; stable for the phase's lifetime.
+- **summary** — rolling compaction summary inside this auto session. Grows on mid-phase compaction.
+- **work** — live messages since the most recent mid-phase compaction. Hot tail; resets at every compaction.
+
+`compaction.summaryTokens` (default 100k) bounds the cumulative cross-phase carry-forward (Σ `phase.summary` chars across shipped phases). Soft-warns once when exceeded; not enforced — dropping older summaries silently would lose the discovery signal that motivates the carry-forward.
 
 Tune `workingTokens + summaryTokens` so the total fits the active model's `contextWindow` with margin for the next turn's response.
 
@@ -299,33 +301,28 @@ Tune `workingTokens + summaryTokens` so the total fits the active model's `conte
 In `auto` and `hack` modes the footer renders the breakdown:
 
 ```
-sys 12k · sum 30k · work 78k · 120k/250k (256k)
+sys 12k · seed 8k · sum 30k · work 70k · 120k/250k (256k)
 ```
 
-- `sys`, `sum`, `work` — the three buckets, rounded to 1k.
+- `sys`, `seed`, `sum`, `work` — the four buckets, rounded to 1k. `seed` and `sum` are hidden when zero.
 - `120k/250k` — `getContextUsage().tokens` over `workingTokens + summaryTokens`.
-- `(256k)` — the active model's `contextWindow`, shown only when it differs from the denominator. The `sum` segment is hidden until the first compaction lands.
+- `(256k)` — the active model's `contextWindow`, shown only when it differs from the denominator.
 
 In `plan` mode the footer reverts to the simpler `current/limit` form — plan mode is exempt from mid-phase compaction (the human is in the loop), so the breakdown adds noise.
 
-### Byte-stable prefix invariant
+### Byte-stable prefix invariant (within a phase's auto session)
 
-Each compaction's summary reuses the previous compaction's summary **byte-for-byte** as a prefix; only a new `## Phase ...` section is appended. Sections are never re-summarised. This keeps the prompt cache hot across phase boundaries:
+Each mid-phase compaction's summary reuses the previous compaction's summary **byte-for-byte** as a prefix; only a new `## Phase ...` section is appended. Sections are never re-summarised. This keeps the prompt cache hot across mid-phase boundaries within the same auto session.
 
-```
-after /implement:   ## Plan ... + ## Planning notes ...
-after phase 1:      ## Plan ... + ## Planning notes ... + ## Phase p-1 (part 1, shipped, PR #N) ...
-after phase 2:      ## Plan ... + ## Planning notes ... + ## Phase p-1 ... + ## Phase p-2 ...
-```
+At `/ship`, the auto session is summarised one final time into `phase.summary` on the plan doc. The next phase's auto session starts with a fresh seed that inlines that summary verbatim.
 
-### Slice chain
+### Slice chain (within one phase)
 
-When a phase overflows mid-flight, multiple `## Phase p-X (part N, ...)` sections accumulate:
+When a phase overflows mid-flight, multiple `## Phase p-X (part N, in progress)` sections accumulate inside that phase's auto session:
 
 ```
 ## Phase p-long (part 1, in progress)    ← mid-phase compaction #1
 ## Phase p-long (part 2, in progress)    ← mid-phase compaction #2
-## Phase p-long (part 3, shipped, PR #M) ← /ship
 ```
 
 Each part captures raw messages once — no summary-of-summaries, no quality drift.
