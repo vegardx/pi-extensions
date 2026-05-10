@@ -86,7 +86,6 @@ describe("buildSteeringPreamble", () => {
 
 	it.each<[SteeringMode | null, string]>([
 		["plan", "plan mode"],
-		["ask", "ask mode"],
 		["hack", "hack mode"],
 		[null, "no mode"],
 	])("returns null in %s", (mode) => {
@@ -186,4 +185,4 @@ describe("buildSteeringPreamble", () => {
 	});
 });
 
-type SteeringMode = "plan" | "ask" | "auto" | "hack";
+type SteeringMode = "plan" | "auto" | "hack";
