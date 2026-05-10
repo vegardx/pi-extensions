@@ -99,6 +99,19 @@ When B's PR review surfaces a need to update A, you `/implement` A
 again (it's still active in the plan), commit on A's branch, and
 rebase B onto the updated A.
 
+### Resuming an in-flight phase (auto → plan → auto round-trip)
+
+If you Shift+Tab from auto back to plan mid-phase — to discuss the
+approach, refine tasks, or pause — the phase branch keeps its commits.
+When you `/implement` again, modes detects the phase is already
+`active` (or `needs-attention`) and **resumes non-destructively**:
+plain `git checkout`, no reset, all your phase commits intact.
+
+If the phase branch is missing locally (manually deleted, lost
+worktree), `/implement` aborts with a clear error rather than silently
+re-creating the branch from the default — that would erase any
+commits still on a remote / reflog.
+
 ## Typical workflow
 
 ```

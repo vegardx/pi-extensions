@@ -203,3 +203,57 @@ export function pickBaseBranch(
 	}
 	return defaultBranch;
 }
+
+/**
+ * Decision for how `/implement` should set up a phase's branch.
+ *
+ *   - `create`: phase is `planned` (first-time activation). Create the
+ *     branch from the picked base (`baseBranch`).
+ *   - `resume`: phase is already in flight (`active` / `needs-attention`)
+ *     and its branch exists locally. Plain checkout, no reset — the
+ *     phase's commits must be preserved.
+ *   - `abort`: phase is in flight but its branch is missing locally
+ *     (manually deleted, lost worktree, etc.). Refuse to proceed; a
+ *     destructive `-B` re-create would silently lose any phase work
+ *     still on a remote / reflog.
+ */
+export type ImplementBranchPlan =
+	| { kind: "create"; branch: string; baseBranch: string }
+	| { kind: "resume"; branch: string }
+	| { kind: "abort"; reason: string };
+
+/**
+ * Decide what `/implement` should do to set up the phase branch.
+ *
+ * Splitting this out from doImplement gives unit-testable coverage of
+ * the destructive-reset bug: previously /implement always ran
+ * `git checkout -B <branch>`, which silently reset an in-flight phase
+ * branch to HEAD when re-invoked. Going from auto → plan → auto via
+ * /implement would erase all of the phase's commits.
+ */
+export function planImplementBranch(
+	plan: Pick<Plan, "phases">,
+	phase: Pick<Phase, "id" | "branch" | "status">,
+	defaultBranch: string,
+	branchExists: boolean,
+): ImplementBranchPlan {
+	if (phase.status === "planned") {
+		return {
+			kind: "create",
+			branch: phase.branch,
+			baseBranch: pickBaseBranch(plan, phase.id, defaultBranch),
+		};
+	}
+	if (!branchExists) {
+		return {
+			kind: "abort",
+			reason:
+				`phase branch \`${phase.branch}\` is missing locally. ` +
+				"Was it deleted? Refusing to recreate — that would silently " +
+				"reset the phase to the default branch and lose any commits. " +
+				"Investigate (e.g. `git reflog`, `git branch -a`) and restore " +
+				"the branch before re-running /implement.",
+		};
+	}
+	return { kind: "resume", branch: phase.branch };
+}
