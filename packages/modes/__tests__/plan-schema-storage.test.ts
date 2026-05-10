@@ -8,6 +8,7 @@ import {
 	type Plan,
 	phaseId,
 	pickBaseBranch,
+	planImplementBranch,
 	repoNameFromPath,
 	slugify,
 	taskId,
@@ -350,5 +351,128 @@ describe("pickBaseBranch", () => {
 			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
 		});
 		expect(pickBaseBranch(plan, "p-1", "master")).toBe("master");
+	});
+});
+
+describe("planImplementBranch", () => {
+	const DEFAULT = "main";
+
+	it("planned phase: 'create' with picked base (default branch when no in-flight predecessors)", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					status: "planned",
+				}),
+			],
+		});
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		expect(planImplementBranch(plan, phase, DEFAULT, false)).toEqual({
+			kind: "create",
+			branch: "feat/p-1",
+			baseBranch: "main",
+		});
+	});
+
+	it("planned phase: 'create' with predecessor branch when predecessor is in-review", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+			],
+		});
+		const phase = plan.phases[1];
+		if (!phase) throw new Error("fixture missing phase");
+		expect(planImplementBranch(plan, phase, DEFAULT, false)).toEqual({
+			kind: "create",
+			branch: "feat/p-2",
+			baseBranch: "feat/p-1",
+		});
+	});
+
+	it("active phase + branch exists: 'resume' (regression — was destructive 'create')", () => {
+		// THIS is the bug: previously /implement re-ran on an active phase
+		// fired `git checkout -B feat/p-1`, resetting the branch to the
+		// default branch and erasing all phase commits. The user could
+		// exit auto → plan and never come back without losing work.
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1", status: "active" })],
+		});
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		expect(planImplementBranch(plan, phase, DEFAULT, true)).toEqual({
+			kind: "resume",
+			branch: "feat/p-1",
+		});
+	});
+
+	it("needs-attention phase + branch exists: 'resume' (preserves PR-review work)", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					status: "needs-attention",
+				}),
+			],
+		});
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		expect(planImplementBranch(plan, phase, DEFAULT, true)).toEqual({
+			kind: "resume",
+			branch: "feat/p-1",
+		});
+	});
+
+	it("active phase + branch missing: 'abort' (refuse to silently destroy state)", () => {
+		// The previous code would have run `git checkout -B feat/p-1`,
+		// silently re-creating the branch from the default branch and
+		// pretending nothing was wrong. If the user has work on a remote
+		// or in the reflog, that's their last chance to recover it.
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1", status: "active" })],
+		});
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		const out = planImplementBranch(plan, phase, DEFAULT, false);
+		expect(out.kind).toBe("abort");
+		if (out.kind === "abort") {
+			expect(out.reason).toContain("missing locally");
+			expect(out.reason).toContain("`feat/p-1`");
+			expect(out.reason).toContain("git reflog");
+		}
+	});
+
+	it("needs-attention + branch missing: 'abort' (same protection)", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					status: "needs-attention",
+				}),
+			],
+		});
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		expect(planImplementBranch(plan, phase, DEFAULT, false).kind).toBe("abort");
+	});
+
+	it("planned phase: branchExists is irrelevant (always 'create')", () => {
+		// Even if a leftover branch from a previous failed run exists,
+		// first activation still creates from the picked base. The actual
+		// `git checkout -B` will overwrite it; that's intentional for the
+		// planned case.
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1", status: "planned" })],
+		});
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		const a = planImplementBranch(plan, phase, DEFAULT, true);
+		const b = planImplementBranch(plan, phase, DEFAULT, false);
+		expect(a).toEqual(b);
+		expect(a.kind).toBe("create");
 	});
 });

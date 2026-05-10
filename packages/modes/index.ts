@@ -62,9 +62,10 @@ import {
 	shouldCompactMidPhase,
 } from "./plan/compaction.js";
 import {
+	type ImplementBranchPlan,
 	type Plan,
 	type Phase as PlanPhase,
-	pickBaseBranch,
+	planImplementBranch,
 	repoNameFromPath,
 	slugify,
 	TERMINAL_STATUSES,
@@ -1625,65 +1626,97 @@ export default function (pi: ExtensionAPI) {
 		if (plan && phase) {
 			branch = phase.branch;
 
-			// Pick the base branch for the new phase. When the predecessor
-			// phase is in-review / ready-to-ship / needs-attention, that
-			// predecessor's PR isn't merged yet — the changes live on its
-			// branch, not on the default branch. Forking the new phase from
-			// the default branch would lose access to the predecessor's work
-			// until its PR merges. pickBaseBranch walks predecessors and picks
-			// the right base; for the simple linear case (no in-flight
-			// predecessors) it returns the default branch and behaviour is
-			// unchanged.
-			//
-			// Only relevant on first activation — if the phase is already
-			// active, we're re-running /implement on its existing branch and
-			// the base-branch question doesn't apply (the branch already
-			// exists with whatever ancestry it was created with).
-			if (phase.status === "planned") {
-				const defaultBranch = modeState.defaultBranch ?? "main";
-				const baseBranch = pickBaseBranch(plan, phase.id, defaultBranch);
-				if (baseBranch !== defaultBranch) {
-					const baseCo = runCommand("git", ["checkout", baseBranch], {
+			// `git checkout -B <branch>` is destructive: if <branch> already
+			// exists, it resets it to HEAD (the default branch after
+			// syncToDefault). Re-running /implement on an in-flight phase
+			// must NOT do that — it would erase any commits the user has on
+			// the phase branch. planImplementBranch decides per phase status:
+			// create the branch on first activation (planned), resume
+			// non-destructively when in flight (active / needs-attention),
+			// or abort when the branch is missing locally so we don't
+			// silently destroy work that may still be on a remote / reflog.
+			const defaultBranch = modeState.defaultBranch ?? "main";
+			const branchExists = runCommand(
+				"git",
+				["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+				{ cwd: ctx.cwd },
+			).ok;
+			const plan_: ImplementBranchPlan = planImplementBranch(
+				plan,
+				phase,
+				defaultBranch,
+				branchExists,
+			);
+
+			if (plan_.kind === "abort") {
+				notify(ctx, plan_.reason, "error");
+				return;
+			}
+
+			if (plan_.kind === "create") {
+				// First-time activation. Hop to the picked base before creating
+				// the phase branch so it forks from the right ancestor; for the
+				// linear case the base IS the default branch we're already on,
+				// so no extra checkout fires.
+				if (plan_.baseBranch !== defaultBranch) {
+					const baseCo = runCommand("git", ["checkout", plan_.baseBranch], {
 						cwd: ctx.cwd,
 					});
 					if (!baseCo.ok) {
 						notify(
 							ctx,
-							`checkout base ${baseBranch} failed: ${baseCo.stderr.trim()} — falling back to ${defaultBranch}`,
+							`checkout base ${plan_.baseBranch} failed: ${baseCo.stderr.trim()} — falling back to ${defaultBranch}`,
 							"warning",
 						);
 					} else {
 						notify(
 							ctx,
-							`forking ${branch} from ${baseBranch} (predecessor in flight)`,
+							`forking ${branch} from ${plan_.baseBranch} (predecessor in flight)`,
 							"info",
 						);
 					}
 				}
-			}
-
-			// Check out the phase branch in the main repo dir. This locks
-			// the branch to the main worktree so the subsequent reconcile
-			// (via findCheckoutOf) reuses ctx.cwd instead of trying to
-			// `git worktree add` a second checkout, which git would refuse.
-			const checkout = runCommand("git", ["checkout", "-B", branch], {
-				cwd: ctx.cwd,
-			});
-			if (!checkout.ok) {
-				notify(
-					ctx,
-					`git checkout ${branch} failed: ${checkout.stderr.trim()}`,
-					"error",
-				);
-				return;
-			}
-			if (phase.status === "planned") {
+				// `-B` here is intentional: silently overwrites a leftover
+				// branch from a previous failed run on a still-`planned` phase.
+				const checkout = runCommand("git", ["checkout", "-B", branch], {
+					cwd: ctx.cwd,
+				});
+				if (!checkout.ok) {
+					notify(
+						ctx,
+						`git checkout -B ${branch} failed: ${checkout.stderr.trim()}`,
+						"error",
+					);
+					return;
+				}
 				phase.status = "active";
 				phase.worktreePath = ctx.cwd;
 				phase.updatedAt = new Date().toISOString();
 				plan.updatedAt = phase.updatedAt;
 				savePlan(plan);
 				if (reconcileWorktrees(plan, ctx)) savePlan(plan);
+			} else {
+				// Resume: phase branch exists and holds work. Plain checkout,
+				// no reset — commits on the branch must survive the round-trip
+				// through plan mode.
+				const checkout = runCommand("git", ["checkout", branch], {
+					cwd: ctx.cwd,
+				});
+				if (!checkout.ok) {
+					notify(
+						ctx,
+						`git checkout ${branch} failed: ${checkout.stderr.trim()} — ` +
+							"is the branch checked out in another worktree? " +
+							"Try `git worktree list` to investigate.",
+						"error",
+					);
+					return;
+				}
+				notify(
+					ctx,
+					`resumed phase ${phase.id} on ${branch} (${phase.status})`,
+					"info",
+				);
 			}
 		} else {
 			// No plan / no phases — fall back to the legacy description-derived branch.
