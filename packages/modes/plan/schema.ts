@@ -149,3 +149,57 @@ export function repoNameFromPath(path: string): string {
 	const name = basename(resolve(path));
 	return name === "" ? "repo" : name;
 }
+
+/**
+ * Statuses where the phase's branch holds work that hasn't reached the
+ * default branch yet. A successor phase activated while a predecessor
+ * is in one of these states must fork from the predecessor's branch,
+ * not from main — otherwise the new branch loses access to the
+ * predecessor's changes until that PR merges.
+ */
+const PARENT_BRANCH_STATUSES: readonly PhaseStatus[] = [
+	"active",
+	"in-review",
+	"ready-to-ship",
+	"needs-attention",
+] as const;
+
+/**
+ * Pick the base branch a freshly-activated phase should fork from.
+ *
+ * The plan/phase model supports phase N+1 starting while N is still
+ * `in-review` (the worktree lifecycle explicitly allows it). When that
+ * happens, N's PR isn't merged yet — N's changes live on N's branch,
+ * not on main. A successor that forks from main loses access to those
+ * changes until N merges, which can introduce silent conflicts or
+ * "why is this code missing?" confusion.
+ *
+ * Algorithm: walk the predecessors backwards from `activatingPhaseId`.
+ *   - On the first non-skippable predecessor:
+ *     - shipped → main has its commits, fork from defaultBranch.
+ *     - active / in-review / ready-to-ship / needs-attention →
+ *       fork from that predecessor's branch.
+ *   - Skip `abandoned` (its branch is dead-end work) and `planned`
+ *     (shouldn't be a predecessor in practice, but treat as not-yet-
+ *     started so we look further back).
+ *
+ * Returns `defaultBranch` when the phase has no predecessors, when
+ * every predecessor is abandoned/planned, or when `activatingPhaseId`
+ * isn't found in the plan (defensive fallback).
+ */
+export function pickBaseBranch(
+	plan: Pick<Plan, "phases">,
+	activatingPhaseId: string,
+	defaultBranch: string,
+): string {
+	const idx = plan.phases.findIndex((p) => p.id === activatingPhaseId);
+	if (idx < 0) return defaultBranch;
+	for (let i = idx - 1; i >= 0; i--) {
+		const prev = plan.phases[i];
+		if (!prev) continue;
+		if (prev.status === "shipped") return defaultBranch;
+		if (PARENT_BRANCH_STATUSES.includes(prev.status)) return prev.branch;
+		// abandoned / planned: skip, look further back.
+	}
+	return defaultBranch;
+}

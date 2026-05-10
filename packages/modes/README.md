@@ -81,6 +81,24 @@ A phase has a worktree iff its status is `active` or `needs-attention`.
 - **Branches are never auto-deleted** — instant re-creation on `needs-attention`.
 - `/worktree prune` removes worktrees attached to terminal phases (always confirms).
 
+### Stacked phases (phase N+1 while phase N is in-review)
+
+When `/implement` activates phase B and phase A is still `in-review` /
+`ready-to-ship` / `needs-attention`, B's branch is forked from A's
+branch — not from the default branch. A's PR isn't merged yet, so its
+changes aren't on `main`; forking B from `main` would lose access to
+A's work until A merges.
+
+`pickBaseBranch` walks predecessors backwards to find the right base:
+`shipped` predecessors mean the work is on `main` (fork from default);
+in-flight predecessors (in-review / ready-to-ship / needs-attention /
+active) mean fork from that branch; `abandoned` and `planned` are
+skipped.
+
+When B's PR review surfaces a need to update A, you `/implement` A
+again (it's still active in the plan), commit on A's branch, and
+rebase B onto the updated A.
+
 ## Typical workflow
 
 ```
