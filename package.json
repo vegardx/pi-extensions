@@ -18,7 +18,6 @@
       "packages/prompt-suggestion/index.ts",
       "packages/review/index.ts",
       "packages/session-title/index.ts",
-      "packages/smart-compact/index.ts",
       "packages/startup/index.ts",
       "packages/wrap-up/index.ts"
     ],

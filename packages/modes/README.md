@@ -116,8 +116,13 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 
 ```json
 {
-  "extensions": {
+  "extensionConfig": {
     "modes": {
+      "defaultMode": "plan",
+      "compaction": {
+        "maxContextTokens": 170000,
+        "phaseTokens": 8000
+      },
       "review": {
         "enable": true,
         "agents": ["code-reviewer", "code-simplifier", "security-analyst"]
@@ -128,10 +133,59 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 }
 ```
 
+| Key | Default | Doc |
+|---|---|---|
+| `defaultMode` | `"plan"` | Mode for fresh sessions: `plan` \| `ask` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
+| `compaction.maxContextTokens` | `170000` | Mid-phase compaction trigger threshold. When `getContextUsage().tokens` exceeds this on `turn_end` (auto mode + active phase), a phase-slice compaction fires. |
+| `compaction.phaseTokens` | `8000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
+| `review.enable` | `false` | Whether the post-execution review pass runs. |
+| `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
+| `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
+
 Optional peer dependencies:
 
 - `pi-ext-review` — auto-review pass after execution and `/review` in the post-exec picker
 - `pi-ext-commit` — `/commit` in the post-exec picker
+
+## Context management
+
+Modes owns context fully via three-tier compaction:
+
+1. **plan → implement** — collapses planning chatter at `/implement`, producing the initial rolling summary (`## Plan` + `## Planning notes`).
+2. **mid-phase** — fires from `turn_end` when `tokens > compaction.maxContextTokens` (auto mode, active phase). Bounds in-flight context.
+3. **phase-end** — freezes the just-completed phase at `/ship` as a section in the rolling summary.
+
+### Byte-stable prefix invariant
+
+Each compaction's summary reuses the previous compaction's summary **byte-for-byte** as a prefix; only a new `## Phase ...` section is appended. Sections are never re-summarised. This keeps the prompt cache hot across phase boundaries:
+
+```
+after /implement:   ## Plan ... + ## Planning notes ...
+after phase 1:      ## Plan ... + ## Planning notes ... + ## Phase p-1 (part 1, shipped, PR #N) ...
+after phase 2:      ## Plan ... + ## Planning notes ... + ## Phase p-1 ... + ## Phase p-2 ...
+```
+
+### Slice chain
+
+When a phase overflows mid-flight, multiple `## Phase p-X (part N, ...)` sections accumulate:
+
+```
+## Phase p-long (part 1, in progress)    ← mid-phase compaction #1
+## Phase p-long (part 2, in progress)    ← mid-phase compaction #2
+## Phase p-long (part 3, shipped, PR #M) ← /ship
+```
+
+Each part captures raw messages once — no summary-of-summaries, no quality drift.
+
+### Disable pi auto-compaction
+
+Modes assumes pi's automatic compaction is OFF; it conflicts with the slice-chain invariant. Set in `~/.pi/agent/settings.json`:
+
+```json
+{ "compaction": { "enabled": false } }
+```
+
+Manual `/compact` still works (uses pi's default summary) as an escape hatch.
 
 ## Notes
 
