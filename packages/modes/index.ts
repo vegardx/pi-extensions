@@ -54,6 +54,7 @@ import {
 import {
 	appendPhaseSliceCompaction,
 	appendPlanToImplementCompaction,
+	buildPhaseSliceCompactionResult,
 	computeContextBuckets,
 	DEFAULT_PHASE_TOKENS,
 	DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
@@ -1639,28 +1640,42 @@ export default function (pi: ExtensionAPI) {
 		);
 	}
 
-	// ---- Phase-boundary compaction ----------------------------------------
+	// ---- Compaction wiring ------------------------------------------------
 	//
-	// Trigger points: /implement (plan → implement, collapses planning
-	// chatter) and /ship (phase end, freezes the just-completed phase as
-	// a section of the rolling summary).
+	// Two flows live here transitionally:
 	//
-	// The byte-stable prefix invariant is enforced inside
-	// plan/compaction.ts — here we just resolve the model, build a
-	// SummariseFn, and call the orchestrator. See plan/compaction.ts for
-	// the cache rationale and the deferred-improvements list.
+	//   - Mid-phase compaction (post-fix): driven by `ctx.compact()` from
+	//     the `turn_end` trigger; the actual summary is built in the
+	//     `session_before_compact` handler registered below. Pi performs
+	//     `appendCompaction` AND the `agent.state.messages` rebuild that
+	//     the legacy direct-write path skipped.
+	//
+	//   - Plan→implement compaction (legacy): still calls
+	//     `sm.appendCompaction` directly via `compactPlanToImplement`.
+	//     Carries the same agent.state.messages-rebuild bug as the
+	//     pre-fix mid-phase path; deleted in Phase 2 of the plan in
+	//     favour of a deterministic plan-doc seed.
+	//
+	//   - Phase-end compaction at /ship: deleted (`compactPhaseEnd` is a
+	//     stub). Per-phase summaries move onto the plan doc in Phase 2.
+	//
+	// See plan/compaction.ts for the byte-stable prefix invariant and the
+	// three-bucket budget model.
 
 	/** Once-per-session warning when no fast-tier model is configured. */
 	let warnedNoCompactionModel = false;
 
 	/**
-	 * True when ctx.sessionManager exposes the mutation methods our
-	 * compaction scheme depends on. The runtime value is currently always
-	 * a full SessionManager (verified in pi-coding-agent runner.js) but
-	 * the public type narrows to ReadonlySessionManager. The probe at
-	 * session_start verifies the runtime hasn't tightened the contract.
-	 * If it has, we silently skip phase-boundary compaction — pi's own
-	 * auto-compaction (or /compact) remains the fallback.
+	 * True when ctx.sessionManager exposes the mutation methods used by
+	 * the LEGACY plan→implement compaction path (`appendCompaction`,
+	 * `appendCustomEntry`). The mid-phase path no longer cares — it goes
+	 * through `ctx.compact()` (the documented pi API) and pi handles all
+	 * mutations server-side.
+	 *
+	 * The probe at session_start flips this to false on a pi version
+	 * that's tightened the contract; the legacy plan→implement path then
+	 * silently no-ops and pi's auto-compaction takes over. Phase 2 of the
+	 * plan deletes both the legacy path and this gate.
 	 */
 	let compactionApiAvailable = true;
 
@@ -1679,6 +1694,33 @@ export default function (pi: ExtensionAPI) {
 	let summaryBudgetWarnFired = false;
 
 	let compactionInFlight = false;
+
+	/**
+	 * Side-channel between modes' trigger sites and the
+	 * `session_before_compact` handler. Set just before `ctx.compact()`,
+	 * read & cleared inside the handler. Identifies which modes-flavoured
+	 * compaction shape to build. `null` means "no modes-driven compaction
+	 * is in flight" — if pi fires `session_before_compact` from its own
+	 * auto-compaction path we let it through (return `{}`).
+	 */
+	let pendingCompactionKind: { kind: "phase-slice"; phaseId: string } | null =
+		null;
+
+	/**
+	 * Promise wrapper around the fire-and-forget `ctx.compact(...)` API.
+	 * Resolves on `onComplete`, rejects on `onError`. `compactPhaseSlice`
+	 * awaits this so the surrounding `compactionInFlight` guard releases
+	 * only after pi has actually finished the compaction (and its
+	 * post-compaction `agent.state.messages` rebuild).
+	 */
+	function compactAwait(ctx: ExtensionContext): Promise<void> {
+		return new Promise((resolve, reject) => {
+			ctx.compact({
+				onComplete: () => resolve(),
+				onError: (err) => reject(err),
+			});
+		});
+	}
 
 	/**
 	 * The single supported entrypoint for the wider SessionManager
@@ -1873,43 +1915,17 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function compactPhaseEnd(
-		ctx: ExtensionCommandContext,
-		plan: Plan,
-		phaseId: string,
+		_ctx: ExtensionCommandContext,
+		_plan: Plan,
+		_phaseId: string,
 	): Promise<void> {
-		if (!compactionApiAvailable) return;
-		if (modeState?.mode === "hack") return;
-		const sm = getMutableSessionManager(ctx);
-		if (hasPhaseEndCompaction(sm, phaseId)) return;
-
-		const summarise = await buildSummariseFn(ctx);
-		if (!summarise) {
-			if (!warnedNoCompactionModel) {
-				warnedNoCompactionModel = true;
-				notify(
-					ctx,
-					"compaction skipped: no fast-tier model configured",
-					"warning",
-				);
-			}
-			return;
-		}
-
-		const id = await appendPhaseSliceCompaction({
-			sm,
-			plan,
-			summarise,
-			maxTokens: readPhaseTokensSetting(ctx),
-			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
-			phaseId,
-			kind: "end",
-			signal: ctx.signal,
-		});
-		if (id !== null) {
-			notify(ctx, `context compacted: phase ${phaseId} → frozen`, "info");
-		} else {
-			notify(ctx, "compaction skipped (summariser failed)", "warning");
-		}
+		// Phase-end compaction has been deleted in favour of the new
+		// per-phase summary written to the plan doc at /ship time (see
+		// Phase 2 of the plan). The legacy implementation wrote to the
+		// auto session's rolling summary via sm.appendCompaction — which,
+		// like the mid-phase path, never refreshed agent.state.messages
+		// and therefore had no runtime effect. Kept as a stub so existing
+		// call sites compile until Phase 2 removes them entirely.
 	}
 
 	/**
@@ -1917,55 +1933,40 @@ export default function (pi: ExtensionAPI) {
 	 * tokens exceed `workingTokens` (after subtracting summary cost) in
 	 * auto mode with an active phase.
 	 *
-	 * Same shape as compactPhaseEnd, but kind: "in-progress" — multiple
-	 * slices per phase are valid. The slice chain assembled across
-	 * triggers (in-progress × N, then end at /ship) becomes the phase's
-	 * record in the rolling summary.
+	 * Routes through `ctx.compact()` so pi performs `appendCompaction` AND
+	 * the `agent.state.messages = sessionContext.messages` rebuild that the
+	 * legacy direct-write path skipped (the bug that made every previous
+	 * mid-phase compaction a runtime no-op). The actual summary content is
+	 * built by `buildPhaseSliceCompactionResult` inside the
+	 * `session_before_compact` handler.
 	 */
 	async function compactPhaseSlice(
 		ctx: ExtensionContext,
-		plan: Plan,
+		_plan: Plan,
 		phaseId: string,
 	): Promise<void> {
-		if (!compactionApiAvailable) return;
 		if (modeState?.mode === "hack") return;
-		const sm = getMutableSessionManager(ctx);
 
-		const summarise = await buildSummariseFn(ctx);
-		if (!summarise) {
-			if (!warnedNoCompactionModel) {
-				warnedNoCompactionModel = true;
-				notify(
-					ctx,
-					"compaction skipped: no fast-tier model configured",
-					"warning",
-				);
-			}
-			return;
-		}
-
-		const id = await appendPhaseSliceCompaction({
-			sm,
-			plan,
-			summarise,
-			maxTokens: readPhaseTokensSetting(ctx),
-			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
-			phaseId,
-			kind: "in-progress",
-			signal: ctx.signal,
-		});
-		if (id !== null) {
+		pendingCompactionKind = { kind: "phase-slice", phaseId };
+		try {
+			await compactAwait(ctx);
 			notify(
 				ctx,
 				`context compacted: phase ${phaseId} mid-phase slice`,
 				"info",
 			);
-		} else {
-			notify(
-				ctx,
-				"mid-phase compaction skipped (summariser failed)",
-				"warning",
-			);
+		} catch (err) {
+			// `compactAwait` rejects when (a) the summariser fails / no
+			// fast-tier model is configured (the handler returns
+			// `{ cancel: true }`), (b) pi's `prepareCompaction` returned
+			// undefined ("Already compacted" / "Nothing to compact"), or
+			// (c) the LLM call errored. None of these are crash-worthy for
+			// modes — surface a warning and let pi auto-compaction handle
+			// the next overflow.
+			const msg = err instanceof Error ? err.message : String(err);
+			notify(ctx, `mid-phase compaction skipped (${msg})`, "warning");
+		} finally {
+			pendingCompactionKind = null;
 		}
 	}
 
@@ -2232,8 +2233,8 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 
-		// Freeze this phase's work as a `## Phase` section in the rolling
-		// summary. Idempotent on /ship retries via hasPhaseEndCompaction.
+		// Phase-end compaction has been deleted; the per-phase summary
+		// going onto the plan doc lands in Phase 2.
 		await compactPhaseEnd(ctx, plan, phase.id);
 	}
 
@@ -2936,6 +2937,56 @@ export default function (pi: ExtensionAPI) {
 		footerTui = null;
 	});
 
+	// ---- session_before_compact: modes-flavoured mid-phase compaction ----
+	//
+	// Fires when ctx.compact() is invoked (modes triggers it from
+	// compactPhaseSlice; pi may also trigger it from auto-compaction or the
+	// /compact command). When `pendingCompactionKind` is set we know it's
+	// modes-driven and we substitute our summary; otherwise we return `{}`
+	// and let pi run its default compaction logic.
+	//
+	// Returning `{ compaction: { ... } }` causes pi to:
+	//   1. sessionManager.appendCompaction(summary, firstKeptEntryId, ...)
+	//   2. agent.state.messages = sessionManager.buildSessionContext().messages
+	//   3. emit `session_compact`
+	// Step 2 is the rebuild that the legacy direct-write path skipped.
+
+	pi.on("session_before_compact", async (event, ctx) => {
+		const pending = pendingCompactionKind;
+		if (!pending) return {};
+
+		const plan = currentPlan();
+		if (!plan) return {};
+
+		const summarise = await buildSummariseFn(ctx);
+		if (!summarise) {
+			if (!warnedNoCompactionModel) {
+				warnedNoCompactionModel = true;
+				notify(
+					ctx,
+					"compaction skipped: no fast-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
+					"warning",
+				);
+			}
+			return { cancel: true };
+		}
+
+		const sm = ctx.sessionManager as unknown as SessionManager;
+		const result = await buildPhaseSliceCompactionResult({
+			sm,
+			plan,
+			summarise,
+			maxTokens: readPhaseTokensSetting(ctx),
+			tokensBefore: event.preparation.tokensBefore,
+			firstKeptEntryId: event.preparation.firstKeptEntryId,
+			phaseId: pending.phaseId,
+			signal: event.signal,
+		});
+		if (!result) return { cancel: true };
+
+		return { compaction: result };
+	});
+
 	// ---- System prompt injection ------------------------------------------
 
 	pi.on("before_agent_start", async () => {
@@ -3250,13 +3301,18 @@ export default function (pi: ExtensionAPI) {
 	// ---- Mid-phase compaction trigger -------------------------------------
 	//
 	// Gated stack: the cheapest checks first so most turn_end events
-	// short-circuit before touching the session manager.
+	// Mid-phase compaction trigger — fires from `turn_end` when the working
+	// portion (sys + work, i.e. total − summary) exceeds `workingTokens`.
 	//
-	//   1. compactionApiAvailable — runtime probe at session_start
-	//   2. modeState exists and is auto/hack — only modes-driven execution
-	//   3. plan + active phase exist
-	//   4. (tokens − summary) > workingTokens (uses ctx.getContextUsage())
-	//   5. !compactionInFlight — re-entrancy guard
+	// The actual compaction is driven by `ctx.compact()` (which fires the
+	// `session_before_compact` handler registered above). This `turn_end`
+	// hook is only the trigger gate; it does not write to the session itself.
+	//
+	// Gates (cheapest first):
+	//   1. modeState exists and is auto — only modes-driven execution
+	//   2. plan + active phase exist
+	//   3. (tokens − summary) > workingTokens (uses ctx.getContextUsage())
+	//   4. !compactionInFlight — re-entrancy guard
 	//
 	// On every gate failure: silent return. We never want this hook to
 	// log, only act.
@@ -3267,7 +3323,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("turn_end", async (_event, ctx) => {
 		// Cheap checks first — most turn_end events short-circuit before
 		// touching the plan tree or session manager.
-		if (!compactionApiAvailable) return;
 		if (!modeState) return;
 		if (compactionInFlight) return;
 
@@ -3299,7 +3354,13 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const fire = shouldCompactMidPhase({
-			compactionApiAvailable,
+			// `compactionApiAvailable` no longer gates the new mid-phase
+			// path — ctx.compact() is a public, guaranteed pi API. The flag
+			// still gates the legacy `compactPlanToImplement` path until
+			// Phase 2 of the plan removes it. Pass `true` here so the
+			// trigger isn't accidentally disabled by a probe failure that
+			// only affects the legacy path.
+			compactionApiAvailable: true,
 			mode: modeState.mode,
 			compactionInFlight,
 			hasActivePhase: !!activePhase,

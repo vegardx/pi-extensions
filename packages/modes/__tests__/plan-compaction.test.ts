@@ -2,6 +2,7 @@ import { vi } from "vitest";
 import {
 	appendPhaseSliceCompaction,
 	appendPlanToImplementCompaction,
+	buildPhaseSliceCompactionResult,
 	buildSummariserPreamble,
 	buildSummary,
 	collectMessagesSinceLastCompaction,
@@ -930,6 +931,170 @@ describe("appendPhaseSliceCompaction", () => {
 				"## Phase `p-1` — T (part 2, in progress)",
 			);
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// buildPhaseSliceCompactionResult (the new ctx.compact-driven path)
+// ---------------------------------------------------------------------------
+//
+// In the post-fix design, mid-phase compaction is driven by pi via
+// ctx.compact() + the session_before_compact hook. The hook handler calls
+// this builder to construct the {summary, firstKeptEntryId, tokensBefore,
+// details} payload pi expects. Pi then handles appendCompaction AND the
+// agent.state.messages rebuild.
+//
+// Differences vs. appendPhaseSliceCompaction (the legacy direct-write path):
+//   - Returns the result instead of mutating the session.
+//   - Uses the firstKeptEntryId pi computed via findCutPoint (we trust it).
+//   - No marker custom entry — pi's chosen cut point handles the boundary.
+//   - Always "in-progress" kind (phase-end is going away in Phase 2).
+
+describe("buildPhaseSliceCompactionResult", () => {
+	it("builds a result with summary, firstKeptEntryId, tokensBefore, and modesKind=phase-slice", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "Webhook retries", status: "active" }),
+		]);
+		sm.appendMessage(userMsg("work in progress"));
+
+		const summarise: SummariseFn = vi.fn().mockResolvedValue("distilled body");
+
+		const result = await buildPhaseSliceCompactionResult({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 12345,
+			firstKeptEntryId: "pi-chosen-id",
+			phaseId: "p-1",
+		});
+
+		expect(result).not.toBeNull();
+		expect(result?.firstKeptEntryId).toBe("pi-chosen-id");
+		expect(result?.tokensBefore).toBe(12345);
+		expect(result?.details.modesKind).toBe("phase-slice");
+		expect(result?.details.modesPhaseId).toBe("p-1");
+		expect(result?.summary).toContain(
+			"## Phase `p-1` — Webhook retries (part 1, in progress)",
+		);
+		expect(result?.summary).toContain("distilled body");
+	});
+
+	it("reuses the latest CompactionEntry's summary as a stable prefix", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "T", status: "active" }),
+		]);
+		sm.appendCompaction("## Plan: prior", "_", 0, undefined, true);
+		sm.appendMessage(userMsg("more work"));
+
+		const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
+		const result = await buildPhaseSliceCompactionResult({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			firstKeptEntryId: "x",
+			phaseId: "p-1",
+		});
+
+		expect(result?.summary.startsWith("## Plan: prior\n\n## Phase `p-1`")).toBe(
+			true,
+		);
+	});
+
+	it("increments part-N for repeated mid-phase slices on the same phase", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "T", status: "active" }),
+		]);
+		// Pretend a prior phase-slice compaction already exists on the branch.
+		sm.appendCompaction(
+			"## Phase `p-1` — T (part 1, in progress)\n\nbody1",
+			"_",
+			0,
+			{ modesKind: "phase-slice", modesPhaseId: "p-1" },
+			true,
+		);
+		sm.appendMessage(userMsg("more work"));
+
+		const summarise: SummariseFn = vi.fn().mockResolvedValue("body2");
+		const result = await buildPhaseSliceCompactionResult({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			firstKeptEntryId: "x",
+			phaseId: "p-1",
+		});
+
+		expect(result?.summary).toContain("(part 2, in progress)");
+	});
+
+	it("returns null when the summariser fails (clean rollback)", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "T", status: "active" }),
+		]);
+		sm.appendMessage(userMsg("work"));
+
+		const summarise: SummariseFn = vi.fn().mockResolvedValue(null);
+		const result = await buildPhaseSliceCompactionResult({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			firstKeptEntryId: "x",
+			phaseId: "p-1",
+		});
+
+		expect(result).toBeNull();
+	});
+
+	it("emits the no-recorded-work placeholder body when there are no messages since last compaction", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "T", status: "active" }),
+		]);
+		sm.appendCompaction("## Plan: prior", "_", 0, undefined, true);
+
+		const summarise: SummariseFn = vi.fn();
+		const result = await buildPhaseSliceCompactionResult({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			firstKeptEntryId: "x",
+			phaseId: "p-1",
+		});
+
+		expect(summarise).not.toHaveBeenCalled();
+		expect(result?.summary).toContain("(no recorded work)");
+	});
+
+	it("throws when phaseId is not in the plan", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "T", status: "active" }),
+		]);
+		const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
+
+		await expect(
+			buildPhaseSliceCompactionResult({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				firstKeptEntryId: "x",
+				phaseId: "p-missing",
+			}),
+		).rejects.toThrow(/p-missing/);
 	});
 });
 
