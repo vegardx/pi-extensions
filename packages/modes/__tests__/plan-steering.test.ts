@@ -1,5 +1,8 @@
 import type { Phase, PhaseStatus, Plan } from "../plan/schema.js";
-import { buildSteeringPreamble } from "../plan/steering.js";
+import {
+	STEERING_CLASSIFIER,
+	shouldInjectSteeringClassifier,
+} from "../plan/steering.js";
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
@@ -45,119 +48,151 @@ function makePlan(phases: Phase[]): Plan {
 	};
 }
 
-describe("buildSteeringPreamble", () => {
-	it("wraps an interactive auto-mode message with phase context", () => {
-		const result = buildSteeringPreamble({
-			text: "also add retry-with-jitter",
-			source: "interactive",
-			mode: "auto",
-			plan: makePlan([makePhase()]),
-		});
-		expect(result).not.toBeNull();
-		expect(result).toContain("steering message");
-		expect(result).toContain("p-active — Active phase (active)");
-		expect(result).toContain("✓ t-one — First task");
-		expect(result).toContain("○ t-two — Second task");
-		expect(result?.endsWith("also add retry-with-jitter")).toBe(true);
+describe("STEERING_CLASSIFIER", () => {
+	it("does not embed phase or task identifiers (cache stability)", () => {
+		expect(STEERING_CLASSIFIER).not.toMatch(/p-\w+/);
+		expect(STEERING_CLASSIFIER).not.toMatch(/t-\w+/);
 	});
 
-	it("wraps when the in-flight phase is needs-attention", () => {
-		const phase = makePhase({ status: "needs-attention" });
-		const result = buildSteeringPreamble({
-			text: "fix the off-by-one",
-			source: "interactive",
-			mode: "auto",
-			plan: makePlan([phase]),
-		});
-		expect(result).not.toBeNull();
-		expect(result).toContain("(needs-attention)");
+	it("references plan_view rather than embedding the plan", () => {
+		expect(STEERING_CLASSIFIER).toContain("plan_view");
 	});
 
-	it("renders '(no tasks yet)' when the active phase has no tasks", () => {
-		const phase = makePhase({ tasks: [] });
-		const result = buildSteeringPreamble({
-			text: "hi",
-			source: "interactive",
-			mode: "auto",
-			plan: makePlan([phase]),
-		});
-		expect(result).toContain("(no tasks yet)");
+	it("lists the four routing options", () => {
+		expect(STEERING_CLASSIFIER).toContain("plan_task(update");
+		expect(STEERING_CLASSIFIER).toContain("plan_task(add");
+		expect(STEERING_CLASSIFIER).toContain("plan_phase(add");
+		expect(STEERING_CLASSIFIER).toContain("course correction");
 	});
+});
 
-	it.each<[SteeringMode | null, string]>([
-		["plan", "plan mode"],
-		["hack", "hack mode"],
-		[null, "no mode"],
-	])("returns null in %s", (mode) => {
-		const result = buildSteeringPreamble({
-			text: "anything",
-			source: "interactive",
-			mode,
-			plan: makePlan([makePhase()]),
-		});
-		expect(result).toBeNull();
-	});
-
-	it("returns null for extension-sourced messages", () => {
-		const result = buildSteeringPreamble({
-			text: "internal notification",
-			source: "extension",
-			mode: "auto",
-			plan: makePlan([makePhase()]),
-		});
-		expect(result).toBeNull();
-	});
-
-	it("returns null for slash commands (incl. leading whitespace)", () => {
+describe("shouldInjectSteeringClassifier", () => {
+	it("returns true for an interactive auto-mode message with an in-flight phase", () => {
 		expect(
-			buildSteeringPreamble({
+			shouldInjectSteeringClassifier({
+				text: "also add retry-with-jitter",
+				source: "interactive",
+				mode: "auto",
+				plan: makePlan([makePhase()]),
+			}),
+		).toBe(true);
+	});
+
+	it("returns true when the in-flight phase is needs-attention", () => {
+		expect(
+			shouldInjectSteeringClassifier({
+				text: "fix the off-by-one",
+				source: "interactive",
+				mode: "auto",
+				plan: makePlan([makePhase({ status: "needs-attention" })]),
+			}),
+		).toBe(true);
+	});
+
+	it("returns true when the in-flight phase has zero tasks defined", () => {
+		// Plan exists but not yet broken down — the agent should still
+		// consider routing the message into a new task.
+		expect(
+			shouldInjectSteeringClassifier({
+				text: "hi",
+				source: "interactive",
+				mode: "auto",
+				plan: makePlan([makePhase({ tasks: [] })]),
+			}),
+		).toBe(true);
+	});
+
+	it.each<[SteeringMode | null]>([
+		["plan"],
+		["hack"],
+		[null],
+	])("returns false in %s", (mode) => {
+		expect(
+			shouldInjectSteeringClassifier({
+				text: "anything",
+				source: "interactive",
+				mode,
+				plan: makePlan([makePhase()]),
+			}),
+		).toBe(false);
+	});
+
+	it("returns false for extension-sourced messages", () => {
+		expect(
+			shouldInjectSteeringClassifier({
+				text: "internal notification",
+				source: "extension",
+				mode: "auto",
+				plan: makePlan([makePhase()]),
+			}),
+		).toBe(false);
+	});
+
+	it("returns false for slash commands (incl. leading whitespace)", () => {
+		expect(
+			shouldInjectSteeringClassifier({
 				text: "/ship",
 				source: "interactive",
 				mode: "auto",
 				plan: makePlan([makePhase()]),
 			}),
-		).toBeNull();
+		).toBe(false);
 		expect(
-			buildSteeringPreamble({
+			shouldInjectSteeringClassifier({
 				text: "  /skill:exa-search look up X",
 				source: "interactive",
 				mode: "auto",
 				plan: makePlan([makePhase()]),
 			}),
-		).toBeNull();
+		).toBe(false);
 	});
 
-	it("returns null for empty / whitespace-only messages", () => {
+	it("returns false for empty / whitespace-only messages", () => {
 		expect(
-			buildSteeringPreamble({
+			shouldInjectSteeringClassifier({
 				text: "",
 				source: "interactive",
 				mode: "auto",
 				plan: makePlan([makePhase()]),
 			}),
-		).toBeNull();
+		).toBe(false);
 		expect(
-			buildSteeringPreamble({
+			shouldInjectSteeringClassifier({
 				text: "   \n  ",
 				source: "interactive",
 				mode: "auto",
 				plan: makePlan([makePhase()]),
 			}),
-		).toBeNull();
+		).toBe(false);
 	});
 
-	it("returns null when no plan is present", () => {
+	it("returns false when no plan is present", () => {
 		expect(
-			buildSteeringPreamble({
+			shouldInjectSteeringClassifier({
 				text: "do the thing",
 				source: "interactive",
 				mode: "auto",
 				plan: null,
 			}),
-		).toBeNull();
+		).toBe(false);
 	});
 
-	it("returns null when the in-flight phase has tasks but all are done", () => {
+	it("returns false when no phase is in flight", () => {
+		const allDone: PhaseStatus[] = ["planned", "shipped", "abandoned"];
+		const phases = allDone.map((status, i) =>
+			makePhase({ id: `p-${i}`, status }),
+		);
+		expect(
+			shouldInjectSteeringClassifier({
+				text: "do the thing",
+				source: "interactive",
+				mode: "auto",
+				plan: makePlan(phases),
+			}),
+		).toBe(false);
+	});
+
+	it("returns false when the in-flight phase has tasks but all are done (awaiting /ship)", () => {
 		const phase = makePhase({
 			tasks: [
 				{
@@ -179,40 +214,13 @@ describe("buildSteeringPreamble", () => {
 			],
 		});
 		expect(
-			buildSteeringPreamble({
+			shouldInjectSteeringClassifier({
 				text: "any follow-up",
 				source: "interactive",
 				mode: "auto",
 				plan: makePlan([phase]),
 			}),
-		).toBeNull();
-	});
-
-	it("returns null when no phase is in flight", () => {
-		const allPlanned: PhaseStatus[] = ["planned", "shipped", "abandoned"];
-		const phases = allPlanned.map((status, i) =>
-			makePhase({ id: `p-${i}`, status }),
-		);
-		expect(
-			buildSteeringPreamble({
-				text: "do the thing",
-				source: "interactive",
-				mode: "auto",
-				plan: makePlan(phases),
-			}),
-		).toBeNull();
-	});
-
-	it("preserves the original text byte-for-byte after the preamble", () => {
-		const text = "Multi-line\n  message with `backticks` and emoji 🚀";
-		const result = buildSteeringPreamble({
-			text,
-			source: "interactive",
-			mode: "auto",
-			plan: makePlan([makePhase()]),
-		});
-		expect(result).not.toBeNull();
-		expect(result?.endsWith(`\n\n${text}`)).toBe(true);
+		).toBe(false);
 	});
 });
 
