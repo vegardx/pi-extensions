@@ -44,7 +44,9 @@ function renderTaskList(phase: Phase): string {
 /**
  * Build the wrapped message text. Returns null when the message should
  * pass through unchanged (default behaviour for everything outside auto
- * mode with an in-flight phase).
+ * mode with an in-flight phase, and for in-flight phases whose tasks are
+ * all complete — the latter is "done with the plan, awaiting /ship" and
+ * the routing prompt would only confuse the agent).
  */
 export function buildSteeringPreamble(input: SteeringInput): string | null {
 	if (input.mode !== "auto") return null;
@@ -57,6 +59,11 @@ export function buildSteeringPreamble(input: SteeringInput): string | null {
 	if (!input.plan) return null;
 	const phase = inflightPhase(input.plan);
 	if (!phase) return null;
+	// Phase exists with tasks, all done → user is waiting on /ship; no
+	// routing decision left to make. A phase with zero tasks at all is a
+	// different shape (plan not yet broken down) and we still wrap so the
+	// agent can route the message into a new task.
+	if (phase.tasks.length > 0 && phase.tasks.every((t) => t.done)) return null;
 
 	const preamble = [
 		"[modes: steering message — before acting, classify it:",

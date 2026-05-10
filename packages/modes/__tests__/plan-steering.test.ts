@@ -157,6 +157,37 @@ describe("buildSteeringPreamble", () => {
 		).toBeNull();
 	});
 
+	it("returns null when the in-flight phase has tasks but all are done", () => {
+		const phase = makePhase({
+			tasks: [
+				{
+					id: "t-one",
+					title: "First",
+					body: "",
+					done: true,
+					createdAt: "",
+					updatedAt: "",
+				},
+				{
+					id: "t-two",
+					title: "Second",
+					body: "",
+					done: true,
+					createdAt: "",
+					updatedAt: "",
+				},
+			],
+		});
+		expect(
+			buildSteeringPreamble({
+				text: "any follow-up",
+				source: "interactive",
+				mode: "auto",
+				plan: makePlan([phase]),
+			}),
+		).toBeNull();
+	});
+
 	it("returns null when no phase is in flight", () => {
 		const allPlanned: PhaseStatus[] = ["planned", "shipped", "abandoned"];
 		const phases = allPlanned.map((status, i) =>
