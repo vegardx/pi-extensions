@@ -349,6 +349,47 @@ describe("buildSummariserPreamble", () => {
 		expect(out1).not.toContain("Earlier parts are already captured");
 		expect(out0).not.toContain("Earlier parts are already captured");
 	});
+
+	it("for kind='in-progress', frames the phase as still in flight (regression for #3)", () => {
+		// Mid-phase compactions pass the active phase with kind: "in-progress".
+		// Earlier versions said "Just completed" unconditionally, which lied to
+		// the summariser and risked degraded summary quality (model believing
+		// the phase was done when it wasn't).
+		const plan = makePlan([
+			makePhase({
+				id: "p-1",
+				title: "In flight",
+				goal: "G1",
+				status: "active",
+			}),
+		]);
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		const out = buildSummariserPreamble(plan, phase, 5000, 1, "in-progress");
+		expect(out).toContain("Currently working on phase `p-1`");
+		expect(out).toContain("NOT done yet");
+		expect(out).toContain("Do NOT claim the phase is finished");
+		expect(out).not.toContain("Just completed");
+	});
+
+	it("for kind='end', uses the 'Just completed' framing", () => {
+		const plan = makePlan([
+			makePhase({ id: "p-1", title: "Done", goal: "G1", status: "in-review" }),
+		]);
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		const out = buildSummariserPreamble(plan, phase, 5000, 1, "end");
+		expect(out).toContain("Just completed: phase `p-1`");
+		expect(out).not.toContain("NOT done yet");
+	});
+
+	it("defaults kind to 'end' for back-compat with callers that omit it", () => {
+		const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
+		const phase = plan.phases[0];
+		if (!phase) throw new Error("fixture missing phase");
+		const out = buildSummariserPreamble(plan, phase, 5000);
+		expect(out).toContain("Just completed");
+	});
 });
 
 // ---------------------------------------------------------------------------
