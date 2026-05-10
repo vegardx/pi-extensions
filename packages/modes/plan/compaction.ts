@@ -491,6 +491,55 @@ export async function appendPhaseSliceCompaction(
 }
 
 // ---------------------------------------------------------------------------
+// Mid-phase compaction trigger gate
+// ---------------------------------------------------------------------------
+
+export interface MidPhaseTriggerInput {
+	/** Runtime probe result; false disables the entire feature. */
+	compactionApiAvailable: boolean;
+	/** Current modes mode, or null when no session has hydrated. */
+	mode: "plan" | "ask" | "auto" | "hack" | null;
+	/** True while a compaction is in flight. Re-entrancy guard. */
+	compactionInFlight: boolean;
+	/** Whether the plan has an active phase. */
+	hasActivePhase: boolean;
+	/**
+	 * Latest token count from `getContextUsage().tokens`. Pi reports
+	 * `null` immediately after a compaction — we treat that as "don't
+	 * fire yet, wait for the next turn".
+	 */
+	tokens: number | null | undefined;
+	/** Configured trigger threshold (extensionConfig.modes.compaction.maxContextTokens). */
+	maxContextTokens: number;
+}
+
+/**
+ * Pure gate for the mid-phase compaction `turn_end` handler. Returns
+ * true iff a phase-slice compaction should fire this turn.
+ *
+ * Order matters: cheaper checks come first so most turn_end events
+ * short-circuit without touching the plan tree or session manager.
+ *
+ *   1. compactionApiAvailable — runtime probe at session_start
+ *   2. mode === "auto" — only modes-driven execution; hack/plan/ask skip
+ *   3. !compactionInFlight — re-entrancy guard for slow LLM calls
+ *   4. plan + active phase exist
+ *   5. tokens (number) > maxContextTokens
+ *
+ * Caller is responsible for setting/clearing `compactionInFlight`
+ * around the actual fire.
+ */
+export function shouldCompactMidPhase(input: MidPhaseTriggerInput): boolean {
+	if (!input.compactionApiAvailable) return false;
+	if (input.mode !== "auto") return false;
+	if (input.compactionInFlight) return false;
+	if (!input.hasActivePhase) return false;
+	if (typeof input.tokens !== "number") return false;
+	if (input.tokens <= input.maxContextTokens) return false;
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // Deferred improvements — tracked here, not in the plan:
 //
 // 1. Threshold-gate the plan→implement compaction by planning-conversation
