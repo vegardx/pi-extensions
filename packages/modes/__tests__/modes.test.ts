@@ -325,12 +325,12 @@ describe("descriptionFromLastAssistant", () => {
 import { resolveDefaultMode } from "../index.js";
 
 describe("resolveDefaultMode", () => {
-	it("defaults to hack on undefined / null (fresh session, no setting)", () => {
+	it("defaults to plan on undefined / null (fresh session, no setting)", () => {
 		expect(resolveDefaultMode(undefined)).toEqual({
-			mode: "hack",
+			mode: "plan",
 			valid: true,
 		});
-		expect(resolveDefaultMode(null)).toEqual({ mode: "hack", valid: true });
+		expect(resolveDefaultMode(null)).toEqual({ mode: "plan", valid: true });
 	});
 
 	it("accepts each known mode", () => {
@@ -340,18 +340,18 @@ describe("resolveDefaultMode", () => {
 	});
 
 	it("rejects removed `ask` mode (was a valid value before this PR)", () => {
-		expect(resolveDefaultMode("ask")).toEqual({ mode: "hack", valid: false });
+		expect(resolveDefaultMode("ask")).toEqual({ mode: "plan", valid: false });
 	});
 
-	it("rejects unknown strings, falls back to hack + invalid", () => {
-		expect(resolveDefaultMode("yolo")).toEqual({ mode: "hack", valid: false });
-		expect(resolveDefaultMode("")).toEqual({ mode: "hack", valid: false });
-		expect(resolveDefaultMode("AUTO")).toEqual({ mode: "hack", valid: false });
+	it("rejects unknown strings, falls back to plan + invalid", () => {
+		expect(resolveDefaultMode("yolo")).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode("")).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode("AUTO")).toEqual({ mode: "plan", valid: false });
 	});
 
-	it("rejects non-strings (number, object), falls back to hack + invalid", () => {
-		expect(resolveDefaultMode(42)).toEqual({ mode: "hack", valid: false });
-		expect(resolveDefaultMode({})).toEqual({ mode: "hack", valid: false });
-		expect(resolveDefaultMode([])).toEqual({ mode: "hack", valid: false });
+	it("rejects non-strings (number, object), falls back to plan + invalid", () => {
+		expect(resolveDefaultMode(42)).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode({})).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode([])).toEqual({ mode: "plan", valid: false });
 	});
 });

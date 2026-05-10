@@ -16,7 +16,7 @@ Current mode is shown in the footer (`hack` renders red — no safety net). **Sh
 - `plan → auto`: opens a picker (Implement / Park / Continue discussing) when a plan is in flight; otherwise just flips. The picker forces an explicit `/implement` so you don't stumble into auto with stale plan text.
 - `auto → hack`: flips silently — going more permissive, context flows through.
 
-Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (default `hack`). Existing persisted sessions always use their saved mode.
+Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (default `plan`). Existing persisted sessions always use their saved mode.
 
 ## Commands
 
@@ -155,7 +155,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 {
   "extensionConfig": {
     "modes": {
-      "defaultMode": "hack",
+      "defaultMode": "plan",
       "compaction": {
         "maxContextTokens": 170000,
         "phaseTokens": 8000
@@ -172,7 +172,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 
 | Key | Default | Doc |
 |---|---|---|
-| `defaultMode` | `"hack"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
+| `defaultMode` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
 | `compaction.maxContextTokens` | `170000` | Mid-phase compaction trigger threshold. When `getContextUsage().tokens` exceeds this on `turn_end` (auto mode + active phase), a phase-slice compaction fires. |
 | `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
 | `compaction.phaseTokens` | `8000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
