@@ -128,11 +128,34 @@ export interface Phase {
 	 * cleared when it leaves.
 	 */
 	worktreePath?: string;
+	/**
+	 * Absolute path to the pi session file backing this phase's auto
+	 * session. Set on first `/implement` (when `ctx.newSession` creates
+	 * the session); reused by subsequent `/implement` invocations on the
+	 * same phase to resume via `ctx.switchSession`. Never cleared —
+	 * the session file is kept on disk as a historical record even
+	 * after the phase ships.
+	 *
+	 * Optional for back-compat with phases created before per-phase
+	 * sessions landed; missing-on-resume falls back to creating a fresh
+	 * session.
+	 */
+	sessionPath?: string;
 	/** GitHub issue number after /park; undefined before. */
 	issueNumber?: number;
 	tasks: Task[];
 	/** PR number once /ship has opened it. */
 	prNumber?: number;
+	/**
+	 * Distilled outcome of this phase, written at /ship time. Capped at
+	 * ~`compaction.phaseTokens` (default 10k tokens). Carried forward
+	 * into future phases' seed via `seedPlanDoc` so phase N learns from
+	 * phase N-1's discoveries without ingesting the raw auto-session.
+	 *
+	 * Idempotent: once set, /ship retries do not regenerate. Manual
+	 * edits survive.
+	 */
+	summary?: string;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -163,6 +186,15 @@ export interface Plan {
 	/** GitHub plan-tracking issue (parent of phase sub-issues) after /park. */
 	parentIssueNumber?: number;
 	phases: Phase[];
+	/**
+	 * Absolute path to the pi session file backing this plan's planning
+	 * session. Set on first `/plan` (recorded from the active session);
+	 * `switchSession`'d to on `/plan resume <slug>` and on auto→plan
+	 * transitions. Optional for back-compat with plans from before
+	 * per-plan sessions landed; missing-on-resume keeps the current
+	 * session.
+	 */
+	planSessionPath?: string;
 	/** Last successful PR-state sync via gh. */
 	lastSyncedAt?: string;
 	/**
