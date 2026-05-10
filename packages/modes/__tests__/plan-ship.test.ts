@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { vi } from "vitest";
 import type { ShellResult } from "../git.js";
 import type { Phase, Plan } from "../plan/schema.js";
 import { parsePrCreateOutput, renderPrBody, shipPhase } from "../plan/ship.js";

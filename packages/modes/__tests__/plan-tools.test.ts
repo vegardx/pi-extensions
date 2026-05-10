@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { vi } from "vitest";
 import type { Plan } from "../plan/schema.js";
 import { _setPlansRootForTests, loadPlan, savePlan } from "../plan/storage.js";
 import { registerPlanTools } from "../plan/tools.js";
