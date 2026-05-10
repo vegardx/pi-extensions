@@ -1,29 +1,36 @@
 /**
  * Phase-boundary compaction for the modes plan/phase model.
  *
- * Goal: a byte-stable prompt prefix across phase boundaries. Instead of
- * pi's default rolling re-summarisation (which regenerates the entire
- * summary on every compaction and flushes the prompt cache), modes
- * compacts at well-defined points — plan → implement, and phase end —
- * and the summary grows by **append only**:
+ * Modes compacts at three trigger points, all using the same shape:
+ * summarise a slice of raw messages exactly once, freeze it, append to
+ * the rolling summary. Triggers:
  *
- *   <prev summary verbatim> + "\n\n## Phase p-X — title (status)\n<body>"
+ *   1. plan → implement (`/implement` command):
+ *      collapses planning chatter into `## Plan` + `## Planning notes`.
  *
- * Because pi's `buildSessionContext` only emits the latest CompactionEntry
- * (verified in dist/core/session-manager.js), and because `convertToLlm`
- * wraps the summary in deterministic prefix/suffix constants
- * (dist/core/messages.js), the summary string IS the prompt prefix the
- * provider sees after the system prompt. As long as we never regenerate
- * old sections, the prefix stays byte-identical and the prompt cache
- * keeps hitting across phases.
+ *   2. mid-phase (`turn_end` when context tokens > maxContextTokens):
+ *      bounds in-flight context. Section: `## Phase p-X (part N, in progress)`.
+ *      A phase that overflows N times produces N+1 slices.
  *
- * This module is intentionally pure: rendering helpers, tree introspection,
- * and orchestrators that take an injected `summarise` callback. The actual
- * LLM client wiring lives at the call site in index.ts.
+ *   3. phase-end (`/ship` command):
+ *      freezes the just-completed phase. Section: `## Phase p-X (part N, shipped, PR #M)`.
  *
- * Coupling to the modes plan model is deliberate. If another plan-shaped
- * extension emerges, this could be lifted into a standalone package — see
- * the deferred-improvements note at the bottom of the file.
+ * The append-only invariant: each compaction's summary reuses the
+ * previous compaction's summary byte-for-byte as a prefix. Sections are
+ * never re-summarised. A phase that ran long is captured as a chain of
+ * slices, each summarised once from raw messages — no summary-of-
+ * summaries, no quality drift.
+ *
+ * Pi's `buildSessionContext` only emits the LATEST CompactionEntry on
+ * the path (verified in dist/core/session-manager.js), so the most
+ * recent summary IS the prompt prefix the model sees after the system
+ * prompt. As long as we never regenerate old sections, the prefix stays
+ * byte-identical and the prompt cache keeps hitting across phases.
+ *
+ * This module is intentionally pure: rendering helpers, tree
+ * introspection, and orchestrators that take an injected `summarise`
+ * callback. The actual LLM client wiring lives at the call site in
+ * index.ts.
  */
 
 import type {
@@ -46,7 +53,7 @@ type AgentMessage = SessionMessageEntry["message"];
 export const PHASE_BOUNDARY_CUSTOM_TYPE = "modes:phase-boundary";
 
 /**
- * Default per-phase summary OUTPUT budget in tokens. Caps `maxTokens`
+ * Default per-slice summary OUTPUT budget in tokens. Caps `maxTokens`
  * on the summariser call AND is stated in the preamble so the model
  * self-budgets. Override via:
  *   extensionConfig.modes.compaction.phaseTokens
@@ -57,17 +64,28 @@ export const PHASE_BOUNDARY_CUSTOM_TYPE = "modes:phase-boundary";
  */
 export const DEFAULT_PHASE_TOKENS = 8000;
 
+/**
+ * Default mid-phase compaction trigger threshold in tokens. When
+ * `getContextUsage().tokens` exceeds this on `turn_end` (in auto mode
+ * with an active phase), a `phase-slice` compaction fires. Override via:
+ *   extensionConfig.modes.compaction.maxContextTokens
+ */
+export const DEFAULT_MAX_CONTEXT_TOKENS = 170000;
+
 /** Stored on `CompactionEntry.details` to identify modes compactions. */
 export interface ModesCompactionDetails {
-	modesKind: "plan-to-implement" | "phase-end";
-	/** Phase activated (plan-to-implement) or shipped (phase-end). */
+	modesKind: "plan-to-implement" | "phase-slice" | "phase-end";
+	/**
+	 * Phase activated (plan-to-implement), in progress (phase-slice),
+	 * or shipped (phase-end).
+	 */
 	modesPhaseId: string;
 }
 
 /** Data stored on the breadcrumb custom entry. */
 export interface PhaseBoundaryData {
 	phaseId: string;
-	kind: "plan-to-implement" | "phase-end";
+	kind: "plan-to-implement" | "phase-slice" | "phase-end";
 }
 
 export type SummariseFn = (args: {
@@ -90,11 +108,15 @@ export type SummariseFn = (args: {
  *   the plan→implement transition (planning conversation, no completed
  *   phase yet)
  * @param maxTokens - output token cap, also stated in the prompt
+ * @param partN - 1-indexed part number for slice/end compactions; when
+ *   > 1, the preamble notes that earlier parts are already captured.
+ *   Use 0 (or omit) for plan→implement.
  */
 export function buildSummariserPreamble(
 	plan: Plan,
 	completedPhase: PlanPhase | null,
 	maxTokens: number,
+	partN: number = 0,
 ): string {
 	const upcoming = plan.phases.filter(
 		(p) => !TERMINAL_STATUSES.includes(p.status) && p.id !== completedPhase?.id,
@@ -111,6 +133,14 @@ export function buildSummariserPreamble(
 			`Just completed: phase \`${completedPhase.id}\` — ${completedPhase.title}`,
 		);
 		lines.push(`Goal: ${completedPhase.goal}`);
+		if (partN > 1) {
+			lines.push("");
+			lines.push(
+				`This is **part ${partN}** of the phase. Earlier parts are already captured`,
+				"verbatim in the rolling summary above. Focus on what this slice adds —",
+				"do NOT restate work covered by previous parts.",
+			);
+		}
 	} else {
 		lines.push(
 			"This summarises the planning conversation that preceded execution.",
@@ -139,7 +169,8 @@ export function buildSummariserPreamble(
 	lines.push("    and error messages relevant to upcoming phases");
 	lines.push("");
 	lines.push(
-		`Stay within ~${maxTokens} output tokens. Do not restate phase goals.`,
+		`Stay within ~${maxTokens} output tokens — this is a MAXIMUM, not a quota.`,
+		"If the slice contains little of value, return a short summary. Do not pad.",
 	);
 
 	return lines.join("\n");
@@ -155,10 +186,32 @@ export function renderPlanSection(plan: Plan): string {
 	return lines.join("\n");
 }
 
-/** `## Phase ...` section emitted at phase-end. */
-export function renderPhaseSection(phase: PlanPhase, body: string): string {
-	const pr = phase.prNumber !== undefined ? `, PR #${phase.prNumber}` : "";
-	return `## Phase \`${phase.id}\` — ${phase.title} (${phase.status}${pr})\n\n${body}`;
+/**
+ * `## Phase ...` section emitted at phase-slice or phase-end compactions.
+ * Title format is locked:
+ *   in-progress: ## Phase `p-X` — Title (part N, in progress)
+ *   end:         ## Phase `p-X` — Title (part N, shipped, PR #M)
+ *
+ * `partN` is always emitted, even for N=1, so the rendering code is
+ * conditional-free.
+ */
+export function renderPhaseSection(args: {
+	phase: PlanPhase;
+	body: string;
+	partN: number;
+	kind: "in-progress" | "end";
+}): string {
+	const { phase, body, partN, kind } = args;
+	let stateText: string;
+	if (kind === "in-progress") {
+		stateText = "in progress";
+	} else {
+		stateText =
+			phase.prNumber !== undefined
+				? `shipped, PR #${phase.prNumber}`
+				: "shipped";
+	}
+	return `## Phase \`${phase.id}\` — ${phase.title} (part ${partN}, ${stateText})\n\n${body}`;
 }
 
 /**
@@ -191,7 +244,11 @@ function getModesDetails(
 	const details = (entry as { details?: unknown }).details;
 	if (!details || typeof details !== "object") return undefined;
 	const d = details as Partial<ModesCompactionDetails>;
-	if (d.modesKind !== "plan-to-implement" && d.modesKind !== "phase-end") {
+	if (
+		d.modesKind !== "plan-to-implement" &&
+		d.modesKind !== "phase-slice" &&
+		d.modesKind !== "phase-end"
+	) {
 		return undefined;
 	}
 	if (typeof d.modesPhaseId !== "string") return undefined;
@@ -217,6 +274,29 @@ export function hasPlanToImplementCompaction(sm: SessionManager): boolean {
 		if (d?.modesKind === "plan-to-implement") return true;
 	}
 	return false;
+}
+
+/**
+ * Count phase-slice + phase-end compactions for the given phaseId on
+ * the current branch. Used to compute the next slice's `part N` index.
+ * Returns 0 for phases with no slices yet (so the next slice will be
+ * `part 1`).
+ */
+export function countPhaseSlicesOnBranch(
+	sm: SessionManager,
+	phaseId: string,
+): number {
+	let n = 0;
+	for (const e of sm.getBranch()) {
+		const d = getModesDetails(e);
+		if (
+			(d?.modesKind === "phase-slice" || d?.modesKind === "phase-end") &&
+			d.modesPhaseId === phaseId
+		) {
+			n++;
+		}
+	}
+	return n;
 }
 
 /**
@@ -321,36 +401,61 @@ export async function appendPlanToImplementCompaction(
 }
 
 /**
- * Compact at /ship (phase-end). Reads the previous compaction's summary
- * verbatim, appends a new `## Phase p-X` section produced by summarising
- * messages-since-last-compaction.
+ * Append a phase slice compaction. Two flavours:
  *
- * Idempotent: returns null without appending if a phase-end compaction
- * for this phase already exists. Returns null without appending on
- * summariser error (clean rollback).
+ *   - `kind: "in-progress"` — fired by the mid-phase trigger when context
+ *     exceeds `maxContextTokens`. Multiple slices per phase are valid;
+ *     no idempotency check.
+ *   - `kind: "end"` — fired by `/ship` when the phase is shipped.
+ *     Idempotent: returns null without appending if a phase-end
+ *     compaction for this phase already exists.
+ *
+ * Both flavours: summarise messages-since-last-compaction with a
+ * preamble that names upcoming phases, append a marker + compaction.
+ * The new compaction's summary = previous summary verbatim + new
+ * `## Phase` section.
+ *
+ * Section title:
+ *   in-progress: `## Phase p-X (part N, in progress)`
+ *   end:         `## Phase p-X (part N, shipped, PR #M)`
+ *
+ * Returns the new compaction's id, or null on summariser error
+ * (clean rollback) or idempotency skip.
  *
  * Throws if `phaseId` is not in the plan (indicates a wiring bug).
  */
-export async function appendPhaseEndCompaction(
-	opts: AppendCompactionOptions & { phaseId: string },
+export async function appendPhaseSliceCompaction(
+	opts: AppendCompactionOptions & {
+		phaseId: string;
+		kind: "in-progress" | "end";
+	},
 ): Promise<string | null> {
-	const { sm, plan, summarise, maxTokens, tokensBefore, signal, phaseId } =
-		opts;
+	const {
+		sm,
+		plan,
+		summarise,
+		maxTokens,
+		tokensBefore,
+		signal,
+		phaseId,
+		kind,
+	} = opts;
 
-	if (hasPhaseEndCompaction(sm, phaseId)) return null;
+	if (kind === "end" && hasPhaseEndCompaction(sm, phaseId)) return null;
 
 	const phase = plan.phases.find((p) => p.id === phaseId);
 	if (!phase) {
 		throw new Error(
-			`appendPhaseEndCompaction: phase ${phaseId} not found in plan ${plan.slug}`,
+			`appendPhaseSliceCompaction: phase ${phaseId} not found in plan ${plan.slug}`,
 		);
 	}
 
+	const partN = countPhaseSlicesOnBranch(sm, phaseId) + 1;
 	const messages = collectMessagesSinceLastCompaction(sm);
 
 	let body = "(no recorded work)";
 	if (messages.length > 0) {
-		const preamble = buildSummariserPreamble(plan, phase, maxTokens);
+		const preamble = buildSummariserPreamble(plan, phase, maxTokens, partN);
 		const out = await summarise({
 			messages,
 			preamble,
@@ -362,11 +467,15 @@ export async function appendPhaseEndCompaction(
 	}
 
 	const prev = findLatestCompactionSummary(sm);
-	const summary = buildSummary(prev, renderPhaseSection(phase, body));
+	const summary = buildSummary(
+		prev,
+		renderPhaseSection({ phase, body, partN, kind }),
+	);
 
+	const boundaryKind = kind === "in-progress" ? "phase-slice" : "phase-end";
 	const markerId = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {
 		phaseId,
-		kind: "phase-end",
+		kind: boundaryKind,
 	} satisfies PhaseBoundaryData);
 
 	return sm.appendCompaction(
@@ -374,7 +483,7 @@ export async function appendPhaseEndCompaction(
 		markerId,
 		tokensBefore,
 		{
-			modesKind: "phase-end",
+			modesKind: boundaryKind,
 			modesPhaseId: phaseId,
 		} satisfies ModesCompactionDetails,
 		true,
@@ -393,7 +502,7 @@ export async function appendPhaseEndCompaction(
 //    extract this into a standalone package and parametrise the rendering
 //    helpers (renderPlanSection / renderPhaseSection) over a phase shape.
 //
-// 3. Per-phase token budget could become adaptive (e.g. weight by phase
-//    size, or split a remaining-budget pool dynamically). Currently a flat
-//    cap from settings — simpler and predictable.
+// 3. `maxContextTokens` is currently an absolute number. Could accept a
+//    `"70%"` string for percentage of the active model's contextWindow,
+//    so the threshold tracks the model.
 // ---------------------------------------------------------------------------
