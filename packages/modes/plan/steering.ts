@@ -21,7 +21,7 @@ import type { Phase, Plan } from "./schema.js";
 import { WORKTREE_STATUSES } from "./schema.js";
 
 export type SteeringSource = "interactive" | "rpc" | "extension";
-export type SteeringMode = "plan" | "ask" | "auto";
+export type SteeringMode = "plan" | "ask" | "auto" | "hack";
 
 export interface SteeringInput {
 	text: string;
