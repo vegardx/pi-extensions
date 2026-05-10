@@ -5,6 +5,7 @@ import {
 	buildSummariserPreamble,
 	buildSummary,
 	collectMessagesSinceLastCompaction,
+	computeCarryForwardSummaryChars,
 	computeContextBuckets,
 	countPhaseSlicesOnBranch,
 	DEFAULT_PHASE_TOKENS,
@@ -660,6 +661,7 @@ describe("shouldCompactMidPhase", () => {
 		tokens: 200_000,
 		workingTokens: 150_000,
 		summaryTokens: 0,
+		seedTokens: 0,
 	};
 
 	it("fires when every gate passes", () => {
@@ -742,20 +744,23 @@ describe("shouldCompactMidPhase", () => {
 // ---------------------------------------------------------------------------
 
 describe("computeContextBuckets", () => {
-	it("splits a known total into sys / summary / work", () => {
+	it("splits a known total into sys / seed / summary / work", () => {
 		const out = computeContextBuckets({
 			total: 120_000,
 			systemPromptChars: 40_000,
 			toolSchemaChars: 8_000,
 			summaryChars: 120_000,
+			seedChars: 16_000,
 		});
 		// sys = ceil(48000 / 4) = 12000
+		// seed = ceil(16000 / 4) = 4000
 		// summary = ceil(120000 / 4) = 30000
-		// work = 120000 - 12000 - 30000 = 78000
+		// work = 120000 - 12000 - 4000 - 30000 = 74000
 		expect(out).toEqual({
 			sys: 12_000,
+			seed: 4_000,
 			summary: 30_000,
-			work: 78_000,
+			work: 74_000,
 			total: 120_000,
 		});
 	});
@@ -766,21 +771,24 @@ describe("computeContextBuckets", () => {
 			systemPromptChars: 40_000,
 			toolSchemaChars: 8_000,
 			summaryChars: 120_000,
+			seedChars: 0,
 		});
 		expect(out).toEqual({
 			sys: 12_000,
+			seed: 0,
 			summary: 30_000,
 			work: 0,
 			total: null,
 		});
 	});
 
-	it("clamps work to 0 when sys + summary exceed total (estimation drift)", () => {
+	it("clamps work to 0 when sys + seed + summary exceed total (estimation drift)", () => {
 		const out = computeContextBuckets({
 			total: 30_000,
 			systemPromptChars: 40_000,
 			toolSchemaChars: 8_000,
 			summaryChars: 120_000,
+			seedChars: 0,
 		});
 		expect(out.work).toBe(0);
 		expect(out.total).toBe(30_000);
@@ -797,7 +805,33 @@ describe("computeContextBuckets", () => {
 			systemPromptChars: 0,
 			toolSchemaChars: 0,
 			summaryChars: 0,
+			seedChars: 0,
 		});
-		expect(out).toEqual({ sys: 0, summary: 0, work: 0, total: 0 });
+		expect(out).toEqual({ sys: 0, seed: 0, summary: 0, work: 0, total: 0 });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// computeCarryForwardSummaryChars — Σ(phase.summary chars) for shipped phases
+// ---------------------------------------------------------------------------
+
+describe("computeCarryForwardSummaryChars", () => {
+	it("returns 0 when no phase has shipped", () => {
+		const plan = makePlan([
+			makePhase({ id: "p-1", status: "active", summary: "ignored" }),
+			makePhase({ id: "p-2", status: "planned" }),
+		]);
+		expect(computeCarryForwardSummaryChars(plan)).toBe(0);
+	});
+
+	it("sums summary lengths only across shipped phases", () => {
+		const plan = makePlan([
+			makePhase({ id: "p-1", status: "shipped", summary: "abc" }),
+			makePhase({ id: "p-2", status: "shipped" }),
+			makePhase({ id: "p-3", status: "abandoned", summary: "xxxx" }),
+			makePhase({ id: "p-4", status: "active", summary: "yyy" }),
+			makePhase({ id: "p-5", status: "shipped", summary: "12345" }),
+		]);
+		expect(computeCarryForwardSummaryChars(plan)).toBe(8);
 	});
 });

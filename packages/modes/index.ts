@@ -54,6 +54,7 @@ import {
 import {
 	buildPhaseEndSummaryPreamble,
 	buildPhaseSliceCompactionResult,
+	computeCarryForwardSummaryChars,
 	computeContextBuckets,
 	DEFAULT_PHASE_TOKENS,
 	DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
@@ -85,7 +86,7 @@ import {
 	TERMINAL_STATUSES,
 	WORKTREE_STATUSES,
 } from "./plan/schema.js";
-import { seedPlanDoc } from "./plan/seed.js";
+import { PLAN_SEED_CUSTOM_TYPE, seedPlanDoc } from "./plan/seed.js";
 import { shipPhase } from "./plan/ship.js";
 import {
 	STEERING_CLASSIFIER,
@@ -907,9 +908,9 @@ export default function (pi: ExtensionAPI) {
 			return `${current}/${cap}`;
 		}
 
-		// Auto/hack: three-bucket breakdown. Order sys → sum → work matches
-		// the actual prefix layout in API requests and the direction the
-		// KV-cache reuses (longest stable prefix first).
+		// Auto/hack: four-bucket breakdown. Order sys → seed → sum → work
+		// matches the actual prefix layout in API requests and the direction
+		// the KV-cache reuses (longest stable prefix first).
 		const workingTokens = readWorkingTokensSetting(ctx);
 		const summaryTokensBudget = readSummaryTokensSetting(ctx);
 		const denom = workingTokens + summaryTokensBudget;
@@ -917,16 +918,19 @@ export default function (pi: ExtensionAPI) {
 		const systemPromptChars = ctx.getSystemPrompt().length;
 		const toolSchemaChars = computeToolSchemaChars();
 		const summaryChars = computeSummaryChars(ctx);
+		const seedChars = computeSeedChars(ctx);
 
 		const buckets = computeContextBuckets({
 			total: usage.tokens,
 			systemPromptChars,
 			toolSchemaChars,
 			summaryChars,
+			seedChars,
 		});
 
 		const k = (n: number) => `${Math.round(n / 1000)}k`;
 		const parts: string[] = [`sys ${k(buckets.sys)}`];
+		if (buckets.seed > 0) parts.push(`seed ${k(buckets.seed)}`);
 		if (buckets.summary > 0) parts.push(`sum ${k(buckets.summary)}`);
 		parts.push(buckets.total === null ? "work ?" : `work ${k(buckets.work)}`);
 
@@ -972,6 +976,32 @@ export default function (pi: ExtensionAPI) {
 		try {
 			const sm = ctx.sessionManager as unknown as SessionManager;
 			return findLatestCompactionSummary(sm).length;
+		} catch {
+			return 0;
+		}
+	}
+
+	/**
+	 * Sum of `modes:plan-seed` custom-message-entry char counts on the
+	 * current branch. Used by the footer (own bucket) and the mid-phase
+	 * trigger (subtracted from working budget so a heavy carry-forward
+	 * seed doesn't penalise the trigger). Returns 0 in plan-mode
+	 * sessions or any session that hasn't seen a `seedPlanDoc` write.
+	 */
+	function computeSeedChars(ctx: ExtensionContext): number {
+		try {
+			const sm = ctx.sessionManager;
+			let n = 0;
+			for (const e of sm.getBranch()) {
+				if (
+					e.type === "custom_message" &&
+					e.customType === PLAN_SEED_CUSTOM_TYPE
+				) {
+					const content = (e as { content?: unknown }).content;
+					if (typeof content === "string") n += content.length;
+				}
+			}
+			return n;
 		} catch {
 			return 0;
 		}
@@ -3450,17 +3480,30 @@ export default function (pi: ExtensionAPI) {
 			summaryUsed = 0;
 		}
 
-		// Soft warn (once per session) when the rolling summary outgrew
-		// its budget. Not enforced — compaction is the only thing that
-		// grows summary, and it's deterministic. Hint to lower phaseTokens.
+		let seedUsed = 0;
+		try {
+			seedUsed = Math.ceil(computeSeedChars(ctx) / 4);
+		} catch {
+			seedUsed = 0;
+		}
+
+		// Soft warn (once per session) when the cumulative cross-phase
+		// carry-forward (Σ phase.summary across shipped phases of the
+		// active plan) exceeds the budget. Not enforced — dropping older
+		// summaries silently would lose the discovery signal that
+		// motivates the carry-forward in the first place. Hint to lower
+		// `compaction.phaseTokens` per phase, or accept a larger seed.
 		const summaryBudget = readSummaryTokensSetting(ctx);
-		if (!summaryBudgetWarnFired && summaryUsed > summaryBudget) {
-			summaryBudgetWarnFired = true;
-			notify(
-				ctx,
-				`rolling summary (${summaryUsed} tokens) exceeded compaction.summaryTokens (${summaryBudget}); consider lowering compaction.phaseTokens or raising compaction.summaryTokens`,
-				"warning",
-			);
+		if (!summaryBudgetWarnFired && plan) {
+			const carry = Math.ceil(computeCarryForwardSummaryChars(plan) / 4);
+			if (carry > summaryBudget) {
+				summaryBudgetWarnFired = true;
+				notify(
+					ctx,
+					`carry-forward summaries (${carry} tokens) exceed compaction.summaryTokens (${summaryBudget}); consider lowering compaction.phaseTokens or accepting a larger seed`,
+					"warning",
+				);
+			}
 		}
 
 		const fire = shouldCompactMidPhase({
@@ -3476,6 +3519,7 @@ export default function (pi: ExtensionAPI) {
 			tokens: usage?.tokens,
 			workingTokens: readWorkingTokensSetting(ctx),
 			summaryTokens: summaryUsed,
+			seedTokens: seedUsed,
 		});
 		if (!fire || !plan || !activePhase) return;
 
@@ -3571,6 +3615,8 @@ export default function (pi: ExtensionAPI) {
 			// offered from the shortcut path because pi only exposes
 			// `newSession` on ExtensionCommandContext, not the ExtensionContext
 			// shortcuts receive — silently degrading would surprise the user.
+			// `switchSession` to the recorded planning session is, however,
+			// supported via `runDetached` (lifts to command context).
 			if (modeState.mode === "hack") {
 				const decision = await runModeTransition("hack", ctx, {
 					canStartNewSession: false,
@@ -3585,6 +3631,23 @@ export default function (pi: ExtensionAPI) {
 							compactionInFlight = false;
 						}
 					}
+				}
+				const plan = currentPlan();
+				const targetPath = plan?.planSessionPath;
+				const currentPath = ctx.sessionManager.getSessionFile();
+				if (targetPath && targetPath !== currentPath) {
+					runDetached("hack→plan session restore", ctx, async () => {
+						const cmdCtx = ctx as ExtensionCommandContext;
+						await cmdCtx.switchSession(targetPath, {
+							withSession: async (newCtx) => {
+								setMode("plan", newCtx);
+								persist();
+								updateWidget(newCtx);
+								notify(newCtx, "plan mode (resumed planning session)", "info");
+							},
+						});
+					});
+					return;
 				}
 				setMode("plan", ctx);
 				notify(ctx, "plan mode", "info");
