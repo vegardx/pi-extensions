@@ -572,12 +572,11 @@ export default function (pi: ExtensionAPI) {
 		const usage = ctx.getContextUsage();
 		if (!usage) return null;
 
-		const settings = readRelevantSettings(ctx.cwd);
-		const rawCompactAt = settings.extensionConfig?.["smart-compact"]?.compactAt;
-		const compactAt =
-			typeof rawCompactAt === "number" ? rawCompactAt : undefined;
-
-		const limit = compactAt ?? usage.contextWindow;
+		// Cap the footer's denominator at modes' mid-phase compaction
+		// threshold so the user sees "how close am I to the next compaction"
+		// rather than "how close am I to the model's hard limit". Falls back
+		// to the model's contextWindow when neither is set.
+		const limit = readMaxContextTokensSetting(ctx) || usage.contextWindow;
 		if (!limit) return null;
 
 		const current =

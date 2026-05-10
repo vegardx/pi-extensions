@@ -408,7 +408,7 @@ describe("hasPhaseEndCompaction / hasPlanToImplementCompaction", () => {
 		expect(hasPhaseEndCompaction(castSm(sm), "p-1")).toBe(false);
 	});
 
-	it("ignores compactions without modes details (e.g. smart-compact)", () => {
+	it("ignores compactions without modes details (e.g. pi default /compact)", () => {
 		const sm = new FakeSessionManager();
 		const m = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
 		// Default-shape compaction details (file ops) — not modes.

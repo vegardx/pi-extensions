@@ -16,7 +16,6 @@ collection of extensions I use daily for coding sessions.
 | [`wrap-up`](packages/wrap-up) | `command` | End-of-session handover doc + resource cost prompt |
 | [`session-title`](packages/session-title) | `system` | Auto-names terminal sessions from context |
 | [`prompt-suggestion`](packages/prompt-suggestion) | `system` | Ghost-text next-message prediction after each turn |
-| [`smart-compact`](packages/smart-compact) | `system` | Smarter context compaction |
 | [`gh`](packages/gh) | `skill` | GitHub skills (PR, issues, etc.) |
 | [`context7`](packages/context7) | `skill` | Library docs lookup via Context7 API |
 | [`exa`](packages/exa) | `skill` | Semantic web search via Exa API |
