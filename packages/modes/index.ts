@@ -2319,7 +2319,14 @@ export default function (pi: ExtensionAPI) {
 					(m as { role?: string }).role ?? "",
 				),
 			);
-		if (messages.length === 0) return;
+		if (messages.length === 0) {
+			notify(
+				ctx,
+				"phase summary skipped: auto session has no recorded messages",
+				"warning",
+			);
+			return;
+		}
 
 		const maxTokens = readPhaseTokensSetting(ctx);
 		const preamble = buildPhaseEndSummaryPreamble(plan, phase, maxTokens);

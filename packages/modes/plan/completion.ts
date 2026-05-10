@@ -49,7 +49,7 @@ export function buildCompletionPrompt(
 	if (!hasUI) return null;
 	if (!isPlanComplete(plan)) return null;
 	return {
-		title: `Plan "${plan.title}" is complete. All phases shipped. What next?`,
+		title: `Plan "${plan.title}" is complete. All phases are shipped or abandoned. What next?`,
 		options: [OPT_STAY, OPT_NEW_PLAN, OPT_ARCHIVE],
 	};
 }
