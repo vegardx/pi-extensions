@@ -73,6 +73,34 @@ export function abandonNonTerminalPhases(
 	};
 }
 
+/**
+ * A phase that is non-terminal but cannot progress without external
+ * action we can't drive from session_start: `in-review` without a
+ * `prNumber`. The PR is the only signal `syncPlanFromRemote` can use
+ * to advance the phase to shipped/abandoned, so a phase in this state
+ * is effectively waiting on the user to either open a PR or archive
+ * the plan.
+ */
+export function isStuckPhase(
+	phase: Pick<Phase, "status" | "prNumber">,
+): boolean {
+	return phase.status === "in-review" && phase.prNumber === undefined;
+}
+
+/**
+ * A plan is "stuck" iff it has at least one non-terminal phase AND
+ * every non-terminal phase is stuck (no phase the user can advance via
+ * /implement, /ship, or PR-merge sync). Used by /plan list to flag
+ * plans that need user attention vs. plans still in normal flight.
+ */
+export function isPlanStuck(plan: Pick<Plan, "phases">): boolean {
+	const nonTerminal = plan.phases.filter(
+		(p) => !TERMINAL_STATUSES.includes(p.status),
+	);
+	if (nonTerminal.length === 0) return false;
+	return nonTerminal.every(isStuckPhase);
+}
+
 export interface Task {
 	id: string;
 	/** Short, scannable. No length cap — but agent should keep it concise. */

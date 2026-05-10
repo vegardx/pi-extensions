@@ -398,17 +398,28 @@ export default function (pi: ExtensionAPI) {
 	 * fresh empty plan with a default title.
 	 */
 	async function doPlanList(ctx: ExtensionContext): Promise<void> {
-		const plans = await import("./plan/storage.js").then((m) => m.listPlans());
-		if (plans.length === 0) {
+		const { listPlans } = await import("./plan/storage.js");
+		const { renderPlanListView } = await import("./plan/list-view.js");
+		const entries = listPlans();
+		if (entries.length === 0) {
 			notify(ctx, "no plans yet", "info");
 			return;
 		}
-		const lines = plans.map((p) => {
-			const marker = p.active ? "●" : "○";
-			const hereMarker = p.repoPath === ctx.cwd ? " (this repo)" : "";
-			return `  ${marker} ${p.slug} — ${p.title}${hereMarker}`;
+		// Load each plan from disk so the formatter can inspect phases for
+		// the stuck-classification. Skipping malformed entries silently —
+		// rebuildIndex already filters most, but loadPlan() can still race a
+		// concurrent /plan delete.
+		const plans: Plan[] = [];
+		for (const entry of entries) {
+			const plan = loadPlan(entry.slug);
+			if (plan) plans.push(plan);
+		}
+		const lines = renderPlanListView({
+			plans,
+			currentSessionId: ctx.sessionManager.getSessionId(),
+			currentCwd: ctx.cwd,
 		});
-		notify(ctx, `plans:\n${lines.join("\n")}`, "info");
+		notify(ctx, lines.join("\n"), "info");
 	}
 
 	async function doPlanResume(
