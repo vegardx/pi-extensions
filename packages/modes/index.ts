@@ -112,7 +112,7 @@ const STATUS_GLYPH: Record<string, string> = {
 
 // ---- Types ----------------------------------------------------------------
 
-type Mode = "plan" | "ask" | "auto";
+type Mode = "plan" | "ask" | "auto" | "hack";
 type Stage =
 	| "idle"
 	| "planning"
@@ -487,11 +487,15 @@ export default function (pi: ExtensionAPI) {
 		plan: "plan",
 		ask: "ask",
 		auto: "auto",
+		hack: "hack",
 	};
-	const MODE_COLORS: Record<Mode, "warning" | "muted" | "accent"> = {
+	const MODE_COLORS: Record<Mode, "warning" | "muted" | "accent" | "error"> = {
 		plan: "warning",
 		ask: "muted",
 		auto: "accent",
+		// `hack` is the most permissive mode: full tools, no plan ceremony,
+		// no compaction. Red-tinted footer flags "no safety net".
+		hack: "error",
 	};
 
 	function updateWidget(ctx: ExtensionContext): void {
@@ -1383,6 +1387,7 @@ export default function (pi: ExtensionAPI) {
 		activePhaseId: string,
 	): Promise<void> {
 		if (!compactionApiAvailable) return;
+		if (modeState?.mode === "hack") return;
 		// ctx.sessionManager is typed as ReadonlySessionManager in the public
 		// extension API even though the runtime value is the full SessionManager
 		// (see runner.ts in pi-coding-agent). The append surface isn't part of
@@ -1426,6 +1431,7 @@ export default function (pi: ExtensionAPI) {
 		phaseId: string,
 	): Promise<void> {
 		if (!compactionApiAvailable) return;
+		if (modeState?.mode === "hack") return;
 		const sm = ctx.sessionManager as unknown as SessionManager;
 		if (hasPhaseEndCompaction(sm, phaseId)) return;
 
@@ -1474,6 +1480,7 @@ export default function (pi: ExtensionAPI) {
 		phaseId: string,
 	): Promise<void> {
 		if (!compactionApiAvailable) return;
+		if (modeState?.mode === "hack") return;
 		const sm = ctx.sessionManager as unknown as SessionManager;
 
 		const summarise = await buildSummariseFn(ctx);
@@ -2424,6 +2431,26 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
+		if (modeState.mode === "hack") {
+			return {
+				message: {
+					customType: CUSTOM_MODE_CONTEXT,
+					content: [
+						"[HACK MODE — full tool access, no plan structure]",
+						"",
+						"The user is exploring or making a quick change. There is no",
+						"plan/phase to follow and no compaction will fire automatically —",
+						"context length is the user's responsibility.",
+						"",
+						"Do NOT invoke `plan_phase`, `plan_task`, or `plan_view` unless",
+						"the user explicitly asks. Just do the work.",
+					].join("\n"),
+					details: { modeMarker: "hack" as const },
+					display: false,
+				},
+			};
+		}
+
 		if (modeState.mode === "auto") {
 			const plan = currentPlan();
 			const tasks = activeTasks(plan);
@@ -2810,7 +2837,13 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// auto → plan
+			if (modeState.mode === "auto") {
+				setMode("hack", ctx);
+				notify(ctx, "hack mode", "info");
+				return;
+			}
+
+			// hack → plan (full circle)
 			setMode("plan", ctx);
 			notify(ctx, "plan mode", "info");
 		},
@@ -2905,6 +2938,14 @@ export default function (pi: ExtensionAPI) {
 			"Sync to the default branch, create a feature branch, and switch to auto mode. " +
 			"Optionally provide a description; otherwise uses the current plan.",
 		handler: async (args, ctx) => {
+			if (modeState?.mode === "hack") {
+				notify(
+					ctx,
+					"/implement is plan/auto only — Shift+Tab back to plan first",
+					"warning",
+				);
+				return;
+			}
 			const description = args?.trim() || null;
 
 			if (!isGitRepo(ctx.cwd)) {
@@ -2961,23 +3002,51 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("park", {
 		description:
 			"Create a GitHub tracking issue from the current plan and exit plan mode.",
-		handler: async (_args, ctx) => doPark(ctx),
+		handler: async (_args, ctx) => {
+			if (modeState?.mode === "hack") {
+				notify(ctx, "/park is not available in hack mode", "warning");
+				return;
+			}
+			return doPark(ctx);
+		},
 	});
 
 	pi.registerCommand("ship", {
 		description:
 			"Commit, push, and open a PR for the active phase. Flips its status to in-review.",
-		handler: async (args, ctx) => doShip(args, ctx),
+		handler: async (args, ctx) => {
+			if (modeState?.mode === "hack") {
+				notify(
+					ctx,
+					"/ship is auto-mode only — Shift+Tab back to auto first",
+					"warning",
+				);
+				return;
+			}
+			return doShip(args, ctx);
+		},
 	});
 
 	pi.registerCommand("sync", {
 		description: "Sync local plan state with GitHub PR/issue state.",
-		handler: async (_args, ctx) => doSync(ctx),
+		handler: async (_args, ctx) => {
+			if (modeState?.mode === "hack") {
+				notify(ctx, "/sync is not available in hack mode", "warning");
+				return;
+			}
+			return doSync(ctx);
+		},
 	});
 
 	pi.registerCommand("worktree", {
 		description: "Manage worktrees: list, prune.",
-		handler: async (args, ctx) => doWorktree(args, ctx),
+		handler: async (args, ctx) => {
+			if (modeState?.mode === "hack") {
+				notify(ctx, "/worktree is not available in hack mode", "warning");
+				return;
+			}
+			return doWorktree(args, ctx);
+		},
 	});
 
 	pi.registerCommand("modes-status", {
