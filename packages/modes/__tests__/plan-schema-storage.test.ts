@@ -21,6 +21,7 @@ import {
 	loadPlan,
 	planExists,
 	plansForRepo,
+	plansForSession,
 	rebuildIndex,
 	savePlan,
 } from "../plan/storage.js";
@@ -227,6 +228,58 @@ describe("storage", () => {
 		writeFileSync(join(tmp, "broken", "plan.json"), "not json");
 		rebuildIndex();
 		expect(listPlans().map((p) => p.slug)).toEqual(["test-plan"]);
+	});
+
+	it("index entry surfaces createdBy + seenIn from the saved plan", () => {
+		savePlan(
+			makePlan({
+				slug: "owned",
+				createdBy: { sessionId: "s-owner", sessionName: "work" },
+				seenIn: ["s-owner", "s-other"],
+			}),
+		);
+		const entry = listPlans().find((p) => p.slug === "owned");
+		expect(entry?.createdBy).toBe("s-owner");
+		expect(entry?.seenIn).toEqual(["s-owner", "s-other"]);
+	});
+
+	it("legacy plans (no ownership fields) load with createdBy undefined and seenIn []", () => {
+		savePlan(makePlan({ slug: "legacy" }));
+		const entry = listPlans().find((p) => p.slug === "legacy");
+		expect(entry?.createdBy).toBeUndefined();
+		expect(entry?.seenIn).toEqual([]);
+	});
+
+	it("plansForSession matches createdBy or seenIn", () => {
+		savePlan(
+			makePlan({
+				slug: "created-by-me",
+				createdBy: { sessionId: "s-me" },
+				seenIn: ["s-me"],
+			}),
+		);
+		savePlan(
+			makePlan({
+				slug: "adopted-by-me",
+				createdBy: { sessionId: "s-other" },
+				seenIn: ["s-other", "s-me"],
+			}),
+		);
+		savePlan(
+			makePlan({
+				slug: "someone-elses",
+				createdBy: { sessionId: "s-other" },
+				seenIn: ["s-other"],
+			}),
+		);
+		savePlan(makePlan({ slug: "legacy" }));
+
+		const mine = plansForSession("s-me")
+			.map((p) => p.slug)
+			.sort();
+		expect(mine).toEqual(["adopted-by-me", "created-by-me"]);
+
+		expect(plansForSession("s-nobody")).toEqual([]);
 	});
 });
 

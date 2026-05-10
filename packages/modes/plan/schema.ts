@@ -83,6 +83,21 @@ export interface PlanRepo {
 	path: string;
 }
 
+/**
+ * Identity of the session that first saved a plan. Captured at /plan
+ * creation time. Optional on the schema for back-compat with plans
+ * created before session-ownership tracking landed — those load with
+ * `createdBy` undefined and are treated as legacy/orphan plans.
+ */
+export interface PlanOwnership {
+	/** Session UUID from `SessionManager.getSessionId()`. */
+	sessionId: string;
+	/** Display name at creation time, if set. Cosmetic only. */
+	sessionName?: string;
+	/** Path to the session JSONL at creation time. Undefined for ephemeral sessions. */
+	sessionFile?: string;
+}
+
 export interface Plan {
 	slug: string;
 	title: string;
@@ -92,6 +107,19 @@ export interface Plan {
 	phases: Phase[];
 	/** Last successful PR-state sync via gh. */
 	lastSyncedAt?: string;
+	/**
+	 * Session that first created this plan. Optional for back-compat —
+	 * plans on disk from before this field existed load as legacy
+	 * (no owner). Legacy plans never auto-adopt at session_start; the
+	 * user can claim one via /plan resume.
+	 */
+	createdBy?: PlanOwnership;
+	/**
+	 * Distinct session ids that have ever bound this plan (via /plan or
+	 * /plan resume). Drives /plan list grouping. Optional/empty for
+	 * legacy plans.
+	 */
+	seenIn?: string[];
 	createdAt: string;
 	updatedAt: string;
 }

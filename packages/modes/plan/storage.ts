@@ -146,6 +146,18 @@ export function plansForRepo(repoPath: string): PlanIndexEntry[] {
 }
 
 /**
+ * Plans this session has touched — either created (`createdBy` matches)
+ * or bound at least once (`seenIn` contains the id). Used by /plan list
+ * to group plans into "this session" / "other sessions" / "legacy"
+ * buckets and by future tooling that wants a session-scoped view.
+ */
+export function plansForSession(sessionId: string): PlanIndexEntry[] {
+	return listPlans().filter(
+		(p) => p.createdBy === sessionId || p.seenIn.includes(sessionId),
+	);
+}
+
+/**
  * Find the active plan for a repo, if any. "Active" means at least one
  * phase isn't terminal (shipped/abandoned). When multiple plans match,
  * picks the most recently updated.
@@ -164,6 +176,17 @@ export interface PlanIndexEntry {
 	updatedAt: string;
 	/** True if any phase is still working (not all phases shipped/abandoned). */
 	active: boolean;
+	/**
+	 * Session UUID that originally created this plan. Undefined for
+	 * legacy plans created before session-ownership tracking landed.
+	 */
+	createdBy?: string;
+	/**
+	 * Distinct sessions that have ever bound this plan via /plan or
+	 * /plan resume. Always an array — empty for legacy plans that
+	 * have not yet been touched by any tracked session.
+	 */
+	seenIn: string[];
 }
 
 export interface PlanIndex {
@@ -195,6 +218,10 @@ export function rebuildIndex(): void {
 				repoPath: plan.repo.path,
 				updatedAt: plan.updatedAt,
 				active,
+				...(plan.createdBy?.sessionId
+					? { createdBy: plan.createdBy.sessionId }
+					: {}),
+				seenIn: plan.seenIn ?? [],
 			});
 		} catch {
 			// skip malformed entries

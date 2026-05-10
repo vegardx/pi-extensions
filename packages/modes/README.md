@@ -22,9 +22,9 @@ Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (
 
 | Command | Description |
 |---------|-------------|
-| `/plan [desc]` | Sync to default branch, enter plan mode, auto-create or reuse the plan for this repo |
+| `/plan [desc]` | Sync to default branch, enter plan mode. If this session has a bound plan, reuse it; otherwise create a new one owned by this session. |
 | `/plan list` | List all plans across repos |
-| `/plan resume <slug>` | Resume a specific plan in this repo |
+| `/plan resume <slug>` | Bind this session to a specific plan. Confirms before adopting a plan owned by another session. |
 | `/implement [desc]` | Sync, create a feature branch, switch to auto |
 | `/park` | Create a GitHub parent issue + per-phase sub-issues for the current plan |
 | `/ship [phaseId?]` | Commit, push, open PR; flips active phase to in-review |
@@ -39,6 +39,24 @@ A **phase** is what ships as one PR — one issue, one Copilot session, one PR.
 A **task** is a concrete work item inside a phase (short title + detailed body).
 
 Plans live in `~/.pi/plans/<slug>/plan.json` (global, not per-repo). An index lives at `~/.pi/plans/index.json`.
+
+### Plans are session-owned
+
+Each plan records the session that created it (`createdBy.sessionId`)
+and the sessions that have ever bound it (`seenIn`). Concretely:
+
+- A session's plan binding lives in session state (`STATE_ENTRY`),
+  so `pi -c`, `/resume`, and `/fork` keep their plan transparently.
+- A **fresh** `pi` (no session continuation) does NOT inherit a plan
+  from a previous session in the same repo. Run `/plan` to start a
+  new one, or `/plan resume <slug>` to attach to one from another
+  session — you'll be asked to confirm before adopting a plan owned
+  by someone else.
+- Plans created before this field existed ("legacy" plans) have no
+  owner. They behave like cross-session adoption candidates: visible
+  in `/plan list`, never auto-adopted, bind without a confirm prompt
+  on `/plan resume`.
+- No migration required — existing plans on disk keep working.
 
 ```
 plan: feat-payments-webhooks

@@ -87,12 +87,7 @@ import {
 	STEERING_CLASSIFIER,
 	shouldInjectSteeringClassifier,
 } from "./plan/steering.js";
-import {
-	activePlanForRepo,
-	loadPlan,
-	planExists,
-	savePlan,
-} from "./plan/storage.js";
+import { loadPlan, planExists, savePlan } from "./plan/storage.js";
 import { registerPlanTools } from "./plan/tools.js";
 import {
 	buildTransitionOptions,
@@ -334,24 +329,19 @@ export default function (pi: ExtensionAPI) {
 	 * lives in `~/.pi/plans/<slug>/plan.json` and is loaded on demand.
 	 * If modeState has a slug but the plan file is gone (deleted manually),
 	 * we clear the slug.
+	 *
+	 * No cross-session fallback: we deliberately do NOT consult
+	 * activePlanForRepo() here. Plans are session-owned. A continued
+	 * session (`pi -c`, /resume, /fork) keeps its binding because
+	 * `currentPlanSlug` lives in STATE_ENTRY and rides the session JSONL.
+	 * A genuinely fresh `pi` starts unbound — the user runs `/plan` to
+	 * create a new plan or `/plan resume <slug>` to attach to one from
+	 * another session.
 	 */
-	function hydratePlan(ctx?: ExtensionContext): void {
+	function hydratePlan(_ctx?: ExtensionContext): void {
 		if (!modeState) return;
-		if (modeState.currentPlanSlug) {
-			if (!planExists(modeState.currentPlanSlug)) {
-				modeState.currentPlanSlug = null;
-				persist();
-			}
-			return;
-		}
-		// No slug bound — try to recover the per-repo active plan so
-		// plan_* tools and the picker gates can find it without a manual
-		// /plan resume. Only safe at session_start (cwd is stable);
-		// session_tree calls without ctx skip this branch.
-		if (!ctx) return;
-		const entry = activePlanForRepo(ctx.cwd);
-		if (entry) {
-			modeState.currentPlanSlug = entry.slug;
+		if (modeState.currentPlanSlug && !planExists(modeState.currentPlanSlug)) {
+			modeState.currentPlanSlug = null;
 			persist();
 		}
 	}
@@ -445,6 +435,34 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
+
+		// Cross-session adoption: prompt before binding a plan owned by
+		// another session. Same-session rebinds (slug already in seenIn)
+		// and legacy plans (no createdBy) skip the confirm.
+		const sessionId = ctx.sessionManager.getSessionId();
+		const owner = plan.createdBy?.sessionId;
+		const alreadySeen = plan.seenIn?.includes(sessionId) ?? false;
+		const isCrossSession =
+			owner !== undefined && owner !== sessionId && !alreadySeen;
+		if (isCrossSession && ctx.hasUI) {
+			const ownerLabel =
+				plan.createdBy?.sessionName?.trim() || `${owner.slice(0, 8)}…`;
+			const ok = await ctx.ui.confirm(
+				"Adopt plan from another session?",
+				`Plan \`${slug}\` was created in session ${ownerLabel}. Adopt it in this session?`,
+			);
+			if (!ok) {
+				notify(ctx, `aborted resume of ${slug}`, "info");
+				return;
+			}
+		}
+
+		if (!alreadySeen) {
+			plan.seenIn = [...(plan.seenIn ?? []), sessionId];
+			plan.updatedAt = new Date().toISOString();
+			savePlan(plan);
+		}
+
 		if (!modeState) {
 			modeState = {
 				mode: "plan",
@@ -466,9 +484,35 @@ export default function (pi: ExtensionAPI) {
 		notify(ctx, `resumed plan ${slug} (${plan.phases.length} phases)`, "info");
 	}
 
+	/**
+	 * Resolve the plan slug this session should bind to.
+	 *
+	 * Session-ownership semantics: if the current session already has a
+	 * plan slug bound (in modeState), reuse it — that's the
+	 * pi -c / /resume / /fork case where the binding rides along in
+	 * STATE_ENTRY. Otherwise create a *fresh* plan stamped with this
+	 * session's identity. We deliberately do NOT fall back to
+	 * activePlanForRepo() here: a fresh `pi` (no session continuation)
+	 * starts a new plan rather than silently inheriting a sibling
+	 * session's work. To attach to an existing plan, the user runs
+	 * /plan resume <slug>.
+	 */
 	function ensurePlanForRepo(ctx: ExtensionContext): string {
-		const existing = activePlanForRepo(ctx.cwd);
-		if (existing) return existing.slug;
+		const sm = ctx.sessionManager;
+		const sessionId = sm.getSessionId();
+
+		const existing = modeState?.currentPlanSlug;
+		if (existing && planExists(existing)) {
+			// Backfill seenIn if the bound plan predates ownership tracking
+			// or somehow lost its membership. Cheap, idempotent.
+			const plan = loadPlan(existing);
+			if (plan && !plan.seenIn?.includes(sessionId)) {
+				plan.seenIn = [...(plan.seenIn ?? []), sessionId];
+				plan.updatedAt = new Date().toISOString();
+				savePlan(plan);
+			}
+			return existing;
+		}
 
 		const now = new Date().toISOString();
 		const repoName = repoNameFromPath(ctx.cwd);
@@ -480,11 +524,19 @@ export default function (pi: ExtensionAPI) {
 			slug = `${slugify(repoName)}-${datestamp}-${n}`;
 			n++;
 		}
+		const sessionName = sm.getSessionName?.() ?? undefined;
+		const sessionFile = sm.getSessionFile?.() ?? undefined;
 		const plan: Plan = {
 			slug,
 			title: `Plan for ${repoName}`,
 			repo: { path: ctx.cwd },
 			phases: [],
+			createdBy: {
+				sessionId,
+				...(sessionName ? { sessionName } : {}),
+				...(sessionFile ? { sessionFile } : {}),
+			},
+			seenIn: [sessionId],
 			createdAt: now,
 			updatedAt: now,
 		};
