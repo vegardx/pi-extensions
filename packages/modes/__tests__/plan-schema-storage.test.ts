@@ -3,9 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	canTransition,
+	type Phase,
 	type PhaseStatus,
 	type Plan,
 	phaseId,
+	pickBaseBranch,
 	repoNameFromPath,
 	slugify,
 	taskId,
@@ -40,6 +42,21 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		title: "Test Plan",
 		repo: { path: "/tmp/repo-a" },
 		phases: [],
+		createdAt: now,
+		updatedAt: now,
+		...overrides,
+	};
+}
+
+function makePhase(overrides: Partial<Phase> = {}): Phase {
+	const now = new Date().toISOString();
+	return {
+		id: "p-x",
+		title: "Phase X",
+		goal: "do x",
+		status: "planned",
+		branch: "feat/p-x",
+		tasks: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -209,5 +226,129 @@ describe("storage", () => {
 		writeFileSync(join(tmp, "broken", "plan.json"), "not json");
 		rebuildIndex();
 		expect(listPlans().map((p) => p.slug)).toEqual(["test-plan"]);
+	});
+});
+
+describe("pickBaseBranch", () => {
+	const DEFAULT = "main";
+
+	it("returns default branch when phase has no predecessors", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
+		});
+		expect(pickBaseBranch(plan, "p-1", DEFAULT)).toBe("main");
+	});
+
+	it("returns default when only predecessor is shipped (its work is on main)", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "shipped" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("main");
+	});
+
+	it("forks from in-review predecessor's branch", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("forks from ready-to-ship predecessor's branch", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "ready-to-ship" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("forks from needs-attention predecessor's branch", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "needs-attention" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("forks from active predecessor's branch (unusual but supported)", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "active" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("skips abandoned predecessors and walks further back", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "abandoned" }),
+				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("skips planned predecessors and walks further back", () => {
+		// Edge case: shouldn't normally happen (you'd activate phases in
+		// order), but the helper should still degrade sensibly.
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("uses the FIRST non-skippable predecessor walking backwards", () => {
+		// p-2 (in-review) is between p-1 (in-review) and p-3.
+		// p-3 should fork from p-2, NOT p-1 — p-2 is built on top of p-1
+		// and contains p-1's commits via the previous /implement.
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "in-review" }),
+				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-2");
+	});
+
+	it("returns default when phase id isn't found in the plan (defensive)", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
+		});
+		expect(pickBaseBranch(plan, "p-bogus", DEFAULT)).toBe("main");
+	});
+
+	it("returns default when every predecessor is skippable", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "abandoned" }),
+				makePhase({ id: "p-2", branch: "feat/p-2", status: "abandoned" }),
+				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("main");
+	});
+
+	it("respects the caller's defaultBranch (e.g. 'master')", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
+		});
+		expect(pickBaseBranch(plan, "p-1", "master")).toBe("master");
 	});
 });

@@ -64,6 +64,7 @@ import {
 import {
 	type Plan,
 	type Phase as PlanPhase,
+	pickBaseBranch,
 	repoNameFromPath,
 	slugify,
 	TERMINAL_STATUSES,
@@ -1623,7 +1624,45 @@ export default function (pi: ExtensionAPI) {
 		let branch: string | null;
 		if (plan && phase) {
 			branch = phase.branch;
-			// Check out the branch in the main repo dir FIRST. This locks
+
+			// Pick the base branch for the new phase. When the predecessor
+			// phase is in-review / ready-to-ship / needs-attention, that
+			// predecessor's PR isn't merged yet — the changes live on its
+			// branch, not on the default branch. Forking the new phase from
+			// the default branch would lose access to the predecessor's work
+			// until its PR merges. pickBaseBranch walks predecessors and picks
+			// the right base; for the simple linear case (no in-flight
+			// predecessors) it returns the default branch and behaviour is
+			// unchanged.
+			//
+			// Only relevant on first activation — if the phase is already
+			// active, we're re-running /implement on its existing branch and
+			// the base-branch question doesn't apply (the branch already
+			// exists with whatever ancestry it was created with).
+			if (phase.status === "planned") {
+				const defaultBranch = modeState.defaultBranch ?? "main";
+				const baseBranch = pickBaseBranch(plan, phase.id, defaultBranch);
+				if (baseBranch !== defaultBranch) {
+					const baseCo = runCommand("git", ["checkout", baseBranch], {
+						cwd: ctx.cwd,
+					});
+					if (!baseCo.ok) {
+						notify(
+							ctx,
+							`checkout base ${baseBranch} failed: ${baseCo.stderr.trim()} — falling back to ${defaultBranch}`,
+							"warning",
+						);
+					} else {
+						notify(
+							ctx,
+							`forking ${branch} from ${baseBranch} (predecessor in flight)`,
+							"info",
+						);
+					}
+				}
+			}
+
+			// Check out the phase branch in the main repo dir. This locks
 			// the branch to the main worktree so the subsequent reconcile
 			// (via findCheckoutOf) reuses ctx.cwd instead of trying to
 			// `git worktree add` a second checkout, which git would refuse.
