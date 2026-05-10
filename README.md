@@ -13,6 +13,7 @@ collection of extensions I use daily for coding sessions.
 | [`startup`](packages/startup) | `utility` | Reports loaded extensions and config on session start |
 | [`review`](packages/review) | `command` | `/review` command — fans out specialist reviewers over a diff or codebase |
 | [`commit`](packages/commit) | `command` | Generates and confirms git commit messages |
+| [`derp`](packages/derp) | `command` | `/derp <text>` — fire-and-forget GitHub bug reporter that doesn't interrupt the session |
 | [`wrap-up`](packages/wrap-up) | `command` | End-of-session handover doc + resource cost prompt |
 | [`session-title`](packages/session-title) | `system` | Auto-names terminal sessions from context |
 | [`prompt-suggestion`](packages/prompt-suggestion) | `system` | Ghost-text next-message prediction after each turn |

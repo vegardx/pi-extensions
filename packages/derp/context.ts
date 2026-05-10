@@ -1,0 +1,305 @@
+/**
+ * Context gathering for /derp.
+ *
+ * Pure-ish: spawns short-lived git processes, reads pi's session
+ * state, then returns a plain `DerpContext` value. No mutation, no
+ * pi.sendMessage, no agent turn — that's the whole point of /derp.
+ *
+ * Everything here runs synchronously inside the slash-command
+ * handler. The polish step (LLM) and the gh shell-out are kept in
+ * separate modules so this one stays cheap and easy to unit-test.
+ */
+
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+// ---------------------------------------------------------------------------
+// Remote URL parsing
+// ---------------------------------------------------------------------------
+
+export interface OriginInfo {
+	/** Hostname extracted from the remote URL (e.g. `github.com`, `dnb.ghe.com`). */
+	host: string;
+	owner: string;
+	repo: string;
+	/** Convenience: `${host}/${owner}/${repo}`. */
+	slug: string;
+}
+
+/**
+ * Parse a git remote URL into host + owner + repo. Accepts both SSH
+ * (`git@host:owner/repo.git`) and HTTPS (`https://host/owner/repo.git`)
+ * forms, with or without the trailing `.git`.
+ *
+ * Returns `null` for anything that doesn't parse cleanly so callers
+ * can short-circuit without try/catch noise.
+ */
+export function parseOriginUrl(raw: string): OriginInfo | null {
+	const url = raw.trim();
+	if (!url) return null;
+
+	// SSH: git@host:owner/repo(.git)?  — also handles ssh://git@host/owner/repo
+	const sshMatch = url.match(
+		/^(?:ssh:\/\/)?(?:[^@\s]+@)?([^:/\s]+)[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
+	);
+	// HTTPS: https://[user@]host/owner/repo(.git)?
+	const httpsMatch = url.match(
+		/^https?:\/\/(?:[^@/\s]+@)?([^/\s]+)\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
+	);
+
+	const m = httpsMatch ?? sshMatch;
+	if (!m) return null;
+	const [, host, owner, repo] = m;
+	if (!host || !owner || !repo) return null;
+	// Reject obviously-bad parses (e.g. when an HTTPS URL slipped past
+	// the SSH regex and the host now contains `://`).
+	if (host.includes(":") || host.includes("/")) return null;
+	return { host, owner, repo, slug: `${host}/${owner}/${repo}` };
+}
+
+// ---------------------------------------------------------------------------
+// Shell helper
+// ---------------------------------------------------------------------------
+
+function runCmd(cmd: string, args: readonly string[], cwd: string): string {
+	const r = spawnSync(cmd, args, {
+		cwd,
+		encoding: "utf8",
+		shell: false,
+		env: process.env,
+	});
+	if (r.status !== 0) return "";
+	return (r.stdout ?? "").trim();
+}
+
+// ---------------------------------------------------------------------------
+// Session-entry summarisation
+// ---------------------------------------------------------------------------
+
+/**
+ * One row in the session-recent-tail summary handed to the polish
+ * subagent. Kept minimal — we are not trying to reconstruct the
+ * conversation, just give the LLM enough to write a coherent
+ * "what was happening" paragraph.
+ */
+export interface RecentEntry {
+	role: "user" | "assistant" | "tool" | "other";
+	/** Truncated text. May contain newlines. */
+	text: string;
+}
+
+const PER_ENTRY_CHAR_BUDGET = 1200;
+
+function truncate(s: string, max: number): string {
+	if (s.length <= max) return s;
+	return `${s.slice(0, max)}\n…[truncated ${s.length - max} chars]`;
+}
+
+/**
+ * Pull the last `count` salient entries out of an opaque entries
+ * array (returned by `ctx.sessionManager.getEntries()`). We keep the
+ * shape loose because pi's session entry shape evolves; the few
+ * fields we read (`type`, `role`, `content`, `text`) have been
+ * stable across recent versions.
+ *
+ * Each entry is summarised down to a `{ role, text }` row with
+ * heavy truncation so the polish payload doesn't blow up on a
+ * long-running session.
+ */
+export function summariseEntries(
+	entries: readonly unknown[],
+	count: number,
+): RecentEntry[] {
+	if (count <= 0 || entries.length === 0) return [];
+	const tail = entries.slice(-count);
+	const out: RecentEntry[] = [];
+	for (const raw of tail) {
+		if (!raw || typeof raw !== "object") continue;
+		const e = raw as Record<string, unknown>;
+		const role = pickRole(e);
+		const text = pickText(e);
+		if (!text) continue;
+		out.push({ role, text: truncate(text, PER_ENTRY_CHAR_BUDGET) });
+	}
+	return out;
+}
+
+function pickRole(e: Record<string, unknown>): RecentEntry["role"] {
+	const candidates = [e.role, e.type, e.kind];
+	for (const c of candidates) {
+		if (typeof c !== "string") continue;
+		const v = c.toLowerCase();
+		if (v === "user" || v === "human") return "user";
+		if (v === "assistant" || v === "model") return "assistant";
+		if (v.includes("tool")) return "tool";
+	}
+	return "other";
+}
+
+function pickText(e: Record<string, unknown>): string {
+	const direct = e.text ?? e.content ?? e.message;
+	if (typeof direct === "string") return direct;
+	if (Array.isArray(direct)) {
+		// pi-style structured content: array of `{ type, text }` blocks.
+		const parts: string[] = [];
+		for (const block of direct) {
+			if (!block || typeof block !== "object") continue;
+			const b = block as Record<string, unknown>;
+			if (typeof b.text === "string") parts.push(b.text);
+			else if (typeof b.content === "string") parts.push(b.content);
+		}
+		if (parts.length > 0) return parts.join("\n");
+	}
+	return "";
+}
+
+// ---------------------------------------------------------------------------
+// pi version (best-effort)
+// ---------------------------------------------------------------------------
+
+/**
+ * Look up `@mariozechner/pi-coding-agent`'s installed version by
+ * crawling upward from the entry path until we find a `node_modules`
+ * containing the package. Best-effort: returns `null` when the
+ * package can't be located (e.g. running from a tarball install).
+ */
+export function readPiVersion(startPath: string): string | null {
+	let dir = startPath;
+	for (let i = 0; i < 12; i++) {
+		const candidate = join(
+			dir,
+			"node_modules",
+			"@mariozechner",
+			"pi-coding-agent",
+			"package.json",
+		);
+		try {
+			const raw = readFileSync(candidate, "utf8");
+			const pkg = JSON.parse(raw) as { version?: unknown };
+			if (typeof pkg.version === "string") return pkg.version;
+		} catch {
+			/* keep walking */
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
+// DerpContext
+// ---------------------------------------------------------------------------
+
+export interface DerpContext {
+	/** User-supplied free-form report text (already trimmed, non-empty). */
+	userText: string;
+	/**
+	 * Parsed `origin` remote of the cwd. Captured for context only —
+	 * issues are always filed against the hard-coded target repo, not
+	 * here. Null when there's no origin or it doesn't parse cleanly.
+	 */
+	origin: OriginInfo | null;
+	/** Current git branch name, or null on detached HEAD / no git. */
+	branch: string | null;
+	/** Short SHA of HEAD, or null. */
+	headShort: string | null;
+	/** `git status --short` (truncated), or empty string. */
+	statusShort: string;
+	/** Working directory at the time of the report. */
+	cwd: string;
+	/** ISO date (yyyy-mm-dd) when the report was filed. */
+	date: string;
+	/** pi session id. */
+	sessionId: string;
+	/** Path to the session jsonl, or null for ephemeral sessions. */
+	sessionFile: string | null;
+	/** Human-friendly session name set via `pi.setSessionName()`, or null. */
+	sessionName: string | null;
+	/** Version of `@mariozechner/pi-coding-agent` if discoverable. */
+	piVersion: string | null;
+	/** Tail of the session conversation, summarised + truncated. */
+	recentEntries: RecentEntry[];
+}
+
+export interface GatherContextInput {
+	cwd: string;
+	userText: string;
+	sessionId: string;
+	sessionFile?: string | null;
+	sessionName?: string | null;
+	entries: readonly unknown[];
+	recentEntryCount: number;
+	/** Where to start crawling for pi's package.json. Default: `cwd`. */
+	piVersionStartPath?: string;
+}
+
+/**
+ * Bail reasons surfaced to the caller (which decides how to notify
+ * the user). Returning a discriminated result instead of throwing
+ * keeps the slash-command handler tidy.
+ */
+export type GatherResult =
+	| { ok: true; ctx: DerpContext }
+	| { ok: false; reason: "empty-input"; detail: string };
+
+/**
+ * Gather everything we need to file an issue. Synchronous; never
+ * throws. Returns a discriminated result so the handler can notify
+ * and bail with no extra control flow.
+ */
+export function gatherDerpContext(input: GatherContextInput): GatherResult {
+	const userText = input.userText.trim();
+	if (!userText) {
+		return {
+			ok: false,
+			reason: "empty-input",
+			detail:
+				"derp: needs something to derp on (e.g. `/derp ghost text overlaps input on iTerm`)",
+		};
+	}
+
+	const remoteRaw = runCmd("git", ["remote", "get-url", "origin"], input.cwd);
+	// Origin is informational only — it populates the issue body's
+	// Environment block so a maintainer can see which repo the user
+	// hit the bug in. The issue itself is filed against a hard-coded
+	// target, so a missing or unparseable origin is not a blocker.
+	const origin = remoteRaw ? parseOriginUrl(remoteRaw) : null;
+
+	const rawBranch = runCmd(
+		"git",
+		["rev-parse", "--abbrev-ref", "HEAD"],
+		input.cwd,
+	);
+	const branch =
+		rawBranch && rawBranch !== "HEAD" && !rawBranch.startsWith("fatal")
+			? rawBranch
+			: null;
+
+	const rawHead = runCmd("git", ["rev-parse", "--short", "HEAD"], input.cwd);
+	const headShort = rawHead && !rawHead.startsWith("fatal") ? rawHead : null;
+
+	const statusShort = truncate(
+		runCmd("git", ["status", "--short"], input.cwd),
+		2000,
+	);
+
+	const piVersion = readPiVersion(input.piVersionStartPath ?? input.cwd);
+
+	const ctx: DerpContext = {
+		userText,
+		origin,
+		branch,
+		headShort,
+		statusShort,
+		cwd: input.cwd,
+		date: new Date().toISOString().slice(0, 10),
+		sessionId: input.sessionId,
+		sessionFile: input.sessionFile ?? null,
+		sessionName: input.sessionName ?? null,
+		piVersion,
+		recentEntries: summariseEntries(input.entries, input.recentEntryCount),
+	};
+	return { ok: true, ctx };
+}

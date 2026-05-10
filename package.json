@@ -13,6 +13,7 @@
     "extensions": [
       "packages/caffeinate/index.ts",
       "packages/commit/index.ts",
+      "packages/derp/index.ts",
       "packages/exa/index.ts",
       "packages/modes/index.ts",
       "packages/prompt-suggestion/index.ts",
