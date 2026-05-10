@@ -10,12 +10,14 @@ import {
 	findLatestCompactionSummary,
 	hasPhaseEndCompaction,
 	hasPlanToImplementCompaction,
+	type MidPhaseTriggerInput,
 	type ModesCompactionDetails,
 	PHASE_BOUNDARY_CUSTOM_TYPE,
 	type PhaseBoundaryData,
 	renderPhaseSection,
 	renderPlanSection,
 	type SummariseFn,
+	shouldCompactMidPhase,
 } from "../plan/compaction.js";
 import type { Phase, PhaseStatus, Plan } from "../plan/schema.js";
 
@@ -1078,3 +1080,71 @@ describe("rolling summary across phases (cache invariant)", () => {
 
 // Reference imports to silence unused-warnings for types only used in casts.
 type _UsedTypes = PhaseStatus;
+
+// ---------------------------------------------------------------------------
+// shouldCompactMidPhase — the turn_end gate stack
+// ---------------------------------------------------------------------------
+
+describe("shouldCompactMidPhase", () => {
+	const baseFire: MidPhaseTriggerInput = {
+		compactionApiAvailable: true,
+		mode: "auto",
+		compactionInFlight: false,
+		hasActivePhase: true,
+		tokens: 200_000,
+		maxContextTokens: 170_000,
+	};
+
+	it("fires when every gate passes", () => {
+		expect(shouldCompactMidPhase(baseFire)).toBe(true);
+	});
+
+	it("skips when compactionApiAvailable is false (probe failed)", () => {
+		expect(
+			shouldCompactMidPhase({ ...baseFire, compactionApiAvailable: false }),
+		).toBe(false);
+	});
+
+	it.each([
+		"plan",
+		"ask",
+		"hack",
+		null,
+	] as const)("skips outside auto mode (mode=%s)", (mode) => {
+		expect(shouldCompactMidPhase({ ...baseFire, mode })).toBe(false);
+	});
+
+	it("skips when a compaction is already in flight (re-entrancy guard)", () => {
+		expect(
+			shouldCompactMidPhase({ ...baseFire, compactionInFlight: true }),
+		).toBe(false);
+	});
+
+	it("skips when there is no active phase", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, hasActivePhase: false })).toBe(
+			false,
+		);
+	});
+
+	it("skips when tokens is null (typically right after a compaction)", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: null })).toBe(false);
+	});
+
+	it("skips when tokens is undefined (no usage data yet)", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: undefined })).toBe(
+			false,
+		);
+	});
+
+	it("skips when tokens equals the threshold (strict >, not >=)", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: 170_000 })).toBe(false);
+	});
+
+	it("skips when tokens is below the threshold", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: 169_999 })).toBe(false);
+	});
+
+	it("fires at threshold + 1", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: 170_001 })).toBe(true);
+	});
+});

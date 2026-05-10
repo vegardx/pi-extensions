@@ -59,6 +59,7 @@ import {
 	hasPhaseEndCompaction,
 	hasPlanToImplementCompaction,
 	type SummariseFn,
+	shouldCompactMidPhase,
 } from "./plan/compaction.js";
 import {
 	type Plan,
@@ -2831,21 +2832,25 @@ export default function (pi: ExtensionAPI) {
 	// log, only act.
 
 	pi.on("turn_end", async (_event, ctx) => {
+		// Cheap checks first — most turn_end events short-circuit before
+		// touching the plan tree or session manager.
 		if (!compactionApiAvailable) return;
 		if (!modeState) return;
-		if (modeState.mode !== "auto") return;
 		if (compactionInFlight) return;
 
 		const plan = currentPlan();
-		if (!plan) return;
-		const activePhase = plan.phases.find((p) => p.status === "active");
-		if (!activePhase) return;
-
+		const activePhase = plan?.phases.find((p) => p.status === "active");
 		const usage = ctx.getContextUsage();
-		const tokens = usage?.tokens;
-		if (typeof tokens !== "number") return;
-		const threshold = readMaxContextTokensSetting(ctx);
-		if (tokens <= threshold) return;
+
+		const fire = shouldCompactMidPhase({
+			compactionApiAvailable,
+			mode: modeState.mode,
+			compactionInFlight,
+			hasActivePhase: !!activePhase,
+			tokens: usage?.tokens,
+			maxContextTokens: readMaxContextTokensSetting(ctx),
+		});
+		if (!fire || !plan || !activePhase) return;
 
 		compactionInFlight = true;
 		try {
