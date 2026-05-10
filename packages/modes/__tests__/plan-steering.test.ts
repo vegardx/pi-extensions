@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import type { Phase, PhaseStatus, Plan } from "../plan/schema.js";
 import { buildSteeringPreamble } from "../plan/steering.js";
 

@@ -1,4 +1,3 @@
-import { describe, expect, it } from "vitest";
 import type { Phase, Plan } from "../plan/schema.js";
 import { worktreePath } from "../plan/worktree.js";
 
