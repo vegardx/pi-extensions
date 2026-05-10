@@ -111,12 +111,18 @@ export type SummariseFn = (args: {
  * @param partN - 1-indexed part number for slice/end compactions; when
  *   > 1, the preamble notes that earlier parts are already captured.
  *   Use 0 (or omit) for plan→implement.
+ * @param kind - which compaction trigger this is. "in-progress"
+ *   (mid-phase) and "end" (phase shipped) need different framing so
+ *   the summariser doesn't claim a phase is complete when it isn't.
+ *   Defaults to "end" when a completedPhase is provided (back-compat
+ *   for callers that don't pass kind explicitly).
  */
 export function buildSummariserPreamble(
 	plan: Plan,
 	completedPhase: PlanPhase | null,
 	maxTokens: number,
 	partN: number = 0,
+	kind: "in-progress" | "end" = "end",
 ): string {
 	const upcoming = plan.phases.filter(
 		(p) => !TERMINAL_STATUSES.includes(p.status) && p.id !== completedPhase?.id,
@@ -129,10 +135,23 @@ export function buildSummariserPreamble(
 	];
 
 	if (completedPhase) {
-		lines.push(
-			`Just completed: phase \`${completedPhase.id}\` — ${completedPhase.title}`,
-		);
-		lines.push(`Goal: ${completedPhase.goal}`);
+		if (kind === "in-progress") {
+			lines.push(
+				`Currently working on phase \`${completedPhase.id}\` — ${completedPhase.title}`,
+			);
+			lines.push(`Goal: ${completedPhase.goal}`);
+			lines.push("");
+			lines.push(
+				"This phase is NOT done yet — context grew large enough to trigger a",
+				"mid-phase compaction. Summarise the work-so-far accurately; the phase",
+				"will continue after this slice. Do NOT claim the phase is finished.",
+			);
+		} else {
+			lines.push(
+				`Just completed: phase \`${completedPhase.id}\` — ${completedPhase.title}`,
+			);
+			lines.push(`Goal: ${completedPhase.goal}`);
+		}
 		if (partN > 1) {
 			lines.push("");
 			lines.push(
@@ -455,7 +474,13 @@ export async function appendPhaseSliceCompaction(
 
 	let body = "(no recorded work)";
 	if (messages.length > 0) {
-		const preamble = buildSummariserPreamble(plan, phase, maxTokens, partN);
+		const preamble = buildSummariserPreamble(
+			plan,
+			phase,
+			maxTokens,
+			partN,
+			kind,
+		);
 		const out = await summarise({
 			messages,
 			preamble,
