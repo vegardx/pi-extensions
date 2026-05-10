@@ -23,6 +23,15 @@ export interface TransitionInput {
 	prev: TransitionMode;
 	next: TransitionMode;
 	activePhaseId: string | null;
+	/**
+	 * True when the caller can satisfy a `newSession` decision (i.e.
+	 * holds an `ExtensionCommandContext`). The Shift+Tab shortcut path
+	 * gets only `ExtensionContext`, which has no `newSession` method —
+	 * pass `false` from there so the option isn't offered. Defaults to
+	 * true when omitted to preserve backwards compatibility for callers
+	 * with command context.
+	 */
+	canStartNewSession?: boolean;
 }
 
 export interface TransitionPrompt {
@@ -54,7 +63,12 @@ export function buildTransitionOptions(
 	if (input.activePhaseId) {
 		opts.push(`${OPT_COMPACT_PREFIX} \`${input.activePhaseId}\` first`);
 	}
-	opts.push(OPT_NEW_SESSION);
+	if (input.canStartNewSession ?? true) {
+		opts.push(OPT_NEW_SESSION);
+	}
+
+	// Only "Keep" remains — no point prompting just to confirm the default.
+	if (opts.length === 1) return null;
 
 	return {
 		title: `Switching to plan mode from ${input.prev}. Heavy context — what should we do with it?`,
