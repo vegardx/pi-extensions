@@ -89,9 +89,10 @@ describe("shouldInjectSteeringClassifier", () => {
 		).toBe(true);
 	});
 
-	it("returns true when the in-flight phase has zero tasks defined", () => {
-		// Plan exists but not yet broken down — the agent should still
-		// consider routing the message into a new task.
+	it("returns false when the in-flight phase has zero tasks defined", () => {
+		// The auto-mode preamble in `before_agent_start` short-circuits when
+		// there are no active tasks, so the classifier would have nowhere to
+		// attach — keep the gate aligned with what actually fires.
 		expect(
 			shouldInjectSteeringClassifier({
 				text: "hi",
@@ -99,7 +100,7 @@ describe("shouldInjectSteeringClassifier", () => {
 				mode: "auto",
 				plan: makePlan([makePhase({ tasks: [] })]),
 			}),
-		).toBe(true);
+		).toBe(false);
 	});
 
 	it.each<[SteeringMode | null]>([

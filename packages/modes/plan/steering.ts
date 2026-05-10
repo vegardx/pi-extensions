@@ -48,11 +48,10 @@ function inflightPhase(plan: Plan): Phase | null {
  *   - slash commands (skills, templates, /ship etc. — pi routes these)
  *   - no active plan
  *   - no in-flight phase
- *   - in-flight phase whose tasks are all complete (awaiting /ship —
- *     no routing decision left to make; classifier would only confuse)
- *
- * A phase with zero tasks defined is NOT skipped — the agent should
- * consider routing the message into a new task.
+ *   - in-flight phase with zero tasks defined OR all tasks complete
+ *     (the consumer in `before_agent_start` skips the auto-mode
+ *     preamble in both cases, so the classifier would have nowhere
+ *     to attach — keep the gate aligned with what actually fires)
  */
 export function shouldInjectSteeringClassifier(input: SteeringInput): boolean {
 	if (input.mode !== "auto") return false;
@@ -63,7 +62,8 @@ export function shouldInjectSteeringClassifier(input: SteeringInput): boolean {
 	if (!input.plan) return false;
 	const phase = inflightPhase(input.plan);
 	if (!phase) return false;
-	if (phase.tasks.length > 0 && phase.tasks.every((t) => t.done)) return false;
+	if (phase.tasks.length === 0) return false;
+	if (phase.tasks.every((t) => t.done)) return false;
 	return true;
 }
 
