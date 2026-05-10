@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	abandonNonTerminalPhases,
 	canTransition,
 	type Phase,
 	type PhaseStatus,
@@ -108,6 +109,88 @@ describe("state machine", () => {
 
 	it.each(cases)("%s -> %s = %s", (from, to, expected) => {
 		expect(canTransition(from, to)).toBe(expected);
+	});
+});
+
+describe("abandonNonTerminalPhases", () => {
+	const NOW = "2026-06-01T00:00:00.000Z";
+
+	function phase(id: string, status: PhaseStatus): Phase {
+		const t = "2026-01-01T00:00:00.000Z";
+		return {
+			id,
+			title: id,
+			goal: "",
+			status,
+			branch: `feat/${id}`,
+			tasks: [],
+			createdAt: t,
+			updatedAt: t,
+		};
+	}
+
+	it("flips every non-terminal phase to abandoned and stamps updatedAt", () => {
+		const plan: Plan = {
+			slug: "p",
+			title: "P",
+			repo: { path: "/r" },
+			phases: [
+				phase("p-1", "shipped"),
+				phase("p-2", "in-review"),
+				phase("p-3", "active"),
+				phase("p-4", "planned"),
+				phase("p-5", "needs-attention"),
+				phase("p-6", "ready-to-ship"),
+				phase("p-7", "abandoned"),
+			],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		};
+		const { plan: out, archived } = abandonNonTerminalPhases(plan, NOW);
+		expect(archived.map((p) => p.id)).toEqual([
+			"p-2",
+			"p-3",
+			"p-4",
+			"p-5",
+			"p-6",
+		]);
+		expect(out.phases.find((p) => p.id === "p-1")?.status).toBe("shipped");
+		expect(out.phases.find((p) => p.id === "p-7")?.status).toBe("abandoned");
+		for (const id of ["p-2", "p-3", "p-4", "p-5", "p-6"]) {
+			const p = out.phases.find((ph) => ph.id === id);
+			expect(p?.status).toBe("abandoned");
+			expect(p?.updatedAt).toBe(NOW);
+		}
+		expect(out.updatedAt).toBe(NOW);
+	});
+
+	it("returns empty archived list and preserves updatedAt when nothing to do", () => {
+		const plan: Plan = {
+			slug: "p",
+			title: "P",
+			repo: { path: "/r" },
+			phases: [phase("p-1", "shipped"), phase("p-2", "abandoned")],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-15T00:00:00.000Z",
+		};
+		const { plan: out, archived } = abandonNonTerminalPhases(plan, NOW);
+		expect(archived).toEqual([]);
+		expect(out.updatedAt).toBe("2026-01-15T00:00:00.000Z");
+		expect(out.phases).toEqual(plan.phases);
+	});
+
+	it("does not mutate the input plan", () => {
+		const original: Plan = {
+			slug: "p",
+			title: "P",
+			repo: { path: "/r" },
+			phases: [phase("p-1", "in-review")],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+		};
+		const snapshot = JSON.parse(JSON.stringify(original));
+		abandonNonTerminalPhases(original, NOW);
+		expect(original).toEqual(snapshot);
 	});
 });
 

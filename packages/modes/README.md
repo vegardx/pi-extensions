@@ -25,6 +25,8 @@ Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (
 | `/plan [desc]` | Sync to default branch, enter plan mode. If this session has a bound plan, reuse it; otherwise create a new one owned by this session. |
 | `/plan list` | List all plans across repos |
 | `/plan resume <slug>` | Bind this session to a specific plan. Confirms before adopting a plan owned by another session. |
+| `/plan archive <slug>` | Soft-archive: mark all non-terminal phases as `abandoned`, tear down their worktrees, keep branches and the plan file on disk. |
+| `/plan delete <slug>` | Hard-delete: remove `~/.pi/plans/<slug>/` permanently. Refuses if any worktree is dirty; worktrees and branches are not touched. |
 | `/implement [desc]` | Sync, create a feature branch, switch to auto |
 | `/park` | Create a GitHub parent issue + per-phase sub-issues for the current plan |
 | `/ship [phaseId?]` | Commit, push, open PR; flips active phase to in-review |
