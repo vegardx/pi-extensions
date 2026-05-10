@@ -8,7 +8,7 @@
  *   1. plan → implement (`/implement` command):
  *      collapses planning chatter into `## Plan` + `## Planning notes`.
  *
- *   2. mid-phase (`turn_end` when context tokens > maxContextTokens):
+ *   2. mid-phase (`turn_end` when sys + work > workingTokens):
  *      bounds in-flight context. Section: `## Phase p-X (part N, in progress)`.
  *      A phase that overflows N times produces N+1 slices.
  *
@@ -31,6 +31,42 @@
  * introspection, and orchestrators that take an injected `summarise`
  * callback. The actual LLM client wiring lives at the call site in
  * index.ts.
+ *
+ * ---------------------------------------------------------------------
+ * Three-bucket context budget model
+ * ---------------------------------------------------------------------
+ *
+ * The live context is decomposed into three buckets, in prefix order
+ * (sys → summary → work). Order matches the API request layout and the
+ * direction the KV-cache reuses (longest stable prefix first):
+ *
+ *   sys      — system prompt + active tool schemas. Stable prefix.
+ *   summary  — rolling compaction summary (output of plan→implement +
+ *              phase-slice + phase-end compactions). Grows on each
+ *              compaction.
+ *   work     — live messages since the most recent compaction
+ *              breadcrumb. Hot tail; resets at every compaction.
+ *
+ * Two configurable budgets:
+ *
+ *   workingTokens  — covers `sys + work`. Mid-phase compaction fires
+ *                    when this is exceeded.
+ *   summaryTokens  — covers `summary`. Soft-warn when exceeded; not
+ *                    enforced (compaction is the only thing that grows
+ *                    summary, and it does so deterministically).
+ *
+ * Total target ceiling = workingTokens + summaryTokens. Tune both so
+ * the total fits the active model's contextWindow.
+ *
+ * Mid-phase trigger semantics:
+ *
+ *   fire iff (total - summary) > workingTokens
+ *
+ * i.e. the working portion (sys + work) crossed its budget. Summary
+ * tokens never trigger compaction themselves — they live in their own
+ * budget. Compaction shrinks `work` and grows `summary` by ~phaseTokens;
+ * net effect is the working budget relaxes while the summary budget
+ * incrementally fills.
  */
 
 import type {
@@ -62,15 +98,27 @@ export const PHASE_BOUNDARY_CUSTOM_TYPE = "modes:phase-boundary";
  * unbounded — the cap is on the frozen output that ends up in the
  * prompt prefix on every subsequent turn.
  */
-export const DEFAULT_PHASE_TOKENS = 8000;
+export const DEFAULT_PHASE_TOKENS = 10000;
 
 /**
- * Default mid-phase compaction trigger threshold in tokens. When
- * `getContextUsage().tokens` exceeds this on `turn_end` (in auto mode
- * with an active phase), a `phase-slice` compaction fires. Override via:
- *   extensionConfig.modes.compaction.maxContextTokens
+ * Default working-budget threshold in tokens. Working budget covers
+ * `sys + work` (system prompt + tool schemas + live messages since the
+ * last compaction). Mid-phase compaction fires when this is exceeded.
+ * Summary tokens live in their own budget (see `summaryTokens`) and do
+ * NOT count toward this trigger. Override via:
+ *   extensionConfig.modes.compaction.workingTokens
  */
-export const DEFAULT_MAX_CONTEXT_TOKENS = 170000;
+export const DEFAULT_WORKING_TOKENS = 150000;
+
+/**
+ * Default rolling-summary budget in tokens. Each plan→implement /
+ * phase-slice / phase-end compaction adds to the summary. Soft-warns
+ * when exceeded; not enforced. Total target ceiling =
+ * `workingTokens + summaryTokens` — tune so the total fits the active
+ * model's `contextWindow`. Override via:
+ *   extensionConfig.modes.compaction.summaryTokens
+ */
+export const DEFAULT_SUMMARY_TOKENS = 100000;
 
 /**
  * Default plan-mode footer cap in tokens. 0 is a sentinel meaning
@@ -432,7 +480,8 @@ export async function appendPlanToImplementCompaction(
  * Append a phase slice compaction. Two flavours:
  *
  *   - `kind: "in-progress"` — fired by the mid-phase trigger when context
- *     exceeds `maxContextTokens`. Multiple slices per phase are valid;
+ *     exceeds `workingTokens` (after subtracting summary cost).
+ *     Multiple slices per phase are valid;
  *     no idempotency check.
  *   - `kind: "end"` — fired by `/ship` when the phase is shipped.
  *     Idempotent: returns null without appending if a phase-end
@@ -543,8 +592,15 @@ export interface MidPhaseTriggerInput {
 	 * fire yet, wait for the next turn".
 	 */
 	tokens: number | null | undefined;
-	/** Configured trigger threshold (extensionConfig.modes.compaction.maxContextTokens). */
-	maxContextTokens: number;
+	/** Configured working budget (extensionConfig.modes.compaction.workingTokens). */
+	workingTokens: number;
+	/**
+	 * Observed rolling-summary token count (NOT the budget). Estimated
+	 * from the latest CompactionEntry's summary text. Subtracted from
+	 * `tokens` before comparing against `workingTokens` so summary
+	 * growth alone never triggers compaction.
+	 */
+	summaryTokens: number;
 }
 
 /**
@@ -558,7 +614,12 @@ export interface MidPhaseTriggerInput {
  *   2. mode === "auto" — only modes-driven execution; hack/plan/ask skip
  *   3. !compactionInFlight — re-entrancy guard for slow LLM calls
  *   4. plan + active phase exist
- *   5. tokens (number) > maxContextTokens
+ *   5. (tokens − summaryTokens) > workingTokens
+ *
+ * Step 5 isolates the working budget: summary tokens live in their
+ * own budget (`summaryTokens`) and never trigger compaction
+ * themselves. The trigger only fires when sys + work crosses
+ * `workingTokens`.
  *
  * Caller is responsible for setting/clearing `compactionInFlight`
  * around the actual fire.
@@ -569,8 +630,59 @@ export function shouldCompactMidPhase(input: MidPhaseTriggerInput): boolean {
 	if (input.compactionInFlight) return false;
 	if (!input.hasActivePhase) return false;
 	if (typeof input.tokens !== "number") return false;
-	if (input.tokens <= input.maxContextTokens) return false;
+	const workingUsed = input.tokens - input.summaryTokens;
+	if (workingUsed <= input.workingTokens) return false;
 	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Pure context-bucket computation — shared between footer and trigger.
+// ---------------------------------------------------------------------------
+
+/**
+ * Snapshot of how the live context decomposes into the three buckets.
+ * All token values are estimates derived from chars/4, matching pi's
+ * internal `estimateTokens` heuristic for text content.
+ */
+export interface ContextBuckets {
+	/** System prompt + active tool schemas (stable prefix). */
+	sys: number;
+	/** Latest compaction summary (rolling summary text). */
+	summary: number;
+	/**
+	 * Live messages since last compaction breadcrumb.
+	 * Computed as `max(0, total − sys − summary)` when total is known.
+	 */
+	work: number;
+	/** Authoritative total from `getContextUsage().tokens`, or null. */
+	total: number | null;
+}
+
+/**
+ * Compute the three-bucket breakdown from raw character counts plus
+ * pi's reported total. Pure, deterministic; no I/O.
+ *
+ * Inputs are character counts (not token estimates) so the chars/4
+ * conversion happens in one place. `total` is taken verbatim from
+ * `getContextUsage().tokens` — it's authoritative; the bucket numbers
+ * are estimates that should approximately sum to it.
+ *
+ * When `total` is null (e.g. immediately after a compaction, before
+ * the next LLM response), `work` is reported as 0 — the working
+ * portion is genuinely unknown until pi reports a fresh count. `sys`
+ * and `summary` remain valid (they don't depend on `total`).
+ */
+export function computeContextBuckets(input: {
+	total: number | null;
+	systemPromptChars: number;
+	toolSchemaChars: number;
+	summaryChars: number;
+}): ContextBuckets {
+	const sys = Math.ceil((input.systemPromptChars + input.toolSchemaChars) / 4);
+	const summary = Math.ceil(input.summaryChars / 4);
+	const work =
+		input.total === null ? 0 : Math.max(0, input.total - sys - summary);
+	return { sys, summary, work, total: input.total };
 }
 
 // ---------------------------------------------------------------------------
@@ -584,8 +696,4 @@ export function shouldCompactMidPhase(input: MidPhaseTriggerInput): boolean {
 //    another plan-shaped extension emerges with the same compaction needs,
 //    extract this into a standalone package and parametrise the rendering
 //    helpers (renderPlanSection / renderPhaseSection) over a phase shape.
-//
-// 3. `maxContextTokens` is currently an absolute number. Could accept a
-//    `"70%"` string for percentage of the active model's contextWindow,
-//    so the threshold tracks the model.
 // ---------------------------------------------------------------------------

@@ -157,8 +157,9 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
     "modes": {
       "defaultMode": "plan",
       "compaction": {
-        "maxContextTokens": 170000,
-        "phaseTokens": 8000
+        "workingTokens": 150000,
+        "summaryTokens": 100000,
+        "phaseTokens": 10000
       },
       "review": {
         "enable": false,
@@ -173,14 +174,17 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | Key | Default | Doc |
 |---|---|---|
 | `defaultMode` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
-| `compaction.maxContextTokens` | `170000` | Mid-phase compaction trigger threshold. When `getContextUsage().tokens` exceeds this on `turn_end` (auto mode + active phase), a phase-slice compaction fires. |
+| `compaction.workingTokens` | `150000` | Working budget covering `sys + work` (system prompt + tool schemas + live messages). Mid-phase compaction fires when `sys + work` exceeds this. Summary tokens live in their own budget. |
+| `compaction.summaryTokens` | `100000` | Cumulative rolling-summary budget. Soft-warns once when exceeded; not enforced. Total target ceiling = `workingTokens + summaryTokens` — should fit the active model's `contextWindow`. |
 | `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
-| `compaction.phaseTokens` | `8000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
+| `compaction.phaseTokens` | `10000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
 | `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
 | `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
 
 > **Autoreview is off by default.** The pipeline (`/review`, post-execution batch) runs end-to-end but the surrounding triage and feedback flow needs more design work before it's on for everyone — see the `TODO(autoreview)` block on `runBatchReview` for the open issues. Opt in per-repo by setting `extensionConfig.modes.review.enable: true`.
+
+> **Breaking change:** the previous `compaction.maxContextTokens` setting has been replaced by `compaction.workingTokens` (semantically the same trigger threshold), and the new `compaction.summaryTokens` budgets the rolling compaction summary. There is no compatibility alias — rename the key in your config.
 
 Optional peer dependencies:
 
@@ -192,8 +196,40 @@ Optional peer dependencies:
 Modes owns context fully via three-tier compaction:
 
 1. **plan → implement** — collapses planning chatter at `/implement`, producing the initial rolling summary (`## Plan` + `## Planning notes`).
-2. **mid-phase** — fires from `turn_end` when `tokens > compaction.maxContextTokens` (auto mode, active phase). Bounds in-flight context.
+2. **mid-phase** — fires from `turn_end` when `sys + work > compaction.workingTokens` (auto mode, active phase). The summary token cost is subtracted before comparison so a growing rolling summary never triggers compaction itself.
 3. **phase-end** — freezes the just-completed phase at `/ship` as a section in the rolling summary.
+
+### Three-bucket context budget
+
+The live context decomposes into three buckets, in prefix order (sys → summary → work). Order matches the API request layout and the direction the KV-cache reuses (longest stable prefix first):
+
+```
+┌─ active model contextWindow ───────────────────────────────┐
+│  sys     summary               work             free       │
+│  ■■■■    ■■■■■■■■■■■■    ■■■■■■■■■■■■■■■■■■■■■■■■■                  │
+│  └─ summaryTokens ─┘└────────── workingTokens (sys + work) ─────┘│
+└────────────────────────────────────────────────────────────────┘
+```
+
+- **sys** — system prompt + active tool schemas. Stable prefix; rarely changes.
+- **summary** — rolling compaction summary. Grows incrementally on each compaction; persists in the prefix.
+- **work** — live messages since the most recent compaction breadcrumb. Hot tail; resets at every compaction.
+
+Tune `workingTokens + summaryTokens` so the total fits the active model's `contextWindow` with margin for the next turn's response.
+
+### Footer
+
+In `auto` and `hack` modes the footer renders the breakdown:
+
+```
+sys 12k · sum 30k · work 78k · 120k/250k (256k)
+```
+
+- `sys`, `sum`, `work` — the three buckets, rounded to 1k.
+- `120k/250k` — `getContextUsage().tokens` over `workingTokens + summaryTokens`.
+- `(256k)` — the active model's `contextWindow`, shown only when it differs from the denominator. The `sum` segment is hidden until the first compaction lands.
+
+In `plan` mode the footer reverts to the simpler `current/limit` form — plan mode is exempt from mid-phase compaction (the human is in the loop), so the breakdown adds noise.
 
 ### Byte-stable prefix invariant
 
