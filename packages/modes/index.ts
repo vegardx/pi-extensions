@@ -137,19 +137,19 @@ const ALL_MODES: readonly Mode[] = ["plan", "auto", "hack"] as const;
 
 /**
  * Validate an extensionConfig.modes.defaultMode value. Falls back to
- * "hack" on missing/invalid input. Caller is responsible for surfacing
+ * "plan" on missing/invalid input. Caller is responsible for surfacing
  * a notify when `valid` is false.
  */
 export function resolveDefaultMode(raw: unknown): {
 	mode: Mode;
 	valid: boolean;
 } {
-	if (raw === undefined || raw === null) return { mode: "hack", valid: true };
-	if (typeof raw !== "string") return { mode: "hack", valid: false };
+	if (raw === undefined || raw === null) return { mode: "plan", valid: true };
+	if (typeof raw !== "string") return { mode: "plan", valid: false };
 	if ((ALL_MODES as readonly string[]).includes(raw)) {
 		return { mode: raw as Mode, valid: true };
 	}
-	return { mode: "hack", valid: false };
+	return { mode: "plan", valid: false };
 }
 type Stage =
 	| "idle"
@@ -246,7 +246,7 @@ export default function (pi: ExtensionAPI) {
 			{
 				key: "defaultMode",
 				type: "string",
-				default: "hack",
+				default: "plan",
 				doc: "Mode for fresh sessions: plan | auto | hack. Existing persisted sessions keep their saved mode.",
 			},
 		],
@@ -309,7 +309,7 @@ export default function (pi: ExtensionAPI) {
 		// even older name; "ask" was a halfway-house mode that's been
 		// removed (full tools + per-action confirmation belongs in code
 		// review, not mode design). Both map to hack — closest in spirit
-		// to ask (full tools), and hack is the new default.
+		// to ask (full tools).
 		if (
 			latest &&
 			((latest.mode as string) === "default" ||
@@ -2578,15 +2578,23 @@ export default function (pi: ExtensionAPI) {
 
 		if (!modeState) {
 			// First session — capture baseline tools, default mode is
-			// configurable via extensionConfig.modes.defaultMode (default "hack").
+			// configurable via extensionConfig.modes.defaultMode (default "plan").
 			const { mode: defaultMode, valid } = readDefaultModeSetting(ctx);
 			if (!valid) {
 				notify(
 					ctx,
-					'modes: invalid defaultMode setting (expected "plan" | "auto" | "hack") — falling back to "hack"',
+					'modes: invalid defaultMode setting (expected "plan" | "auto" | "hack") — falling back to "plan"',
 					"warning",
 				);
 			}
+			// When booting straight into plan mode in a git repo, materialise
+			// the plan file up front so plan_phase / plan_task work without
+			// the user first running `/plan`. Outside a git repo we leave the
+			// slug null — same behaviour as today.
+			const initialPlanSlug =
+				defaultMode === "plan" && isGitRepo(ctx.cwd)
+					? ensurePlanForRepo(ctx)
+					: null;
 			modeState = {
 				mode: defaultMode,
 				stage: "idle",
@@ -2594,7 +2602,7 @@ export default function (pi: ExtensionAPI) {
 				defaultBranch: null,
 				priorTools: pi.getActiveTools(),
 				planText: null,
-				currentPlanSlug: null,
+				currentPlanSlug: initialPlanSlug,
 			};
 			// Don't persist yet — only persist when the user actively changes mode.
 			applyModeTools();
