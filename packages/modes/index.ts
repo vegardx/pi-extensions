@@ -1309,6 +1309,22 @@ export default function (pi: ExtensionAPI) {
 	 */
 	let compactionInFlight = false;
 
+	/**
+	 * The single supported entrypoint for the wider SessionManager
+	 * surface. ExtensionContext.sessionManager is publicly typed as
+	 * ReadonlySessionManager, but the runtime value (in current
+	 * pi-coding-agent versions) is the full SessionManager — we need
+	 * appendCompaction / appendCustomEntry, neither exposed by the public
+	 * type. Centralising the cast here means there's exactly one site to
+	 * audit when pi's contract changes; probeCompactionApi() runs at
+	 * session_start and flips compactionApiAvailable to false if the
+	 * required methods are missing, downgrading modes to a no-op rather
+	 * than throwing.
+	 */
+	function getMutableSessionManager(ctx: ExtensionContext): SessionManager {
+		return ctx.sessionManager as unknown as SessionManager;
+	}
+
 	function probeCompactionApi(ctx: ExtensionContext): void {
 		const sm = ctx.sessionManager as unknown as Partial<SessionManager>;
 		const ok =
@@ -1428,12 +1444,10 @@ export default function (pi: ExtensionAPI) {
 	): Promise<void> {
 		if (!compactionApiAvailable) return;
 		if (modeState?.mode === "hack") return;
-		// ctx.sessionManager is typed as ReadonlySessionManager in the public
-		// extension API even though the runtime value is the full SessionManager
-		// (see runner.ts in pi-coding-agent). The append surface isn't part of
-		// the public contract; cast explicitly so callers know what's going on.
-		// probeCompactionApi() at session_start verifies the cast is still safe.
-		const sm = ctx.sessionManager as unknown as SessionManager;
+		// All compaction orchestrators route through getMutableSessionManager
+		// to centralise the ReadonlySessionManager cast; see its docstring
+		// for the cast rationale and the probe that protects it.
+		const sm = getMutableSessionManager(ctx);
 		if (hasPlanToImplementCompaction(sm)) return;
 
 		const summarise = await buildSummariseFn(ctx);
@@ -1472,7 +1486,7 @@ export default function (pi: ExtensionAPI) {
 	): Promise<void> {
 		if (!compactionApiAvailable) return;
 		if (modeState?.mode === "hack") return;
-		const sm = ctx.sessionManager as unknown as SessionManager;
+		const sm = getMutableSessionManager(ctx);
 		if (hasPhaseEndCompaction(sm, phaseId)) return;
 
 		const summarise = await buildSummariseFn(ctx);
@@ -1521,7 +1535,7 @@ export default function (pi: ExtensionAPI) {
 	): Promise<void> {
 		if (!compactionApiAvailable) return;
 		if (modeState?.mode === "hack") return;
-		const sm = ctx.sessionManager as unknown as SessionManager;
+		const sm = getMutableSessionManager(ctx);
 
 		const summarise = await buildSummariseFn(ctx);
 		if (!summarise) {
