@@ -17,6 +17,8 @@
  * a phase is in `active` or `needs-attention`. Branches are kept forever.
  */
 
+import { basename, resolve } from "node:path";
+
 export const PHASE_STATUSES = [
 	"planned",
 	"active",
@@ -141,6 +143,9 @@ export function defaultBranchForPhase(phase: Pick<Phase, "id">): string {
 
 /** Repo-name derivation — the basename used for worktree path scoping. */
 export function repoNameFromPath(path: string): string {
-	const last = path.split("/").filter(Boolean).pop();
-	return last ?? "repo";
+	// Use node:path so Windows backslashes and mixed separators are
+	// handled correctly. resolve() normalises before basename() picks the
+	// last segment.
+	const name = basename(resolve(path));
+	return name === "" ? "repo" : name;
 }
