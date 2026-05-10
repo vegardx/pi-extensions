@@ -95,6 +95,33 @@ describe("buildTransitionOptions", () => {
 		});
 		expect(built?.options).toContain("Lossy-compact phase `p-1` first");
 	});
+
+	it("canStartNewSession=false (e.g. shortcut path): drops 'New session' option", () => {
+		const built = buildTransitionOptions({
+			hasUI: true,
+			prev: "hack",
+			next: "plan",
+			activePhaseId: "p-1",
+			canStartNewSession: false,
+		});
+		expect(built?.options).toEqual([
+			"Keep current context",
+			"Lossy-compact phase `p-1` first",
+		]);
+	});
+
+	it("canStartNewSession=false AND no active phase: degenerate prompt suppressed", () => {
+		// Only "Keep" would remain — a one-option "prompt" wastes a UI cycle
+		// to confirm the default. Better to silently flip.
+		const built = buildTransitionOptions({
+			hasUI: true,
+			prev: "hack",
+			next: "plan",
+			activePhaseId: null,
+			canStartNewSession: false,
+		});
+		expect(built).toBeNull();
+	});
 });
 
 describe("decideFromChoice", () => {

@@ -2868,6 +2868,7 @@ export default function (pi: ExtensionAPI) {
 	async function runModeTransition(
 		prev: Mode,
 		ctx: ExtensionContext,
+		opts: { canStartNewSession: boolean },
 	): Promise<TransitionDecision> {
 		const plan = currentPlan();
 		const activePhase = plan?.phases.find((p) => p.status === "active");
@@ -2877,6 +2878,7 @@ export default function (pi: ExtensionAPI) {
 			prev,
 			next: "plan",
 			activePhaseId,
+			canStartNewSession: opts.canStartNewSession,
 		});
 		if (!built) return { action: "flip" };
 		const choice = await ctx.ui.select(built.title, built.options);
@@ -2934,16 +2936,13 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// hack → plan (full circle). May prompt for handling carried-over
-			// context: keep / lossy-compact active phase / new session.
-			const decision = await runModeTransition("hack", ctx);
-			if (decision.action === "newSession") {
-				const cmdCtx = ctx as ExtensionCommandContext;
-				if (typeof cmdCtx.newSession === "function") {
-					await cmdCtx.newSession({});
-					return;
-				}
-				// Headless / no command-context support: fall through to flip.
-			}
+			// context: keep / lossy-compact active phase. "New session" is not
+			// offered from the shortcut path because pi only exposes
+			// `newSession` on ExtensionCommandContext, not the ExtensionContext
+			// shortcuts receive — silently degrading would surprise the user.
+			const decision = await runModeTransition("hack", ctx, {
+				canStartNewSession: false,
+			});
 			if (decision.action === "compact") {
 				const plan = currentPlan();
 				if (plan && !compactionInFlight) {
