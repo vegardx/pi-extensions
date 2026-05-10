@@ -83,6 +83,63 @@ planned ─► active ─► in-review ─► ready-to-ship ─► shipped
 
 Transitions are gated by `plan_phase update` — invalid transitions are rejected.
 
+## Session model
+
+A plan owns **two kinds of pi sessions**: one **planning session** for plan
+mode and one **auto session per phase** for execution. They survive
+round-trips: when you Shift+Tab back to plan mid-phase, you land in the
+planning session you started in; when you `/implement` again you resume
+the phase's auto session. The two contexts never bleed into each other.
+
+| Action                                          | Branch        | Session                                 |
+| ----------------------------------------------- | ------------- | --------------------------------------- |
+| `/plan` first time                              | sync default  | NEW (planning session)                  |
+| `/plan resume <slug>`                           | sync default  | `switchSession(plan.planSessionPath)`   |
+| `/plan` from auto (Shift+Tab or auto→plan)      | (no checkout) | `switchSession(plan.planSessionPath)`   |
+| `/implement` first time on phase                | create        | NEW (auto session for phase)            |
+| `/implement` resume (active / needs-attention)  | checkout      | `switchSession(phase.sessionPath)`      |
+| `/ship`                                         | merge/PR      | (no session change)                     |
+
+Session paths are stored on the plan/phase records:
+
+- `plan.planSessionPath` — the planning session.
+- `phase.sessionPath` — the phase's auto session. Set on first
+  `/implement`, reused on resume, never cleared.
+
+Legacy plans (created before this field existed) behave as orphans on
+resume: a fresh session is started, with one-time loss of prior context.
+No migration required.
+
+### Per-phase session seeding
+
+`/implement` does not pull the planning conversation into the new auto
+session. Instead, the new session is **seeded** from the plan doc — a
+deterministic render of:
+
+- the plan title and slug,
+- every phase's id, status, title, goal, and (for shipped phases) PR
+  number and `phase.summary`,
+- the active phase's tasks,
+- a short instruction footer ("only execute phase `p-X`'s tasks; run
+  `/ship` when done").
+
+No LLM call. The seed text is byte-stable for a given plan, so the prompt
+cache hits across phases.
+
+### Cross-phase carry-forward
+
+At `/ship`, the just-shipped phase's auto session is summarised and
+stored as `phase.summary` on the plan doc (capped at
+`compaction.phaseTokens`, default 10k). Future phases' seeds include
+shipped phases' summaries verbatim — phase N walks in pre-loaded with
+what phases 1…N−1 actually discovered, not just what was originally
+planned.
+
+`compaction.summaryTokens` (default 100k) bounds the cumulative size of
+carry-forward summaries in the seed. Soft-warns when exceeded; not
+enforced — dropping older summaries silently would lose the discovery
+signal.
+
 ## Worktree lifecycle
 
 A phase has a worktree iff its status is `active` or `needs-attention`.
@@ -289,3 +346,8 @@ Manual `/compact` still works (uses pi's default summary) as an escape hatch.
 - `/park`, `/ship`, `/sync` require `gh` CLI to be authenticated.
 - Branches are never deleted by this extension — only worktree directories.
 - This extension replaces `pi-ext-develop`; do not run both in one session.
+- Plans created before per-phase sessions landed don't have
+  `planSessionPath` / `phase.sessionPath` recorded. On first re-entry
+  (`/plan resume <slug>` or `/implement` on an in-flight phase) a
+  fresh session is started — a one-time loss of prior chat context,
+  not a crash. The plan doc on disk is unchanged.

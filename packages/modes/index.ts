@@ -52,7 +52,7 @@ import {
 	scanForSecrets,
 } from "./helpers.js";
 import {
-	appendPlanToImplementCompaction,
+	buildPhaseEndSummaryPreamble,
 	buildPhaseSliceCompactionResult,
 	computeContextBuckets,
 	DEFAULT_PHASE_TOKENS,
@@ -60,11 +60,13 @@ import {
 	DEFAULT_SUMMARY_TOKENS,
 	DEFAULT_WORKING_TOKENS,
 	findLatestCompactionSummary,
-	hasPhaseEndCompaction,
-	hasPlanToImplementCompaction,
 	type SummariseFn,
 	shouldCompactMidPhase,
 } from "./plan/compaction.js";
+import {
+	buildCompletionPrompt,
+	decideFromCompletionChoice,
+} from "./plan/completion.js";
 import {
 	classifyImplementContext,
 	planPickerView,
@@ -83,6 +85,7 @@ import {
 	TERMINAL_STATUSES,
 	WORKTREE_STATUSES,
 } from "./plan/schema.js";
+import { seedPlanDoc } from "./plan/seed.js";
 import { shipPhase } from "./plan/ship.js";
 import {
 	STEERING_CLASSIFIER,
@@ -303,6 +306,30 @@ export default function (pi: ExtensionAPI) {
 		pi.appendEntry(STATE_ENTRY, modeState satisfies ModeState);
 	}
 
+	/**
+	 * Stamp the active session as this plan's planning session if no
+	 * `planSessionPath` is recorded yet. Idempotent: re-running `/plan`
+	 * on a plan whose path is already set is a no-op (we don't want to
+	 * overwrite the original planning session with whatever session
+	 * happens to be active now).
+	 *
+	 * Best-effort: silently skips if `getSessionFile()` returns undefined
+	 * (ephemeral session) or the plan can't be loaded.
+	 */
+	function recordPlanSessionPathIfMissing(
+		ctx: ExtensionContext,
+		slug: string,
+	): void {
+		const plan = loadPlan(slug);
+		if (!plan) return;
+		if (plan.planSessionPath) return;
+		const path = ctx.sessionManager.getSessionFile();
+		if (!path) return;
+		plan.planSessionPath = path;
+		plan.updatedAt = new Date().toISOString();
+		savePlan(plan);
+	}
+
 	function hydrateMode(ctx: ExtensionContext): void {
 		let latest: ModeState | undefined;
 		for (const entry of ctx.sessionManager.getEntries()) {
@@ -424,7 +451,7 @@ export default function (pi: ExtensionAPI) {
 
 	async function doPlanResume(
 		slug: string,
-		ctx: ExtensionContext,
+		ctx: ExtensionCommandContext,
 	): Promise<void> {
 		// Only accept slugs that the index already knows about — prevents
 		// /plan resume from acting as an arbitrary-path probe.
@@ -475,6 +502,29 @@ export default function (pi: ExtensionAPI) {
 			savePlan(plan);
 		}
 
+		// If the plan has a recorded planning-session path and we're not
+		// already in it, switch sessions before flipping mode/state. The
+		// post-switch work runs inside `withSession` because pi invalidates
+		// the previous ctx after replacement.
+		const targetPath = plan.planSessionPath;
+		const currentPath = ctx.sessionManager.getSessionFile();
+		if (targetPath && targetPath !== currentPath) {
+			await ctx.switchSession(targetPath, {
+				withSession: async (newCtx) => {
+					applyPlanResumeState(newCtx, plan, slug);
+				},
+			});
+			return;
+		}
+
+		applyPlanResumeState(ctx, plan, slug);
+	}
+
+	function applyPlanResumeState(
+		ctx: ExtensionContext,
+		plan: Plan,
+		slug: string,
+	): void {
 		if (!modeState) {
 			modeState = {
 				mode: "plan",
@@ -1641,42 +1691,22 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Compaction wiring ------------------------------------------------
 	//
-	// Two flows live here transitionally:
+	// Mid-phase compaction is driven by `ctx.compact()` from the `turn_end`
+	// trigger; the actual summary is built in the `session_before_compact`
+	// handler registered below. Pi performs `appendCompaction` AND the
+	// `agent.state.messages` rebuild that the legacy direct-write path
+	// skipped.
 	//
-	//   - Mid-phase compaction (post-fix): driven by `ctx.compact()` from
-	//     the `turn_end` trigger; the actual summary is built in the
-	//     `session_before_compact` handler registered below. Pi performs
-	//     `appendCompaction` AND the `agent.state.messages` rebuild that
-	//     the legacy direct-write path skipped.
-	//
-	//   - Plan→implement compaction (legacy): still calls
-	//     `sm.appendCompaction` directly via `compactPlanToImplement`.
-	//     Carries the same agent.state.messages-rebuild bug as the
-	//     pre-fix mid-phase path; deleted in Phase 2 of the plan in
-	//     favour of a deterministic plan-doc seed.
-	//
-	//   - Phase-end compaction at /ship: deleted (`compactPhaseEnd` is a
-	//     stub). Per-phase summaries move onto the plan doc in Phase 2.
+	// Plan→implement and phase-end compactions are gone. Plan→implement is
+	// replaced by `seedPlanDoc` in the new auto session (see
+	// `plan/seed.ts`); phase-end is replaced by `phase.summary` written to
+	// the plan doc at /ship time (a follow-up commit on this branch).
 	//
 	// See plan/compaction.ts for the byte-stable prefix invariant and the
 	// three-bucket budget model.
 
 	/** Once-per-session warning when no normal-tier model is configured. */
 	let warnedNoCompactionModel = false;
-
-	/**
-	 * True when ctx.sessionManager exposes the mutation methods used by
-	 * the LEGACY plan→implement compaction path (`appendCompaction`,
-	 * `appendCustomEntry`). The mid-phase path no longer cares — it goes
-	 * through `ctx.compact()` (the documented pi API) and pi handles all
-	 * mutations server-side.
-	 *
-	 * The probe at session_start flips this to false on a pi version
-	 * that's tightened the contract; the legacy plan→implement path then
-	 * silently no-ops and pi's auto-compaction takes over. Phase 2 of the
-	 * plan deletes both the legacy path and this gate.
-	 */
-	let compactionApiAvailable = true;
 
 	/**
 	 * Re-entrancy guard. Mid-phase compaction runs from the `turn_end`
@@ -1719,37 +1749,6 @@ export default function (pi: ExtensionAPI) {
 				onError: (err) => reject(err),
 			});
 		});
-	}
-
-	/**
-	 * The single supported entrypoint for the wider SessionManager
-	 * surface. ExtensionContext.sessionManager is publicly typed as
-	 * ReadonlySessionManager, but the runtime value (in current
-	 * pi-coding-agent versions) is the full SessionManager — we need
-	 * appendCompaction / appendCustomEntry, neither exposed by the public
-	 * type. Centralising the cast here means there's exactly one site to
-	 * audit when pi's contract changes; probeCompactionApi() runs at
-	 * session_start and flips compactionApiAvailable to false if the
-	 * required methods are missing, downgrading modes to a no-op rather
-	 * than throwing.
-	 */
-	function getMutableSessionManager(ctx: ExtensionContext): SessionManager {
-		return ctx.sessionManager as unknown as SessionManager;
-	}
-
-	function probeCompactionApi(ctx: ExtensionContext): void {
-		const sm = ctx.sessionManager as unknown as Partial<SessionManager>;
-		const ok =
-			typeof sm.appendCompaction === "function" &&
-			typeof sm.appendCustomEntry === "function";
-		if (!ok) {
-			compactionApiAvailable = false;
-			notify(
-				ctx,
-				"phase-boundary compaction disabled: pi sessionManager does not expose append methods on this version (falling back to pi auto-compaction)",
-				"warning",
-			);
-		}
 	}
 
 	function readCompactionNumber(
@@ -1871,62 +1870,6 @@ export default function (pi: ExtensionAPI) {
 		};
 	}
 
-	async function compactPlanToImplement(
-		ctx: ExtensionCommandContext,
-		plan: Plan,
-		activePhaseId: string,
-	): Promise<void> {
-		if (!compactionApiAvailable) return;
-		if (modeState?.mode === "hack") return;
-		// All compaction orchestrators route through getMutableSessionManager
-		// to centralise the ReadonlySessionManager cast; see its docstring
-		// for the cast rationale and the probe that protects it.
-		const sm = getMutableSessionManager(ctx);
-		if (hasPlanToImplementCompaction(sm)) return;
-
-		const summarise = await buildSummariseFn(ctx);
-		if (!summarise) {
-			if (!warnedNoCompactionModel) {
-				warnedNoCompactionModel = true;
-				notify(
-					ctx,
-					"compaction skipped: no normal-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
-					"warning",
-				);
-			}
-			return;
-		}
-
-		const id = await appendPlanToImplementCompaction({
-			sm,
-			plan,
-			summarise,
-			maxTokens: readPhaseTokensSetting(ctx),
-			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
-			activePhaseId,
-			signal: ctx.signal,
-		});
-		if (id !== null) {
-			notify(ctx, "context compacted: plan → implement", "info");
-		} else {
-			notify(ctx, "compaction skipped (summariser failed)", "warning");
-		}
-	}
-
-	async function compactPhaseEnd(
-		_ctx: ExtensionCommandContext,
-		_plan: Plan,
-		_phaseId: string,
-	): Promise<void> {
-		// Phase-end compaction has been deleted in favour of the new
-		// per-phase summary written to the plan doc at /ship time (see
-		// Phase 2 of the plan). The legacy implementation wrote to the
-		// auto session's rolling summary via sm.appendCompaction — which,
-		// like the mid-phase path, never refreshed agent.state.messages
-		// and therefore had no runtime effect. Kept as a stub so existing
-		// call sites compile until Phase 2 removes them entirely.
-	}
-
 	/**
 	 * Mid-phase compaction. Fires from the `turn_end` hook when context
 	 * tokens exceed `workingTokens` (after subtracting summary cost) in
@@ -1956,7 +1899,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		} catch (err) {
 			// `compactAwait` rejects when (a) the summariser fails / no
-			// fast-tier model is configured (the handler returns
+			// normal-tier model is configured (the handler returns
 			// `{ cancel: true }`), (b) pi's `prepareCompaction` returned
 			// undefined ("Already compacted" / "Nothing to compact"), or
 			// (c) the LLM call errored. None of these are crash-worthy for
@@ -2009,6 +1952,7 @@ export default function (pi: ExtensionAPI) {
 		const classified = classifyImplementContext(plan);
 		let branch: string | null;
 		let phase: PlanPhase | null = null;
+		let branchPlan: ImplementBranchPlan | null = null;
 		if (classified.kind === "refuse-no-actionable") {
 			// Plan exists but every phase is shipped/abandoned. Refuse rather
 			// than silently creating an off-plan branch from the description;
@@ -2043,37 +1987,39 @@ export default function (pi: ExtensionAPI) {
 				["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
 				{ cwd: ctx.cwd },
 			).ok;
-			const plan_: ImplementBranchPlan = planImplementBranch(
+			branchPlan = planImplementBranch(
 				plan,
 				phase,
 				defaultBranch,
 				branchExists,
 			);
 
-			if (plan_.kind === "abort") {
-				notify(ctx, plan_.reason, "error");
+			if (branchPlan.kind === "abort") {
+				notify(ctx, branchPlan.reason, "error");
 				return;
 			}
 
-			if (plan_.kind === "create") {
+			if (branchPlan.kind === "create") {
 				// First-time activation. Hop to the picked base before creating
 				// the phase branch so it forks from the right ancestor; for the
 				// linear case the base IS the default branch we're already on,
 				// so no extra checkout fires.
-				if (plan_.baseBranch !== defaultBranch) {
-					const baseCo = runCommand("git", ["checkout", plan_.baseBranch], {
-						cwd: ctx.cwd,
-					});
+				if (branchPlan.baseBranch !== defaultBranch) {
+					const baseCo = runCommand(
+						"git",
+						["checkout", branchPlan.baseBranch],
+						{ cwd: ctx.cwd },
+					);
 					if (!baseCo.ok) {
 						notify(
 							ctx,
-							`checkout base ${plan_.baseBranch} failed: ${baseCo.stderr.trim()} — falling back to ${defaultBranch}`,
+							`checkout base ${branchPlan.baseBranch} failed: ${baseCo.stderr.trim()} — falling back to ${defaultBranch}`,
 							"warning",
 						);
 					} else {
 						notify(
 							ctx,
-							`forking ${branch} from ${plan_.baseBranch} (predecessor in flight)`,
+							`forking ${branch} from ${branchPlan.baseBranch} (predecessor in flight)`,
 							"info",
 						);
 					}
@@ -2122,11 +2068,80 @@ export default function (pi: ExtensionAPI) {
 			}
 		} else {
 			// No plan at all — legacy description-derived branch. /implement
-			// outside a planned context is intentionally supported.
+			// outside a planned context is intentionally supported. No
+			// session lifecycle for this case — the work continues in the
+			// current session.
 			branch = await createFeatureBranch(ctx, description);
 			if (!branch) return;
+			await launchExecution(ctx, null, null, branch);
+			return;
 		}
 
+		// At this point we have a plan + phase + branch and have done the
+		// git lifecycle work. Now drive the session lifecycle.
+		//
+		//   - First activation (`create`) or orphan resume (no recorded
+		//     `phase.sessionPath`): `ctx.newSession` with `seedPlanDoc` in
+		//     setup. Capture the new session's path onto `phase.sessionPath`
+		//     inside `withSession` and save the plan.
+		//   - Resume with recorded session: `ctx.switchSession` to the
+		//     stored path; pi rebinds and we run `launchExecution` in
+		//     `withSession`.
+		//
+		// All post-replacement work (setMode, persist, sendMessage)
+		// happens inside `withSession` because the previous ctx is stale
+		// after session replacement.
+		if (plan && phase) {
+			const planRef = plan;
+			const phaseRef = phase;
+			const branchRef = branch;
+			const needsNewSession =
+				branchPlan?.kind === "create" || !phase.sessionPath;
+
+			if (needsNewSession) {
+				await ctx.newSession({
+					setup: async (sm) => {
+						seedPlanDoc(sm, planRef, phaseRef);
+					},
+					withSession: async (newCtx) => {
+						const path = newCtx.sessionManager.getSessionFile();
+						if (path) {
+							phaseRef.sessionPath = path;
+							phaseRef.updatedAt = new Date().toISOString();
+							planRef.updatedAt = phaseRef.updatedAt;
+							savePlan(planRef);
+						}
+						await launchExecution(newCtx, planRef, phaseRef, branchRef);
+					},
+				});
+			} else if (phase.sessionPath) {
+				await ctx.switchSession(phase.sessionPath, {
+					withSession: async (newCtx) => {
+						await launchExecution(newCtx, planRef, phaseRef, branchRef);
+					},
+				});
+			}
+		}
+	}
+
+	/**
+	 * Post-session-replacement work shared by /implement's create, resume,
+	 * and no-plan paths. Receives the (possibly newly-replaced) ctx and
+	 * runs everything that needs the post-replacement session: mode flip,
+	 * persistence, the followUp prompt that kicks the agent's first turn.
+	 *
+	 * For planned execution the seed entry (written in `setup`) carries
+	 * the plan/tasks/instruction footer, so the followUp is minimal — it
+	 * exists only to trigger the first agent turn. The legacy off-plan
+	 * path keeps the longer free-text followUp.
+	 */
+	async function launchExecution(
+		ctx: ExtensionContext,
+		plan: Plan | null,
+		phase: PlanPhase | null,
+		branch: string,
+	): Promise<void> {
+		if (!modeState) return;
 		modeState.branch = branch;
 		modeState.stage = "executing";
 		pi.setSessionName(branch);
@@ -2143,27 +2158,18 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 
-		// Compact the plan→implement transition before the agent's first
-		// turn, so the planning conversation collapses into a stable
-		// `## Plan` summary section. See plan/compaction.ts for cache
-		// rationale. Only meaningful when we have an active phase —
-		// without it the orchestrator has no anchor for the marker.
-		if (plan && phase) {
-			await compactPlanToImplement(ctx, plan, phase.id);
-		}
+		const content = phaseId
+			? `Begin executing phase \`${phaseId}\`. The plan and active tasks are loaded as session context.`
+			: `Feature branch \`${branch}\` is ready. ${
+					hasTasks
+						? "Use `plan_task(toggle, phaseId, taskId)` to mark each task done as you complete it."
+						: "Edit files, run tests, and stop when the change is clean."
+				}`;
 
 		pi.sendMessage(
 			{
 				customType: EXT_ID,
-				content:
-					`Feature branch \`${branch}\` is ready. ` +
-					(phaseId
-						? `You are working on phase \`${phaseId}\`. Only execute that phase's tasks. ` +
-							`When all of its tasks are done, run /ship — do NOT start the next phase. `
-						: "") +
-					(hasTasks
-						? `Use \`plan_task(toggle, phaseId, taskId)\` to mark each task done as you complete it.`
-						: `Edit files, run tests, and stop when the change is clean.`),
+				content,
 				display: false,
 				details: { branch, phaseId },
 			},
@@ -2232,9 +2238,107 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 
-		// Phase-end compaction has been deleted; the per-phase summary
-		// going onto the plan doc lands in Phase 2.
-		await compactPhaseEnd(ctx, plan, phase.id);
+		// Generate the phase-end summary that future phases' seeds will
+		// carry forward. Soft-fail: on summariser/model issues, the phase
+		// just ships without a summary block in subsequent seeds.
+		await writePhaseSummary(ctx, plan, phase);
+
+		// If this was the last actionable phase, prompt the user for what
+		// to do next: stay / start a fresh plan / archive.
+		await runCompletionPromptIfDone(ctx, plan);
+	}
+
+	async function runCompletionPromptIfDone(
+		ctx: ExtensionCommandContext,
+		plan: Plan,
+	): Promise<void> {
+		const prompt = buildCompletionPrompt(plan, ctx.hasUI);
+		if (!prompt) return;
+
+		const choice = await ctx.ui.select(prompt.title, prompt.options);
+		const decision = decideFromCompletionChoice(choice);
+		if (decision.action === "stay") return;
+
+		if (decision.action === "archive") {
+			await doPlanArchive(plan.slug, ctx);
+			return;
+		}
+
+		// `newPlan`: drop the current plan binding so the next /plan call
+		// creates a fresh plan rather than rebinding the just-completed one.
+		if (modeState) {
+			modeState.currentPlanSlug = null;
+			persist();
+		}
+		notify(ctx, "plan complete — run /plan to start the next one", "info");
+	}
+
+	/**
+	 * At /ship, summarise the just-shipped phase's auto session and store
+	 * the result on `phase.summary`. Future phases' `seedPlanDoc` includes
+	 * shipped phases' summaries verbatim, so phase N learns from phase
+	 * N-1's discoveries without ingesting the raw auto-session.
+	 *
+	 * Idempotent: re-runs of /ship on a phase that already has a summary
+	 * are a no-op (manual edits survive too).
+	 *
+	 * Failure modes are soft: missing normal-tier model, summariser error,
+	 * or empty session all leave `phase.summary` unset and emit a
+	 * warning. /ship continues normally; subsequent seeds gracefully omit
+	 * the missing-summary block.
+	 *
+	 * Does NOT call `ctx.compact()` or `sm.appendCompaction`. The auto
+	 * session is left untouched on disk; the summary is purely a plan-doc
+	 * artefact.
+	 */
+	async function writePhaseSummary(
+		ctx: ExtensionCommandContext,
+		plan: Plan,
+		phase: PlanPhase,
+	): Promise<void> {
+		if (phase.summary) return;
+
+		const summarise = await buildSummariseFn(ctx);
+		if (!summarise) {
+			notify(
+				ctx,
+				"phase summary skipped: no normal-tier model configured",
+				"warning",
+			);
+			return;
+		}
+
+		// `buildSessionContext` is on the full SessionManager (not on the
+		// public ReadonlySessionManager type pi exposes). Cast — the runtime
+		// value is always a full SessionManager in pi-coding-agent.
+		const sm = ctx.sessionManager as unknown as SessionManager;
+		const messages = sm
+			.buildSessionContext()
+			.messages.filter((m) =>
+				["user", "assistant", "toolResult", "compactionSummary"].includes(
+					(m as { role?: string }).role ?? "",
+				),
+			);
+		if (messages.length === 0) return;
+
+		const maxTokens = readPhaseTokensSetting(ctx);
+		const preamble = buildPhaseEndSummaryPreamble(plan, phase, maxTokens);
+		const text = await summarise({
+			messages: messages as Parameters<SummariseFn>[0]["messages"],
+			preamble,
+			maxTokens,
+			signal: ctx.signal,
+		});
+		if (text === null) {
+			notify(ctx, "phase summary skipped: summariser failed", "warning");
+			return;
+		}
+
+		phase.summary = text.trim();
+		phase.updatedAt = new Date().toISOString();
+		plan.updatedAt = phase.updatedAt;
+		savePlan(plan);
+		notify(ctx, `phase ${phase.id} summary written (≤${maxTokens}t)`, "info");
 	}
 
 	async function doSync(ctx: ExtensionCommandContext): Promise<void> {
@@ -2863,7 +2967,6 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		hydrateMode(ctx);
 		hydratePlan(ctx);
-		probeCompactionApi(ctx);
 		summaryBudgetWarnFired = false;
 
 		// Fire-and-forget sync of PR state for the active plan. Reports
@@ -3354,12 +3457,11 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const fire = shouldCompactMidPhase({
-			// `compactionApiAvailable` no longer gates the new mid-phase
-			// path — ctx.compact() is a public, guaranteed pi API. The flag
-			// still gates the legacy `compactPlanToImplement` path until
-			// Phase 2 of the plan removes it. Pass `true` here so the
-			// trigger isn't accidentally disabled by a probe failure that
-			// only affects the legacy path.
+			// `compactionApiAvailable` is unconditionally true: ctx.compact
+			// is part of pi's documented public API and our peer dep version
+			// guarantees it. The flag is kept on `MidPhaseTriggerInput` for
+			// back-compat with the existing tests but no longer gates real
+			// behaviour.
 			compactionApiAvailable: true,
 			mode: modeState.mode,
 			compactionInFlight,
@@ -3572,6 +3674,43 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
+			// If a plan for this repo already has a recorded planning session
+			// and we're not currently in it, switchSession to land back in
+			// the planning context (typical auto→plan transition). The
+			// post-switch session has its own STATE_ENTRY which session_start
+			// hydrates; we just flip mode + fire the optional followUp inside
+			// withSession.
+			const existingSlug = modeState?.currentPlanSlug ?? null;
+			const existingPlan = existingSlug ? loadPlan(existingSlug) : null;
+			const targetPath = existingPlan?.planSessionPath;
+			const currentPath = ctx.sessionManager.getSessionFile();
+			if (targetPath && targetPath !== currentPath) {
+				const description = args?.trim();
+				await ctx.switchSession(targetPath, {
+					withSession: async (newCtx) => {
+						setMode("plan", newCtx);
+						persist();
+						updateWidget(newCtx);
+						notify(
+							newCtx,
+							`plan mode (resumed planning session for ${existingSlug})`,
+							"info",
+						);
+						if (description) {
+							pi.sendMessage(
+								{
+									customType: EXT_ID,
+									content: description,
+									display: false,
+								},
+								{ deliverAs: "followUp", triggerTurn: true },
+							);
+						}
+					},
+				});
+				return;
+			}
+
 			const defaultBranch = await syncToDefault(ctx);
 			if (!defaultBranch) return;
 
@@ -3580,6 +3719,8 @@ export default function (pi: ExtensionAPI) {
 			}
 			const priorTools = modeState?.priorTools ?? pi.getActiveTools();
 
+			const planSlug = ensurePlanForRepo(ctx);
+
 			modeState = {
 				mode: "plan",
 				stage: "planning",
@@ -3587,13 +3728,22 @@ export default function (pi: ExtensionAPI) {
 				defaultBranch,
 				priorTools,
 				planText: null,
-				currentPlanSlug: ensurePlanForRepo(ctx),
+				currentPlanSlug: planSlug,
 			};
 
 			persist();
 			applyModeTools();
 			updateWidget(ctx);
 			notify(ctx, `plan mode on ${defaultBranch}`, "info");
+
+			// Record the active session as this plan's planning session if
+			// one isn't recorded yet. The current session was either created
+			// by the user via `pi` or carried over via `pi -c`/`/resume`;
+			// either way it's the session this plan was authored in.
+			//
+			// Subsequent auto→plan transitions and `/plan resume <slug>`
+			// will `switchSession` back to this path.
+			recordPlanSessionPathIfMissing(ctx, planSlug);
 
 			if (args?.trim()) {
 				pi.sendMessage(
