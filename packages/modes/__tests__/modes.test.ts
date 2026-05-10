@@ -321,3 +321,37 @@ describe("descriptionFromLastAssistant", () => {
 		expect(descriptionFromLastAssistant(ctx)).toBeNull();
 	});
 });
+
+import { resolveDefaultMode } from "../index.js";
+
+describe("resolveDefaultMode", () => {
+	it("returns plan + valid for undefined (no setting)", () => {
+		expect(resolveDefaultMode(undefined)).toEqual({
+			mode: "plan",
+			valid: true,
+		});
+	});
+
+	it("returns plan + valid for null", () => {
+		expect(resolveDefaultMode(null)).toEqual({ mode: "plan", valid: true });
+	});
+
+	it("accepts each known mode", () => {
+		expect(resolveDefaultMode("plan")).toEqual({ mode: "plan", valid: true });
+		expect(resolveDefaultMode("ask")).toEqual({ mode: "ask", valid: true });
+		expect(resolveDefaultMode("auto")).toEqual({ mode: "auto", valid: true });
+		expect(resolveDefaultMode("hack")).toEqual({ mode: "hack", valid: true });
+	});
+
+	it("rejects unknown strings, falls back to plan + invalid", () => {
+		expect(resolveDefaultMode("yolo")).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode("")).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode("AUTO")).toEqual({ mode: "plan", valid: false });
+	});
+
+	it("rejects non-strings (number, object), falls back to plan + invalid", () => {
+		expect(resolveDefaultMode(42)).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode({})).toEqual({ mode: "plan", valid: false });
+		expect(resolveDefaultMode([])).toEqual({ mode: "plan", valid: false });
+	});
+});
