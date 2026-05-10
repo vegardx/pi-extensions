@@ -1,5 +1,5 @@
 /**
- * Steering-message preamble for auto mode.
+ * Steering-message classifier for auto mode.
  *
  * When the user types a message during /implement (auto mode), pi delivers
  * it as the most recent and most specific instruction in context. The
@@ -7,14 +7,17 @@
  * active phase — recency and specificity beat the system prompt's
  * "work the plan" framing.
  *
- * This module produces a preamble that wraps the user's message with the
- * current phase/task context and four routing options, so the agent has
- * to *decide* whether the message refines the plan or interrupts it,
- * instead of silently steamrolling whatever it was doing.
+ * To force the agent to *decide* between (a) refining the plan, (b) adding
+ * a task/phase, or (c) acting on it now, we inject a short routing
+ * classifier on the next `before_agent_start`. The classifier is a hidden
+ * customType message (display: false) — the user only sees their own text.
  *
- * The wrapper is only applied in auto mode while a plan with an active
- * (or needs-attention) phase exists. Slash commands, skill invocations,
- * extension-injected messages, and empty input pass through unchanged.
+ * The phase + task list is already injected by the auto-mode preamble in
+ * `before_agent_start`, so this classifier deliberately does NOT repeat
+ * it; the agent is told to consult the plan via `plan_view` if needed.
+ *
+ * Slash commands, skill invocations, extension-injected messages, and
+ * empty input are never wrapped — see `shouldInjectSteeringClassifier`.
  */
 
 import type { Phase, Plan } from "./schema.js";
@@ -34,51 +37,52 @@ function inflightPhase(plan: Plan): Phase | null {
 	return plan.phases.find((p) => WORKTREE_STATUSES.includes(p.status)) ?? null;
 }
 
-function renderTaskList(phase: Phase): string {
-	if (phase.tasks.length === 0) return "  (no tasks yet)";
-	return phase.tasks
-		.map((t) => `  ${t.done ? "✓" : "○"} ${t.id} — ${t.title}`)
-		.join("\n");
+/**
+ * Pure gate. True when the next `before_agent_start` should append the
+ * routing classifier to the auto-mode preamble.
+ *
+ * Returns false for:
+ *   - non-auto modes
+ *   - extension-sourced messages (sendMessage / sendUserMessage)
+ *   - empty / whitespace-only text
+ *   - slash commands (skills, templates, /ship etc. — pi routes these)
+ *   - no active plan
+ *   - no in-flight phase
+ *   - in-flight phase whose tasks are all complete (awaiting /ship —
+ *     no routing decision left to make; classifier would only confuse)
+ *
+ * A phase with zero tasks defined is NOT skipped — the agent should
+ * consider routing the message into a new task.
+ */
+export function shouldInjectSteeringClassifier(input: SteeringInput): boolean {
+	if (input.mode !== "auto") return false;
+	if (input.source === "extension") return false;
+	const text = input.text;
+	if (text.trim().length === 0) return false;
+	if (text.trimStart().startsWith("/")) return false;
+	if (!input.plan) return false;
+	const phase = inflightPhase(input.plan);
+	if (!phase) return false;
+	if (phase.tasks.length > 0 && phase.tasks.every((t) => t.done)) return false;
+	return true;
 }
 
 /**
- * Build the wrapped message text. Returns null when the message should
- * pass through unchanged (default behaviour for everything outside auto
- * mode with an in-flight phase, and for in-flight phases whose tasks are
- * all complete — the latter is "done with the plan, awaiting /ship" and
- * the routing prompt would only confuse the agent).
+ * Routing classifier appended to the auto-mode preamble when
+ * `shouldInjectSteeringClassifier` returns true. Stable, parameter-free
+ * so the prompt prefix stays byte-identical across turns and the prompt
+ * cache keeps hitting.
+ *
+ * Refers the agent to `plan_view` rather than embedding the phase + task
+ * list — the auto-mode preamble already carries that context, and
+ * duplicating it costs tokens on every steering turn.
  */
-export function buildSteeringPreamble(input: SteeringInput): string | null {
-	if (input.mode !== "auto") return null;
-	if (input.source === "extension") return null;
-	const text = input.text;
-	if (text.trim().length === 0) return null;
-	// Slash commands, skills, and templates are routed by pi before the
-	// agent sees them — wrapping would corrupt that routing.
-	if (text.trimStart().startsWith("/")) return null;
-	if (!input.plan) return null;
-	const phase = inflightPhase(input.plan);
-	if (!phase) return null;
-	// Phase exists with tasks, all done → user is waiting on /ship; no
-	// routing decision left to make. A phase with zero tasks at all is a
-	// different shape (plan not yet broken down) and we still wrap so the
-	// agent can route the message into a new task.
-	if (phase.tasks.length > 0 && phase.tasks.every((t) => t.done)) return null;
-
-	const preamble = [
-		"[modes: steering message — before acting, classify it:",
-		"  1. refines an active task → plan_task(update, ...) and continue",
-		"  2. is a new task in the active phase → plan_task(add, ...) and continue",
-		"  3. is a new phase → plan_phase(add, ...) and continue current phase",
-		"  4. is an immediate course correction to the work in flight → act on it now",
-		"State the chosen option in one line, then proceed.",
-		`Active phase: ${phase.id} — ${phase.title} (${phase.status})`,
-		"Tasks:",
-		renderTaskList(phase),
-		"]",
-		"",
-		text,
-	].join("\n");
-
-	return preamble;
-}
+export const STEERING_CLASSIFIER = [
+	"The user just sent a free-text message. Before acting, classify it",
+	"(consult plan_view if you need the current phase/task state):",
+	"  1. refines an active task \u2192 plan_task(update, ...) and continue",
+	"  2. new task in the active phase \u2192 plan_task(add, ...) and continue",
+	"  3. new phase \u2192 plan_phase(add, ...) and continue current phase",
+	"  4. immediate course correction \u2192 act on it now",
+	"State the chosen option in one line, then proceed.",
+].join("\n");

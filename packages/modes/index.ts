@@ -80,7 +80,10 @@ import {
 	WORKTREE_STATUSES,
 } from "./plan/schema.js";
 import { shipPhase } from "./plan/ship.js";
-import { buildSteeringPreamble } from "./plan/steering.js";
+import {
+	STEERING_CLASSIFIER,
+	shouldInjectSteeringClassifier,
+} from "./plan/steering.js";
 import {
 	activePlanForRepo,
 	loadPlan,
@@ -260,6 +263,13 @@ export default function (pi: ExtensionAPI) {
 	// Questions queued by the `ask` tool during a single agent turn.
 	let pendingQuestions: PendingQuestion[] = [];
 	let nextQuestionId = 1;
+
+	// True when the user typed a free-text auto-mode message that should
+	// receive the routing classifier. Set in the `input` handler and
+	// consumed (cleared) in the next `before_agent_start`. Lives off the
+	// session so it doesn't survive restarts — the classifier is only
+	// useful for the immediate next turn.
+	let pendingSteeringClassifier = false;
 
 	// Snapshot of the plan structure at the start of the current plan-mode
 	// turn. Used by the agent_end picker gate to decide whether the plan
@@ -2696,25 +2706,40 @@ export default function (pi: ExtensionAPI) {
 			const plan = currentPlan();
 			const tasks = activeTasks(plan);
 			const phase = activePhase(plan);
-			if (tasks.length === 0 || modeState.stage !== "executing") return;
+			if (tasks.length === 0 || modeState.stage !== "executing") {
+				// Even when the auto preamble itself doesn't fire (e.g. no
+				// active tasks), we still consume any pending classifier flag
+				// so it doesn't leak into the next turn.
+				pendingSteeringClassifier = false;
+				return;
+			}
 			const remaining = tasks.filter(({ task }) => !task.done);
-			if (remaining.length === 0) return;
+			if (remaining.length === 0) {
+				pendingSteeringClassifier = false;
+				return;
+			}
+			const includeClassifier = pendingSteeringClassifier;
+			pendingSteeringClassifier = false;
+			const lines: string[] = [
+				"[AUTO MODE — executing plan]",
+				"",
+				`Active phase: \`${phase?.id ?? "(unknown)"}\` — only this phase's tasks are in scope.`,
+				"Do NOT start work on other phases. When all of this phase's tasks are done, run /ship.",
+				"",
+				"Remaining tasks (titles short — see plan_view for full body):",
+				...remaining.map(({ task }) => `  ${task.title}`),
+				"",
+				"Execute each task in order. Call plan_task(toggle, phaseId, taskId)",
+				"after completing each one. Do not stop to ask for confirmation unless",
+				"genuinely stuck.",
+			];
+			if (includeClassifier) {
+				lines.push("", STEERING_CLASSIFIER);
+			}
 			return {
 				message: {
 					customType: CUSTOM_MODE_CONTEXT,
-					content: [
-						"[AUTO MODE — executing plan]",
-						"",
-						`Active phase: \`${phase?.id ?? "(unknown)"}\` — only this phase's tasks are in scope.`,
-						"Do NOT start work on other phases. When all of this phase's tasks are done, run /ship.",
-						"",
-						"Remaining tasks (titles short — see plan_view for full body):",
-						...remaining.map(({ task }) => `  ${task.title}`),
-						"",
-						"Execute each task in order. Call plan_task(toggle, phaseId, taskId)",
-						"after completing each one. Do not stop to ask for confirmation unless",
-						"genuinely stuck.",
-					].join("\n"),
+					content: lines.join("\n"),
 					details: { modeMarker: "auto" as const },
 					display: false,
 				},
@@ -2740,29 +2765,31 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	// ---- Steering message wrapping ---------------------------------------
+	// ---- Steering classifier flag ----------------------------------------
 	//
 	// In auto mode, a free-text user message during /implement arrives as
 	// the most-recent / most-specific instruction and the agent reliably
 	// pivots to it. We don't *block* steering — sometimes the user really
-	// does want an immediate course correction — but we wrap it with the
-	// active phase's task list and a 4-way routing prompt so the agent has
-	// to decide between (a) refining the plan, (b) adding a task/phase,
-	// or (c) acting on it now.
+	// does want an immediate course correction — but we tag the message so
+	// the next `before_agent_start` appends a 4-way routing classifier to
+	// the auto-mode preamble (display: false; user only sees their own text).
 	//
 	// Slash commands, skills, templates, and extension-injected messages
-	// pass through unchanged — see buildSteeringPreamble for the rules.
+	// pass through unchanged — see shouldInjectSteeringClassifier.
 	pi.on("input", async (event) => {
+		pendingSteeringClassifier = false;
 		if (!modeState) return { action: "continue" };
-		const plan = currentPlan();
-		const wrapped = buildSteeringPreamble({
-			text: event.text,
-			source: event.source,
-			mode: modeState.mode,
-			plan,
-		});
-		if (wrapped === null) return { action: "continue" };
-		return { action: "transform", text: wrapped, images: event.images };
+		if (
+			shouldInjectSteeringClassifier({
+				text: event.text,
+				source: event.source,
+				mode: modeState.mode,
+				plan: currentPlan(),
+			})
+		) {
+			pendingSteeringClassifier = true;
+		}
+		return { action: "continue" };
 	});
 
 	// ---- Tool call enforcement --------------------------------------------
