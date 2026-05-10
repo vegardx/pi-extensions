@@ -1767,7 +1767,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const before = plan.phases.map((p) => ({ id: p.id, status: p.status }));
-		syncPlanFromRemote(plan, ctx);
+		const { checked, failed } = syncPlanFromRemote(plan, ctx);
 		plan.lastSyncedAt = new Date().toISOString();
 		plan.updatedAt = plan.lastSyncedAt;
 		savePlan(plan);
@@ -1782,10 +1782,24 @@ export default function (pi: ExtensionAPI) {
 					: null;
 			})
 			.filter((s): s is string => s !== null);
+		const failureSuffix =
+			failed > 0
+				? ` (${failed}/${checked} PR check${checked === 1 ? "" : "s"} failed — is gh authenticated?)`
+				: "";
 		if (changes.length === 0) {
-			notify(ctx, "sync complete — no changes", "info");
+			notify(
+				ctx,
+				checked === 0
+					? "sync complete — no PRs in flight"
+					: `sync complete — no changes${failureSuffix}`,
+				failed > 0 ? "warning" : "info",
+			);
 		} else {
-			notify(ctx, `sync complete:\n  ${changes.join("\n  ")}`, "info");
+			notify(
+				ctx,
+				`sync complete:\n  ${changes.join("\n  ")}${failureSuffix}`,
+				failed > 0 ? "warning" : "info",
+			);
 		}
 	}
 
@@ -1898,13 +1912,22 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * Walk the plan's phases and ask `gh` for each PR's current state.
-	 * Mutates `plan` in place.
+	 * Mutates `plan` in place. Returns counts so callers can distinguish
+	 * "no PRs in flight" from "all gh calls failed" — important because a
+	 * silent failure (gh not authed, no network, no remote) otherwise
+	 * looks identical to a successful sync with no transitions.
 	 */
-	function syncPlanFromRemote(plan: Plan, ctx: ExtensionContext): void {
+	function syncPlanFromRemote(
+		plan: Plan,
+		ctx: ExtensionContext,
+	): { checked: number; failed: number } {
+		let checked = 0;
+		let failed = 0;
 		for (const phase of plan.phases) {
 			if (!phase.prNumber) continue;
 			if (TERMINAL_STATUSES.includes(phase.status)) continue;
 
+			checked++;
 			const r = runCommand(
 				"gh",
 				[
@@ -1916,7 +1939,10 @@ export default function (pi: ExtensionAPI) {
 				],
 				{ cwd: ctx.cwd },
 			);
-			if (!r.ok) continue;
+			if (!r.ok) {
+				failed++;
+				continue;
+			}
 			try {
 				const data = JSON.parse(r.stdout) as {
 					state: string;
@@ -1928,9 +1954,10 @@ export default function (pi: ExtensionAPI) {
 					phase.status = "abandoned";
 				}
 			} catch {
-				/* ignore parse errors */
+				failed++;
 			}
 		}
+		return { checked, failed };
 	}
 
 	// ---- Park path --------------------------------------------------------
