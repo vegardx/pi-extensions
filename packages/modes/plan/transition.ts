@@ -11,7 +11,7 @@
  * tested without instantiating the extension factory.
  */
 
-export type TransitionMode = "plan" | "ask" | "auto" | "hack";
+export type TransitionMode = "plan" | "auto" | "hack";
 
 export type TransitionDecision =
 	| { action: "flip" }

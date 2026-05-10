@@ -4,13 +4,19 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution. R
 
 ## Modes
 
-| Mode | Tools | Bash | Confirmation |
-|------|-------|------|-------------|
-| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`) | blocked if write-capable | none — writes are refused outright |
-| `ask` | all | all | confirm before every `edit`, `write`, and non-safe bash — with option to switch to auto |
-| `auto` | all | all | none — fully autonomous |
+| Mode | Tools | Bash | Confirmation | Plan needed | Compaction |
+|------|------|------|--------------|-------------|------------|
+| `hack` | all | all | none — full tool access | no | none — user owns context length |
+| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
+| `auto` | all | all | none — fully autonomous | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 
-Current mode is shown in the footer. Cycle with **Shift+Tab**.
+Current mode is shown in the footer (`hack` renders red — no safety net). **Shift+Tab** cycles `hack → plan → auto → hack`. The cycle adds structure step by step, then drops it again.
+
+- `hack → plan`: prompts for handling carried-over context (keep / lossy-compact the active phase). Headless skips the prompt and silently keeps context.
+- `plan → auto`: opens a picker (Implement / Park / Continue discussing) when a plan is in flight; otherwise just flips. The picker forces an explicit `/implement` so you don't stumble into auto with stale plan text.
+- `auto → hack`: flips silently — going more permissive, context flows through.
+
+Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (default `hack`). Existing persisted sessions always use their saved mode.
 
 ## Commands
 
@@ -118,7 +124,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 {
   "extensionConfig": {
     "modes": {
-      "defaultMode": "plan",
+      "defaultMode": "hack",
       "compaction": {
         "maxContextTokens": 170000,
         "phaseTokens": 8000
@@ -135,7 +141,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 
 | Key | Default | Doc |
 |---|---|---|
-| `defaultMode` | `"plan"` | Mode for fresh sessions: `plan` \| `ask` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
+| `defaultMode` | `"hack"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
 | `compaction.maxContextTokens` | `170000` | Mid-phase compaction trigger threshold. When `getContextUsage().tokens` exceeds this on `turn_end` (auto mode + active phase), a phase-slice compaction fires. |
 | `compaction.phaseTokens` | `8000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
 | `review.enable` | `false` | Whether the post-execution review pass runs. |

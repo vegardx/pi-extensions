@@ -498,7 +498,7 @@ export interface MidPhaseTriggerInput {
 	/** Runtime probe result; false disables the entire feature. */
 	compactionApiAvailable: boolean;
 	/** Current modes mode, or null when no session has hydrated. */
-	mode: "plan" | "ask" | "auto" | "hack" | null;
+	mode: "plan" | "auto" | "hack" | null;
 	/** True while a compaction is in flight. Re-entrancy guard. */
 	compactionInFlight: boolean;
 	/** Whether the plan has an active phase. */

@@ -1107,7 +1107,6 @@ describe("shouldCompactMidPhase", () => {
 
 	it.each([
 		"plan",
-		"ask",
 		"hack",
 		null,
 	] as const)("skips outside auto mode (mode=%s)", (mode) => {

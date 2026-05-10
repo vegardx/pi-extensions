@@ -9,22 +9,13 @@ describe("buildTransitionOptions", () => {
 			buildTransitionOptions({
 				hasUI: true,
 				prev: "auto",
-				next: "ask",
+				next: "hack",
 				activePhaseId: "p-1",
 			}),
 		).toBeNull();
 	});
 
 	it("returns null when previous mode wasn't auto/hack", () => {
-		expect(
-			buildTransitionOptions({
-				hasUI: true,
-				prev: "ask",
-				next: "plan",
-				activePhaseId: "p-1",
-			}),
-		).toBeNull();
-
 		expect(
 			buildTransitionOptions({
 				hasUI: true,

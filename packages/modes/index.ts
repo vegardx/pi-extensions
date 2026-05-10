@@ -118,25 +118,25 @@ const STATUS_GLYPH: Record<string, string> = {
 
 // ---- Types ----------------------------------------------------------------
 
-type Mode = "plan" | "ask" | "auto" | "hack";
+type Mode = "plan" | "auto" | "hack";
 
-const ALL_MODES: readonly Mode[] = ["plan", "ask", "auto", "hack"] as const;
+const ALL_MODES: readonly Mode[] = ["plan", "auto", "hack"] as const;
 
 /**
  * Validate an extensionConfig.modes.defaultMode value. Falls back to
- * "plan" on missing/invalid input. Caller is responsible for surfacing
+ * "hack" on missing/invalid input. Caller is responsible for surfacing
  * a notify when `valid` is false.
  */
 export function resolveDefaultMode(raw: unknown): {
 	mode: Mode;
 	valid: boolean;
 } {
-	if (raw === undefined || raw === null) return { mode: "plan", valid: true };
-	if (typeof raw !== "string") return { mode: "plan", valid: false };
+	if (raw === undefined || raw === null) return { mode: "hack", valid: true };
+	if (typeof raw !== "string") return { mode: "hack", valid: false };
 	if ((ALL_MODES as readonly string[]).includes(raw)) {
 		return { mode: raw as Mode, valid: true };
 	}
-	return { mode: "plan", valid: false };
+	return { mode: "hack", valid: false };
 }
 type Stage =
 	| "idle"
@@ -227,8 +227,8 @@ export default function (pi: ExtensionAPI) {
 			{
 				key: "defaultMode",
 				type: "string",
-				default: "plan",
-				doc: "Mode for fresh sessions: plan | ask | auto | hack. Existing persisted sessions keep their saved mode.",
+				default: "hack",
+				doc: "Mode for fresh sessions: plan | auto | hack. Existing persisted sessions keep their saved mode.",
 			},
 		],
 	});
@@ -259,10 +259,17 @@ export default function (pi: ExtensionAPI) {
 				latest = entry.data as ModeState;
 			}
 		}
-		// TODO(cleanup): remove after existing sessions have been migrated.
-		// "default" was renamed to "ask" — migrate persisted state from old sessions.
-		if (latest && (latest.mode as string) === "default") {
-			latest.mode = "ask";
+		// Migrate persisted state from old mode names. "default" was an
+		// even older name; "ask" was a halfway-house mode that's been
+		// removed (full tools + per-action confirmation belongs in code
+		// review, not mode design). Both map to hack — closest in spirit
+		// to ask (full tools), and hack is the new default.
+		if (
+			latest &&
+			((latest.mode as string) === "default" ||
+				(latest.mode as string) === "ask")
+		) {
+			latest.mode = "hack";
 		}
 		modeState = latest ?? null;
 	}
@@ -378,7 +385,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (!modeState) {
 			modeState = {
-				mode: "ask",
+				mode: "plan",
 				stage: "idle",
 				branch: null,
 				defaultBranch: detectDefaultBranch(ctx.cwd),
@@ -516,16 +523,15 @@ export default function (pi: ExtensionAPI) {
 	// Mode display labels and their theme colour tokens.
 	const MODE_LABELS: Record<Mode, string> = {
 		plan: "plan",
-		ask: "ask",
 		auto: "auto",
 		hack: "hack",
 	};
-	const MODE_COLORS: Record<Mode, "warning" | "muted" | "accent" | "error"> = {
+	const MODE_COLORS: Record<Mode, "warning" | "accent" | "error"> = {
 		plan: "warning",
-		ask: "muted",
 		auto: "accent",
-		// `hack` is the most permissive mode: full tools, no plan ceremony,
-		// no compaction. Red-tinted footer flags "no safety net".
+		// `hack` is the default mode and the most permissive: full tools, no
+		// plan ceremony, no compaction. Red footer flags "no safety net" —
+		// the contrast when entering plan/auto is the visual point.
 		hack: "error",
 	};
 
@@ -2115,7 +2121,7 @@ export default function (pi: ExtensionAPI) {
 			);
 			modeState.stage = "idle";
 			restorePriorTools();
-			modeState.mode = "ask";
+			modeState.mode = "hack";
 			persist();
 			updateWidget(ctx);
 		} finally {
@@ -2392,12 +2398,12 @@ export default function (pi: ExtensionAPI) {
 
 		if (!modeState) {
 			// First session — capture baseline tools, default mode is
-			// configurable via extensionConfig.modes.defaultMode (default "plan").
+			// configurable via extensionConfig.modes.defaultMode (default "hack").
 			const { mode: defaultMode, valid } = readDefaultModeSetting(ctx);
 			if (!valid) {
 				notify(
 					ctx,
-					'modes: invalid defaultMode setting (expected "plan" | "ask" | "auto" | "hack") — falling back to "plan"',
+					'modes: invalid defaultMode setting (expected "plan" | "auto" | "hack") — falling back to "hack"',
 					"warning",
 				);
 			}
@@ -2484,40 +2490,6 @@ export default function (pi: ExtensionAPI) {
 						"the dialog replaces inline questions.",
 					].join("\n"),
 					details: { modeMarker: "plan" as const },
-					display: false,
-				},
-			};
-		}
-
-		if (modeState.mode === "ask") {
-			const plan = currentPlan();
-			const tasks = activeTasks(plan);
-			const phase = activePhase(plan);
-			return {
-				message: {
-					customType: CUSTOM_MODE_CONTEXT,
-					content: [
-						"[ASK MODE — confirm before changes]",
-						"",
-						"The user will be asked to confirm each file edit and non-trivial",
-						"shell command before it executes. Work methodically; explain each",
-						"change before making it.",
-						...(tasks.length > 0 && modeState.stage === "executing"
-							? [
-									"",
-									`Active phase: \`${phase?.id ?? "(unknown)"}\` — only this phase's tasks are in scope.`,
-									"Do NOT start work on other phases. When this phase is done, run /ship.",
-									"",
-									"Tasks (titles short — see plan_view for full body):",
-									...tasks.map(
-										({ task }) => `  ${task.done ? "✓" : "○"} ${task.title}`,
-									),
-									"",
-									"Call plan_task(toggle, phaseId, taskId) after completing each task.",
-								]
-							: []),
-					].join("\n"),
-					details: { modeMarker: "ask" as const },
 					display: false,
 				},
 			};
@@ -2648,81 +2620,9 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		if (modeState.mode === "ask") {
-			// Headless: no UI for confirm dialogs — use classifier to decide.
-			if (!ctx.hasUI) {
-				if (event.toolName === "edit" || event.toolName === "write") {
-					return {
-						block: true,
-						reason:
-							"modes: ask mode requires UI for confirmation (running headless)",
-					};
-				}
-				if (event.toolName === "bash") {
-					const command = (event.input as { command?: string }).command ?? "";
-					const result = await classifyBashCommand(command, ctx);
-					if (result.verdict !== "allow") {
-						return {
-							block: true,
-							reason: `modes (headless): ${result.reason}`,
-						};
-					}
-				}
-				return;
-			}
-
-			/**
-			 * Show a three-way picker: Allow / Switch to auto / Deny.
-			 * Returns true if the tool call should proceed, false to block.
-			 * Switches to auto mode as a side effect when the user chooses it.
-			 */
-			const askPermission = async (
-				title: string,
-				denyReason: string,
-			): Promise<{ proceed: boolean; blockReason?: string }> => {
-				const choice = await ctx.ui.select(title, [
-					"Allow",
-					"Switch to auto — allow everything from here on",
-					"Deny",
-				]);
-				if (choice === "Allow") return { proceed: true };
-				if (choice?.startsWith("Switch to auto")) {
-					setMode("auto", ctx);
-					notify(ctx, "switched to auto mode", "info");
-					return { proceed: true };
-				}
-				return { proceed: false, blockReason: denyReason };
-			};
-
-			if (event.toolName === "edit" || event.toolName === "write") {
-				const path = (event.input as { path?: string }).path ?? event.toolName;
-				const { proceed, blockReason } = await askPermission(
-					`Allow ${event.toolName}: ${path}`,
-					"User declined the file edit.",
-				);
-				if (!proceed) return { block: true, reason: blockReason };
-				return;
-			}
-			if (event.toolName === "bash") {
-				const command = (event.input as { command?: string }).command ?? "";
-				const result = await classifyBashCommand(command, ctx);
-				if (result.verdict === "allow") return;
-				if (result.verdict === "redirect") {
-					return {
-						block: true,
-						reason: `Use the \`${result.tool ?? "read"}\` tool instead — ${result.reason}`,
-					};
-				}
-				// "block" — ask for confirmation with the classifier's reason.
-				const cmdSnippet =
-					command.length > 80 ? `${command.slice(0, 80)}\u2026` : command;
-				const { proceed, blockReason } = await askPermission(
-					`Allow bash: ${result.reason} — \`${cmdSnippet}\``,
-					"User declined the bash command.",
-				);
-				if (!proceed) return { block: true, reason: blockReason };
-			}
-		}
+		// auto and hack: full tools, no confirmation. Plan-mode write
+		// protection is the only mode-level gate; everything else is the
+		// agent's call.
 	});
 
 	// ---- Completion detection ---------------------------------------------
@@ -2920,12 +2820,11 @@ export default function (pi: ExtensionAPI) {
 	// ---- Shift+Tab shortcut -----------------------------------------------
 
 	pi.registerShortcut("shift+tab", {
-		description:
-			"Cycle permission mode (plan → picker / ask → auto / auto → plan)",
+		description: "Cycle permission mode (hack → plan → auto → hack)",
 		handler: async (ctx) => {
 			if (!modeState) {
 				modeState = {
-					mode: "plan",
+					mode: "hack",
 					stage: "idle",
 					branch: null,
 					defaultBranch: null,
@@ -2936,12 +2835,40 @@ export default function (pi: ExtensionAPI) {
 				persist();
 				applyModeTools();
 				updateWidget(ctx);
+				notify(ctx, "hack mode", "info");
+				return;
+			}
+
+			// hack → plan (cycle entry point). Prompt for handling carried-over
+			// context: keep / lossy-compact active phase. "New session" is not
+			// offered from the shortcut path because pi only exposes
+			// `newSession` on ExtensionCommandContext, not the ExtensionContext
+			// shortcuts receive — silently degrading would surprise the user.
+			if (modeState.mode === "hack") {
+				const decision = await runModeTransition("hack", ctx, {
+					canStartNewSession: false,
+				});
+				if (decision.action === "compact") {
+					const plan = currentPlan();
+					if (plan && !compactionInFlight) {
+						compactionInFlight = true;
+						try {
+							await compactPhaseSlice(ctx, plan, decision.phaseId);
+						} finally {
+							compactionInFlight = false;
+						}
+					}
+				}
+				setMode("plan", ctx);
 				notify(ctx, "plan mode", "info");
 				return;
 			}
 
+			// plan → auto. With a plan in hand, show the picker (Implement /
+			// Park / Continue) so the user has to commit to /implement rather
+			// than stumble into auto with stale plan text. Without a plan, just
+			// flip.
 			if (modeState.mode === "plan") {
-				// Leaving plan mode — show picker if there's a plan, else just cycle.
 				const hasPlan =
 					(currentPlan()?.phases.length ?? 0) > 0 || modeState.planText;
 				if (hasPlan && ctx.hasUI) {
@@ -2949,45 +2876,16 @@ export default function (pi: ExtensionAPI) {
 						runPicker(ctx as ExtensionCommandContext),
 					);
 				} else {
-					setMode("ask", ctx);
-					notify(ctx, "ask mode", "info");
+					setMode("auto", ctx);
+					notify(ctx, "auto mode", "info");
 				}
 				return;
 			}
 
-			if (modeState.mode === "ask") {
-				setMode("auto", ctx);
-				notify(ctx, "auto mode", "info");
-				return;
-			}
-
-			if (modeState.mode === "auto") {
-				setMode("hack", ctx);
-				notify(ctx, "hack mode", "info");
-				return;
-			}
-
-			// hack → plan (full circle). May prompt for handling carried-over
-			// context: keep / lossy-compact active phase. "New session" is not
-			// offered from the shortcut path because pi only exposes
-			// `newSession` on ExtensionCommandContext, not the ExtensionContext
-			// shortcuts receive — silently degrading would surprise the user.
-			const decision = await runModeTransition("hack", ctx, {
-				canStartNewSession: false,
-			});
-			if (decision.action === "compact") {
-				const plan = currentPlan();
-				if (plan && !compactionInFlight) {
-					compactionInFlight = true;
-					try {
-						await compactPhaseSlice(ctx, plan, decision.phaseId);
-					} finally {
-						compactionInFlight = false;
-					}
-				}
-			}
-			setMode("plan", ctx);
-			notify(ctx, "plan mode", "info");
+			// auto → hack (cycle wrap). Going more permissive; carrying context
+			// is fine — no prompt.
+			setMode("hack", ctx);
+			notify(ctx, "hack mode", "info");
 		},
 	});
 
