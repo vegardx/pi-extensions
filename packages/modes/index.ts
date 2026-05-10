@@ -54,9 +54,12 @@ import {
 import {
 	appendPhaseSliceCompaction,
 	appendPlanToImplementCompaction,
-	DEFAULT_MAX_CONTEXT_TOKENS,
+	computeContextBuckets,
 	DEFAULT_PHASE_TOKENS,
 	DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
+	DEFAULT_SUMMARY_TOKENS,
+	DEFAULT_WORKING_TOKENS,
+	findLatestCompactionSummary,
 	hasPhaseEndCompaction,
 	hasPlanToImplementCompaction,
 	type SummariseFn,
@@ -229,13 +232,19 @@ export default function (pi: ExtensionAPI) {
 				key: "compaction.phaseTokens",
 				type: "number",
 				default: DEFAULT_PHASE_TOKENS,
-				doc: "Output token cap (maxTokens) on each phase-boundary compaction summary. Bounds the size of each '## Phase' section in the rolling summary; the input conversation is unbounded. Default 8000.",
+				doc: "Output token cap (maxTokens) on each phase-boundary compaction summary. Bounds the size of each '## Phase' section in the rolling summary; the input conversation is unbounded. Default 10000.",
 			},
 			{
-				key: "compaction.maxContextTokens",
+				key: "compaction.workingTokens",
 				type: "number",
-				default: DEFAULT_MAX_CONTEXT_TOKENS,
-				doc: "Mid-phase compaction trigger threshold in tokens. When getContextUsage().tokens exceeds this on turn_end (in auto mode with an active phase), a phase-slice compaction fires. Default 170000.",
+				default: DEFAULT_WORKING_TOKENS,
+				doc: "Working budget covering `sys + work` (system prompt + tool schemas + live messages). Mid-phase compaction fires when this is exceeded. Summary tokens live in their own budget (`summaryTokens`) and don't count toward this trigger. Default 150000.",
+			},
+			{
+				key: "compaction.summaryTokens",
+				type: "number",
+				default: DEFAULT_SUMMARY_TOKENS,
+				doc: "Cumulative rolling-summary budget. Each plan→implement / phase-slice / phase-end compaction adds to the summary. Soft-warns once when exceeded; not enforced. Total target ceiling = `workingTokens + summaryTokens` — should fit the active model's `contextWindow`. Default 100000.",
 			},
 			{
 				key: "compaction.planMaxContextTokens",
@@ -635,21 +644,88 @@ export default function (pi: ExtensionAPI) {
 		const usage = ctx.getContextUsage();
 		if (!usage) return null;
 
-		// In auto/hack the cap is the mid-phase compaction threshold so the
-		// user sees "how close am I to the next compaction". Plan mode is
-		// exempt from that compaction — the human is in the loop — so we
-		// use a separate setting (default: model contextWindow) so the
-		// denominator doesn't lie about the real ceiling.
-		const inPlan = modeState?.mode === "plan";
-		const limit = inPlan
-			? (readPlanMaxContextTokensSetting(ctx) ?? usage.contextWindow)
-			: readMaxContextTokensSetting(ctx) || usage.contextWindow;
-		if (!limit) return null;
+		// Plan mode is exempt from mid-phase compaction (the human is in the
+		// loop), so the three-bucket breakdown adds noise. Render the simple
+		// `current/limit` form there — limit defaults to the explicit plan
+		// override (`compaction.planMaxContextTokens`) and falls back to the
+		// active model's contextWindow when unset.
+		if (modeState?.mode === "plan") {
+			const limit = readPlanMaxContextTokensSetting(ctx) ?? usage.contextWindow;
+			if (!limit) return null;
+			const current =
+				usage.tokens !== null ? `${Math.round(usage.tokens / 1000)}k` : "?";
+			const cap = `${Math.round(limit / 1000)}k`;
+			return `${current}/${cap}`;
+		}
 
-		const current =
-			usage.tokens !== null ? `${Math.round(usage.tokens / 1000)}k` : "?";
-		const cap = `${Math.round(limit / 1000)}k`;
-		return `${current}/${cap}`;
+		// Auto/hack: three-bucket breakdown. Order sys → sum → work matches
+		// the actual prefix layout in API requests and the direction the
+		// KV-cache reuses (longest stable prefix first).
+		const workingTokens = readWorkingTokensSetting(ctx);
+		const summaryTokensBudget = readSummaryTokensSetting(ctx);
+		const denom = workingTokens + summaryTokensBudget;
+
+		const systemPromptChars = ctx.getSystemPrompt().length;
+		const toolSchemaChars = computeToolSchemaChars();
+		const summaryChars = computeSummaryChars(ctx);
+
+		const buckets = computeContextBuckets({
+			total: usage.tokens,
+			systemPromptChars,
+			toolSchemaChars,
+			summaryChars,
+		});
+
+		const k = (n: number) => `${Math.round(n / 1000)}k`;
+		const parts: string[] = [`sys ${k(buckets.sys)}`];
+		if (buckets.summary > 0) parts.push(`sum ${k(buckets.summary)}`);
+		parts.push(buckets.total === null ? "work ?" : `work ${k(buckets.work)}`);
+
+		const numer = buckets.total === null ? "?" : k(buckets.total);
+		parts.push(`${numer}/${k(denom)}`);
+
+		// Trailing model contextWindow is shown only when it adds info
+		// (i.e. differs from our denominator). Drops cleanly when unknown.
+		const cw = usage.contextWindow;
+		if (cw && cw !== denom) parts.push(`(${k(cw)})`);
+
+		return parts.join(" · ");
+	}
+
+	/**
+	 * Total chars across all currently-active tool schemas. Used to
+	 * estimate the `sys` bucket's tool-definition contribution.
+	 */
+	function computeToolSchemaChars(): number {
+		const active = new Set(pi.getActiveTools());
+		let chars = 0;
+		for (const tool of pi.getAllTools()) {
+			if (!active.has(tool.name)) continue;
+			chars += tool.name.length;
+			chars += tool.description?.length ?? 0;
+			try {
+				chars += JSON.stringify(tool.parameters).length;
+			} catch {
+				// TypeBox schemas may contain symbols that don't serialise.
+				// On error, skip the schema rather than crashing the footer.
+			}
+		}
+		return chars;
+	}
+
+	/**
+	 * Length of the active branch's most-recent compaction summary, or 0
+	 * when none exists. Earlier compactions are superseded by the most
+	 * recent (`firstKeptEntryId` rebases the prefix), so live summary
+	 * cost in the prompt prefix equals just this one summary.
+	 */
+	function computeSummaryChars(ctx: ExtensionContext): number {
+		try {
+			const sm = ctx.sessionManager as unknown as SessionManager;
+			return findLatestCompactionSummary(sm).length;
+		} catch {
+			return 0;
+		}
 	}
 
 	/**
@@ -1396,6 +1472,13 @@ export default function (pi: ExtensionAPI) {
 	 * concurrent compactions on the same branch and produce duplicate
 	 * sections. Set true at compactPhaseSlice entry, cleared in finally.
 	 */
+	/**
+	 * Soft-warn deduplication: once `summaryUsed > summaryTokens` fires
+	 * a warning during `turn_end`, suppress further warnings for the
+	 * remainder of the session. Reset on `session_start`.
+	 */
+	let summaryBudgetWarnFired = false;
+
 	let compactionInFlight = false;
 
 	/**
@@ -1463,12 +1546,12 @@ export default function (pi: ExtensionAPI) {
 		return resolveDefaultMode(extCfg?.defaultMode);
 	}
 
-	function readMaxContextTokensSetting(ctx: ExtensionContext): number {
-		return readCompactionNumber(
-			ctx,
-			"maxContextTokens",
-			DEFAULT_MAX_CONTEXT_TOKENS,
-		);
+	function readWorkingTokensSetting(ctx: ExtensionContext): number {
+		return readCompactionNumber(ctx, "workingTokens", DEFAULT_WORKING_TOKENS);
+	}
+
+	function readSummaryTokensSetting(ctx: ExtensionContext): number {
+		return readCompactionNumber(ctx, "summaryTokens", DEFAULT_SUMMARY_TOKENS);
 	}
 
 	/**
@@ -1632,7 +1715,8 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * Mid-phase compaction. Fires from the `turn_end` hook when context
-	 * tokens exceed maxContextTokens in auto mode with an active phase.
+	 * tokens exceed `workingTokens` (after subtracting summary cost) in
+	 * auto mode with an active phase.
 	 *
 	 * Same shape as compactPhaseEnd, but kind: "in-progress" — multiple
 	 * slices per phase are valid. The slice chain assembled across
@@ -2581,6 +2665,7 @@ export default function (pi: ExtensionAPI) {
 		hydrateMode(ctx);
 		hydratePlan(ctx);
 		probeCompactionApi(ctx);
+		summaryBudgetWarnFired = false;
 
 		// Fire-and-forget sync of PR state for the active plan. Reports
 		// shipped/abandoned phases since last session.
@@ -2971,11 +3056,14 @@ export default function (pi: ExtensionAPI) {
 	//   1. compactionApiAvailable — runtime probe at session_start
 	//   2. modeState exists and is auto/hack — only modes-driven execution
 	//   3. plan + active phase exist
-	//   4. tokens > maxContextTokens (uses ctx.getContextUsage())
+	//   4. (tokens − summary) > workingTokens (uses ctx.getContextUsage())
 	//   5. !compactionInFlight — re-entrancy guard
 	//
 	// On every gate failure: silent return. We never want this hook to
 	// log, only act.
+
+	// Per-session flag so the soft "summary exceeded its budget" warn
+	// fires at most once. Reset by session_start (handled below).
 
 	pi.on("turn_end", async (_event, ctx) => {
 		// Cheap checks first — most turn_end events short-circuit before
@@ -2988,13 +3076,37 @@ export default function (pi: ExtensionAPI) {
 		const activePhase = plan?.phases.find((p) => p.status === "active");
 		const usage = ctx.getContextUsage();
 
+		// Estimate live summary token cost so the trigger can isolate the
+		// working budget. Errors here surface as 0 — we'd rather under-
+		// estimate summary (and over-trigger) than crash the hook.
+		let summaryUsed = 0;
+		try {
+			summaryUsed = Math.ceil(computeSummaryChars(ctx) / 4);
+		} catch {
+			summaryUsed = 0;
+		}
+
+		// Soft warn (once per session) when the rolling summary outgrew
+		// its budget. Not enforced — compaction is the only thing that
+		// grows summary, and it's deterministic. Hint to lower phaseTokens.
+		const summaryBudget = readSummaryTokensSetting(ctx);
+		if (!summaryBudgetWarnFired && summaryUsed > summaryBudget) {
+			summaryBudgetWarnFired = true;
+			notify(
+				ctx,
+				`rolling summary (${summaryUsed} tokens) exceeded compaction.summaryTokens (${summaryBudget}); consider lowering compaction.phaseTokens or raising compaction.summaryTokens`,
+				"warning",
+			);
+		}
+
 		const fire = shouldCompactMidPhase({
 			compactionApiAvailable,
 			mode: modeState.mode,
 			compactionInFlight,
 			hasActivePhase: !!activePhase,
 			tokens: usage?.tokens,
-			maxContextTokens: readMaxContextTokensSetting(ctx),
+			workingTokens: readWorkingTokensSetting(ctx),
+			summaryTokens: summaryUsed,
 		});
 		if (!fire || !plan || !activePhase) return;
 

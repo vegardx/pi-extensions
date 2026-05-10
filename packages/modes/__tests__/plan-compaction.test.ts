@@ -5,8 +5,11 @@ import {
 	buildSummariserPreamble,
 	buildSummary,
 	collectMessagesSinceLastCompaction,
+	computeContextBuckets,
 	countPhaseSlicesOnBranch,
 	DEFAULT_PHASE_TOKENS,
+	DEFAULT_SUMMARY_TOKENS,
+	DEFAULT_WORKING_TOKENS,
 	findLatestCompactionSummary,
 	hasPhaseEndCompaction,
 	hasPlanToImplementCompaction,
@@ -1133,7 +1136,8 @@ describe("shouldCompactMidPhase", () => {
 		compactionInFlight: false,
 		hasActivePhase: true,
 		tokens: 200_000,
-		maxContextTokens: 170_000,
+		workingTokens: 150_000,
+		summaryTokens: 0,
 	};
 
 	it("fires when every gate passes", () => {
@@ -1176,15 +1180,102 @@ describe("shouldCompactMidPhase", () => {
 		);
 	});
 
-	it("skips when tokens equals the threshold (strict >, not >=)", () => {
-		expect(shouldCompactMidPhase({ ...baseFire, tokens: 170_000 })).toBe(false);
+	it("skips when working portion equals the threshold (strict >, not >=)", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: 150_000 })).toBe(false);
 	});
 
-	it("skips when tokens is below the threshold", () => {
-		expect(shouldCompactMidPhase({ ...baseFire, tokens: 169_999 })).toBe(false);
+	it("skips when working portion is below the threshold", () => {
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: 149_999 })).toBe(false);
 	});
 
 	it("fires at threshold + 1", () => {
-		expect(shouldCompactMidPhase({ ...baseFire, tokens: 170_001 })).toBe(true);
+		expect(shouldCompactMidPhase({ ...baseFire, tokens: 150_001 })).toBe(true);
+	});
+
+	it("subtracts summary tokens before comparing (does NOT fire when summary covers the excess)", () => {
+		// 200k total, 60k of which is summary -> working portion = 140k, below 150k.
+		expect(
+			shouldCompactMidPhase({
+				...baseFire,
+				tokens: 200_000,
+				summaryTokens: 60_000,
+			}),
+		).toBe(false);
+	});
+
+	it("fires when working portion exceeds threshold despite summary cushion", () => {
+		// 200k total, 30k summary -> working portion = 170k, above 150k.
+		expect(
+			shouldCompactMidPhase({
+				...baseFire,
+				tokens: 200_000,
+				summaryTokens: 30_000,
+			}),
+		).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// computeContextBuckets — pure bucket math
+// ---------------------------------------------------------------------------
+
+describe("computeContextBuckets", () => {
+	it("splits a known total into sys / summary / work", () => {
+		const out = computeContextBuckets({
+			total: 120_000,
+			systemPromptChars: 40_000,
+			toolSchemaChars: 8_000,
+			summaryChars: 120_000,
+		});
+		// sys = ceil(48000 / 4) = 12000
+		// summary = ceil(120000 / 4) = 30000
+		// work = 120000 - 12000 - 30000 = 78000
+		expect(out).toEqual({
+			sys: 12_000,
+			summary: 30_000,
+			work: 78_000,
+			total: 120_000,
+		});
+	});
+
+	it("reports work=0 when total is null (post-compaction quiet window)", () => {
+		const out = computeContextBuckets({
+			total: null,
+			systemPromptChars: 40_000,
+			toolSchemaChars: 8_000,
+			summaryChars: 120_000,
+		});
+		expect(out).toEqual({
+			sys: 12_000,
+			summary: 30_000,
+			work: 0,
+			total: null,
+		});
+	});
+
+	it("clamps work to 0 when sys + summary exceed total (estimation drift)", () => {
+		const out = computeContextBuckets({
+			total: 30_000,
+			systemPromptChars: 40_000,
+			toolSchemaChars: 8_000,
+			summaryChars: 120_000,
+		});
+		expect(out.work).toBe(0);
+		expect(out.total).toBe(30_000);
+	});
+
+	it("with default budgets, ceiling math is workingTokens + summaryTokens", () => {
+		// Sanity check that the package-level defaults compose to a sensible total.
+		expect(DEFAULT_WORKING_TOKENS + DEFAULT_SUMMARY_TOKENS).toBe(250_000);
+	});
+
+	it("handles all-zero inputs cleanly", () => {
+		const out = computeContextBuckets({
+			total: 0,
+			systemPromptChars: 0,
+			toolSchemaChars: 0,
+			summaryChars: 0,
+		});
+		expect(out).toEqual({ sys: 0, summary: 0, work: 0, total: 0 });
 	});
 });
