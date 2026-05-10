@@ -22,7 +22,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Plan } from "./schema.js";
 import { TERMINAL_STATUSES } from "./schema.js";
 
@@ -47,14 +47,19 @@ function assertValidSlug(slug: string): void {
  * Defence-in-depth: after resolving any plan path, verify it stays
  * inside `plansRoot`. Catches edge cases the regex might miss (e.g.
  * symlink shenanigans on platforms that normalise differently).
+ *
+ * Uses `path.relative` to be platform-correct — hard-coded "/" would
+ * miss Windows backslash separators and could be tricked by mixed
+ * normalisations. Reject when the resolved path differs from the root
+ * AND the relative form either escapes (`..`) or is absolute.
  */
 function assertInsideRoot(path: string): void {
 	const rootResolved = resolve(plansRoot);
 	const pathResolved = resolve(path);
-	if (
-		pathResolved !== rootResolved &&
-		!pathResolved.startsWith(`${rootResolved}/`)
-	) {
+	if (pathResolved === rootResolved) return;
+	const rel = relative(rootResolved, pathResolved);
+	if (rel === "" || rel === ".") return;
+	if (rel.startsWith(`..${sep}`) || rel === ".." || isAbsolute(rel)) {
 		throw new Error(
 			`refusing to operate on plan path outside ${rootResolved}: ${pathResolved}`,
 		);
