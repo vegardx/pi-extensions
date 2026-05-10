@@ -23,7 +23,7 @@ Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (
 | Command | Description |
 |---------|-------------|
 | `/plan [desc]` | Sync to default branch, enter plan mode. If this session has a bound plan, reuse it; otherwise create a new one owned by this session. |
-| `/plan list` | List all plans across repos |
+| `/plan list` | List all plans, grouped by ownership (this session / other sessions / legacy). Stuck plans are flagged with `⊘ stuck — open a PR or /plan archive`. |
 | `/plan resume <slug>` | Bind this session to a specific plan. Confirms before adopting a plan owned by another session. |
 | `/plan archive <slug>` | Soft-archive: mark all non-terminal phases as `abandoned`, tear down their worktrees, keep branches and the plan file on disk. |
 | `/plan delete <slug>` | Hard-delete: remove `~/.pi/plans/<slug>/` permanently. Refuses if any worktree is dirty; worktrees and branches are not touched. |
