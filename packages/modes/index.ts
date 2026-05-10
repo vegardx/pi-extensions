@@ -73,6 +73,7 @@ import {
 	snapshotPlanStructure,
 } from "./plan/picker.js";
 import {
+	abandonNonTerminalPhases,
 	type ImplementBranchPlan,
 	type Plan,
 	type Phase as PlanPhase,
@@ -87,7 +88,7 @@ import {
 	STEERING_CLASSIFIER,
 	shouldInjectSteeringClassifier,
 } from "./plan/steering.js";
-import { loadPlan, planExists, savePlan } from "./plan/storage.js";
+import { deletePlan, loadPlan, planExists, savePlan } from "./plan/storage.js";
 import { registerPlanTools } from "./plan/tools.js";
 import {
 	buildTransitionOptions,
@@ -482,6 +483,141 @@ export default function (pi: ExtensionAPI) {
 		persist();
 		updateWidget(ctx);
 		notify(ctx, `resumed plan ${slug} (${plan.phases.length} phases)`, "info");
+	}
+
+	/**
+	 * Hard-delete a plan: remove `~/.pi/plans/<slug>/` and rebuild the
+	 * index. Refuses if any worktree associated with the plan is still
+	 * dirty — the user has unsaved changes there and we won't risk them.
+	 * Confirms before mutating; on success, also clears the binding if the
+	 * deleted plan was bound to this session.
+	 *
+	 * Worktrees themselves are NOT removed by this command: deleting a
+	 * plan from `~/.pi/plans/` doesn't touch the git worktree at
+	 * `worktrees/<repo>/<plan>/<phase>/`. Users should `/worktree prune`
+	 * first to clean those up; we just block the destructive case where
+	 * an unprune-able worktree is still dirty.
+	 */
+	async function doPlanDelete(
+		slug: string,
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
+		const { listPlans } = await import("./plan/storage.js");
+		const known = listPlans().some((p) => p.slug === slug);
+		if (!known) {
+			notify(ctx, `plan ${slug} not found`, "error");
+			return;
+		}
+		const plan = loadPlan(slug);
+		if (!plan) {
+			notify(ctx, `plan ${slug} not found`, "error");
+			return;
+		}
+
+		const dirtyPhases = plan.phases.filter((phase) => {
+			if (!worktreeExists(plan, phase)) return false;
+			return !workingTreeClean(phase.worktreePath ?? plan.repo.path);
+		});
+		if (dirtyPhases.length > 0) {
+			const names = dirtyPhases.map((p) => p.id).join(", ");
+			notify(
+				ctx,
+				`refusing to delete ${slug}: dirty worktree(s) for ${names}. ` +
+					`Commit/stash and run /worktree prune first.`,
+				"warning",
+			);
+			return;
+		}
+
+		const confirmed = await ctx.ui.confirm(
+			`Delete plan ${slug}?`,
+			`This removes ~/.pi/plans/${slug}/ permanently. ` +
+				`Worktrees and branches are not touched. This cannot be undone.`,
+		);
+		if (!confirmed) {
+			notify(ctx, `aborted delete of ${slug}`, "info");
+			return;
+		}
+
+		deletePlan(slug);
+
+		if (modeState?.currentPlanSlug === slug) {
+			modeState.currentPlanSlug = null;
+			clearPlanTurnSnapshot();
+			persist();
+		}
+		updateWidget(ctx);
+		notify(ctx, `deleted plan ${slug}`, "info");
+	}
+
+	/**
+	 * Soft archive: mark every non-terminal phase as `abandoned` and let
+	 * `reconcileWorktrees` tear down any worktrees that no longer have a
+	 * status requiring them. The plan stays on disk for history; it just
+	 * stops being "active" so /plan list can demote it.
+	 *
+	 * Branches are kept (worktree.ts policy: branches are never
+	 * auto-deleted). Use /plan delete to fully remove the plan.
+	 */
+	async function doPlanArchive(
+		slug: string,
+		ctx: ExtensionCommandContext,
+	): Promise<void> {
+		const { listPlans } = await import("./plan/storage.js");
+		const known = listPlans().some((p) => p.slug === slug);
+		if (!known) {
+			notify(ctx, `plan ${slug} not found`, "error");
+			return;
+		}
+		const plan = loadPlan(slug);
+		if (!plan) {
+			notify(ctx, `plan ${slug} not found`, "error");
+			return;
+		}
+
+		const nonTerminal = plan.phases.filter(
+			(p) => !TERMINAL_STATUSES.includes(p.status),
+		);
+		if (nonTerminal.length === 0) {
+			notify(
+				ctx,
+				`plan ${slug} has no non-terminal phases — nothing to archive`,
+				"info",
+			);
+			return;
+		}
+
+		const confirmed = await ctx.ui.confirm(
+			`Archive plan ${slug}?`,
+			`This marks ${nonTerminal.length} non-terminal phase(s) as abandoned ` +
+				`and tears down their worktrees. Branches are kept. The plan stays on disk.`,
+		);
+		if (!confirmed) {
+			notify(ctx, `aborted archive of ${slug}`, "info");
+			return;
+		}
+
+		const now = new Date().toISOString();
+		const { plan: archivedPlan, archived } = abandonNonTerminalPhases(
+			plan,
+			now,
+		);
+		savePlan(archivedPlan);
+		if (reconcileWorktrees(archivedPlan, ctx)) savePlan(archivedPlan);
+
+		if (modeState?.currentPlanSlug === slug) {
+			// Bound plan was archived: keep the binding so the user can still
+			// see the (now-terminal) phases via /modes-status, but refresh the
+			// widget so the active-phase task list disappears.
+			updateWidget(ctx);
+		} else {
+			updateWidget(ctx);
+		}
+		notify(
+			ctx,
+			`archived plan ${slug} (${archived.length} phase(s) abandoned)`,
+			"info",
+		);
 	}
 
 	/**
@@ -3311,7 +3447,9 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("plan", {
 		description:
 			"Sync to the default branch and enter plan mode. " +
-			"Subcommands: /plan list (all plans), /plan resume <slug>. " +
+			"Subcommands: /plan list, /plan resume <slug>, " +
+			"/plan archive <slug> (soft — abandons non-terminal phases), " +
+			"/plan delete <slug> (hard — removes from disk). " +
 			"Optionally seed with a description.",
 		handler: async (args, ctx) => {
 			const sub = args?.trim().split(/\s+/) ?? [];
@@ -3321,6 +3459,14 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (sub[0] === "resume" && sub[1]) {
 				await doPlanResume(sub[1], ctx);
+				return;
+			}
+			if (sub[0] === "delete" && sub[1]) {
+				await doPlanDelete(sub[1], ctx);
+				return;
+			}
+			if (sub[0] === "archive" && sub[1]) {
+				await doPlanArchive(sub[1], ctx);
 				return;
 			}
 

@@ -43,6 +43,36 @@ export const TERMINAL_STATUSES: readonly PhaseStatus[] = [
 	"abandoned",
 ] as const;
 
+/**
+ * Pure transform behind `/plan archive`: returns a new plan whose
+ * non-terminal phases have been flipped to `abandoned`, alongside the
+ * list of phases that were touched. Caller is responsible for saving
+ * the returned plan and reconciling worktrees afterwards.
+ *
+ * Kept in schema.ts (not index.ts) so the archive policy is unit
+ * testable without booting the extension closure.
+ */
+export function abandonNonTerminalPhases(
+	plan: Plan,
+	now: string,
+): { plan: Plan; archived: Phase[] } {
+	const archived: Phase[] = [];
+	const phases = plan.phases.map((phase): Phase => {
+		if (TERMINAL_STATUSES.includes(phase.status)) return phase;
+		const next: Phase = { ...phase, status: "abandoned", updatedAt: now };
+		archived.push(next);
+		return next;
+	});
+	return {
+		plan: {
+			...plan,
+			phases,
+			updatedAt: archived.length > 0 ? now : plan.updatedAt,
+		},
+		archived,
+	};
+}
+
 export interface Task {
 	id: string;
 	/** Short, scannable. No length cap — but agent should keep it concise. */
