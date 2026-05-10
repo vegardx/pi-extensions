@@ -2585,7 +2585,7 @@ export default function (pi: ExtensionAPI) {
 			plan,
 		});
 		if (wrapped === null) return { action: "continue" };
-		return { action: "transform", text: wrapped };
+		return { action: "transform", text: wrapped, images: event.images };
 	});
 
 	// ---- Tool call enforcement --------------------------------------------
