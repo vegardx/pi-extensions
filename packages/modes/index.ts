@@ -56,6 +56,7 @@ import {
 	appendPlanToImplementCompaction,
 	DEFAULT_MAX_CONTEXT_TOKENS,
 	DEFAULT_PHASE_TOKENS,
+	DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
 	hasPhaseEndCompaction,
 	hasPlanToImplementCompaction,
 	type SummariseFn,
@@ -232,6 +233,12 @@ export default function (pi: ExtensionAPI) {
 				type: "number",
 				default: DEFAULT_MAX_CONTEXT_TOKENS,
 				doc: "Mid-phase compaction trigger threshold in tokens. When getContextUsage().tokens exceeds this on turn_end (in auto mode with an active phase), a phase-slice compaction fires. Default 170000.",
+			},
+			{
+				key: "compaction.planMaxContextTokens",
+				type: "number",
+				default: DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
+				doc: "Footer cap (denominator) used while in plan mode. Plan mode is exempt from modes' mid-phase compaction \u2014 the human is in the loop \u2014 so this only affects the footer display. 0 means 'use the active model's contextWindow'. Default 0.",
 			},
 			{
 				key: "defaultMode",
@@ -618,11 +625,15 @@ export default function (pi: ExtensionAPI) {
 		const usage = ctx.getContextUsage();
 		if (!usage) return null;
 
-		// Cap the footer's denominator at modes' mid-phase compaction
-		// threshold so the user sees "how close am I to the next compaction"
-		// rather than "how close am I to the model's hard limit". Falls back
-		// to the model's contextWindow when neither is set.
-		const limit = readMaxContextTokensSetting(ctx) || usage.contextWindow;
+		// In auto/hack the cap is the mid-phase compaction threshold so the
+		// user sees "how close am I to the next compaction". Plan mode is
+		// exempt from that compaction — the human is in the loop — so we
+		// use a separate setting (default: model contextWindow) so the
+		// denominator doesn't lie about the real ceiling.
+		const inPlan = modeState?.mode === "plan";
+		const limit = inPlan
+			? (readPlanMaxContextTokensSetting(ctx) ?? usage.contextWindow)
+			: readMaxContextTokensSetting(ctx) || usage.contextWindow;
 		if (!limit) return null;
 
 		const current =
@@ -1436,6 +1447,28 @@ export default function (pi: ExtensionAPI) {
 			"maxContextTokens",
 			DEFAULT_MAX_CONTEXT_TOKENS,
 		);
+	}
+
+	/**
+	 * Plan-mode footer cap. Returns null when the user hasn't set a
+	 * positive override — the footer then falls back to the model's
+	 * contextWindow. Pure display: nothing in the runtime enforces this.
+	 */
+	function readPlanMaxContextTokensSetting(
+		ctx: ExtensionContext,
+	): number | null {
+		const settings = readRelevantSettings(ctx.cwd);
+		const extCfg = settings.extensionConfig?.[EXT_ID] as
+			| Record<string, unknown>
+			| undefined;
+		const compactionCfg = extCfg?.compaction as
+			| Record<string, unknown>
+			| undefined;
+		const raw = compactionCfg?.planMaxContextTokens;
+		if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+			return Math.floor(raw);
+		}
+		return null;
 	}
 
 	/**
