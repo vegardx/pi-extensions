@@ -62,6 +62,13 @@ import {
 	shouldCompactMidPhase,
 } from "./plan/compaction.js";
 import {
+	classifyImplementContext,
+	planPickerView,
+	shouldFirePicker,
+	shouldOfferShiftTabPicker,
+	snapshotPlanStructure,
+} from "./plan/picker.js";
+import {
 	type ImplementBranchPlan,
 	type Plan,
 	type Phase as PlanPhase,
@@ -247,6 +254,26 @@ export default function (pi: ExtensionAPI) {
 	let pendingQuestions: PendingQuestion[] = [];
 	let nextQuestionId = 1;
 
+	// Snapshot of the plan structure at the start of the current plan-mode
+	// turn. Used by the agent_end picker gate to decide whether the plan
+	// changed during the turn (in which case we owe the user a decision)
+	// or stayed put (just discussion — leave them alone).
+	//
+	// Lifecycle:
+	//   - Captured in before_agent_start when null and mode is plan.
+	//     Conditional capture preserves the snapshot across `ask`-tool
+	//     question rounds so the picker fires once with the cumulative
+	//     diff, not once per round.
+	//   - Reset to null when the picker fires (next plan-build cycle
+	//     starts fresh).
+	//   - Reset to null when leaving plan mode and when the active plan
+	//     slug changes — both invalidate any stored structure.
+	let planTurnSnapshot: string | null = null;
+
+	function clearPlanTurnSnapshot(): void {
+		planTurnSnapshot = null;
+	}
+
 	// ---- Persistence ------------------------------------------------------
 
 	function persist(): void {
@@ -282,10 +309,23 @@ export default function (pi: ExtensionAPI) {
 	 * If modeState has a slug but the plan file is gone (deleted manually),
 	 * we clear the slug.
 	 */
-	function hydratePlan(): void {
-		if (!modeState?.currentPlanSlug) return;
-		if (!planExists(modeState.currentPlanSlug)) {
-			modeState.currentPlanSlug = null;
+	function hydratePlan(ctx?: ExtensionContext): void {
+		if (!modeState) return;
+		if (modeState.currentPlanSlug) {
+			if (!planExists(modeState.currentPlanSlug)) {
+				modeState.currentPlanSlug = null;
+				persist();
+			}
+			return;
+		}
+		// No slug bound — try to recover the per-repo active plan so
+		// plan_* tools and the picker gates can find it without a manual
+		// /plan resume. Only safe at session_start (cwd is stable);
+		// session_tree calls without ctx skip this branch.
+		if (!ctx) return;
+		const entry = activePlanForRepo(ctx.cwd);
+		if (entry) {
+			modeState.currentPlanSlug = entry.slug;
 			persist();
 		}
 	}
@@ -318,12 +358,6 @@ export default function (pi: ExtensionAPI) {
 		return (
 			plan.phases.find((p) => WORKTREE_STATUSES.includes(p.status)) ?? null
 		);
-	}
-
-	/** First `planned` phase, ready to be activated by /implement. */
-	function nextPlannedPhase(plan: Plan | null): PlanPhase | null {
-		if (!plan) return null;
-		return plan.phases.find((p) => p.status === "planned") ?? null;
 	}
 
 	/**
@@ -395,8 +429,11 @@ export default function (pi: ExtensionAPI) {
 				planText: null,
 				currentPlanSlug: slug,
 			};
-		} else {
+		} else if (modeState.currentPlanSlug !== slug) {
 			modeState.currentPlanSlug = slug;
+			// Switching plans invalidates any structure snapshot from the
+			// previous plan — a diff against it would mean nothing.
+			clearPlanTurnSnapshot();
 		}
 		persist();
 		updateWidget(ctx);
@@ -719,6 +756,11 @@ export default function (pi: ExtensionAPI) {
 
 	function setMode(mode: Mode, ctx: ExtensionContext): void {
 		if (!modeState) return;
+		if (modeState.mode === "plan" && mode !== "plan") {
+			// Leaving plan mode — any captured snapshot is now stale, since
+			// the next plan turn will be a fresh entry.
+			clearPlanTurnSnapshot();
+		}
 		modeState.mode = mode;
 		persist();
 		applyModeTools();
@@ -811,14 +853,19 @@ export default function (pi: ExtensionAPI) {
 		// Guard against stale setImmediate callbacks: if the user switched out
 		// of plan mode (e.g. Shift+Tab) between scheduling and execution, bail.
 		if (!modeState || modeState.mode !== "plan") return;
-		const choice = await ctx.ui.select(
-			`modes: plan ready${modeState.branch ? ` (${modeState.branch})` : ""} — what next?`,
-			[
-				"Implement — create branch and execute",
-				"Park — create GitHub tracking issue",
-				"Continue discussing — stay in plan mode",
-			],
-		);
+
+		const view = planPickerView(currentPlan(), modeState.branch);
+		if (view.action === "bail") {
+			// The auto-pop gate blocks this case, but the Shift+Tab and
+			// /plan resume paths can still land here. Bail gracefully
+			// rather than offering "Implement" with nothing to implement.
+			notify(ctx, view.notice, "info");
+			modeState.stage = "planning";
+			persist();
+			return;
+		}
+
+		const choice = await ctx.ui.select(view.title, view.options);
 
 		if (!choice || choice.startsWith("Continue")) {
 			// Reset to planning so the picker re-arms after the next agent turn.
@@ -1621,9 +1668,26 @@ export default function (pi: ExtensionAPI) {
 		// flip it to `active`. The branch comes from the phase, not from
 		// the description — so /ship has a clear per-phase boundary.
 		const plan = currentPlan();
-		const phase = activePhase(plan) ?? nextPlannedPhase(plan);
+		const classified = classifyImplementContext(plan);
 		let branch: string | null;
-		if (plan && phase) {
+		let phase: PlanPhase | null = null;
+		if (classified.kind === "refuse-no-actionable") {
+			// Plan exists but every phase is shipped/abandoned. Refuse rather
+			// than silently creating an off-plan branch from the description;
+			// that surprised users.
+			notify(
+				ctx,
+				"plan has no actionable phase (all shipped/abandoned). " +
+					"Use /plan to start a new plan, or Shift+Tab to hack mode " +
+					"for an off-plan branch.",
+				"warning",
+			);
+			modeState.stage = "planning";
+			persist();
+			return;
+		}
+		if (classified.kind === "use-phase" && plan) {
+			phase = classified.phase;
 			branch = phase.branch;
 
 			// `git checkout -B <branch>` is destructive: if <branch> already
@@ -1719,7 +1783,8 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 		} else {
-			// No plan / no phases — fall back to the legacy description-derived branch.
+			// No plan at all — legacy description-derived branch. /implement
+			// outside a planned context is intentionally supported.
 			branch = await createFeatureBranch(ctx, description);
 			if (!branch) return;
 		}
@@ -2459,7 +2524,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		hydrateMode(ctx);
-		hydratePlan();
+		hydratePlan(ctx);
 		probeCompactionApi(ctx);
 
 		// Fire-and-forget sync of PR state for the active plan. Reports
@@ -2520,6 +2585,13 @@ export default function (pi: ExtensionAPI) {
 		if (!modeState) return;
 
 		if (modeState.mode === "plan") {
+			// Capture once per plan-mode-entry. Conditional capture preserves
+			// the snapshot across `ask`-tool question rounds so the picker
+			// fires once with the cumulative diff. Cleared on plan-mode
+			// exit, on slug change, and when the picker actually fires.
+			if (planTurnSnapshot === null) {
+				planTurnSnapshot = snapshotPlanStructure(currentPlan());
+			}
 			return {
 				message: {
 					customType: CUSTOM_MODE_CONTEXT,
@@ -2711,18 +2783,29 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// Plan phase: auto-pop picker once the agent has built a plan.
-		// Phase "awaiting-choice" is set here so we fire exactly once per
-		// plan turn; runPicker resets it to "planning" on "Continue discussing".
+		// Plan phase: auto-pop picker once the agent has built or refined
+		// the plan. Two gates suppress the pop:
+		//   1. Actionability — at least one phase must be planned / active
+		//      / needs-attention. Fully shipped plans have nothing left to
+		//      decide.
+		//   2. Plan changed this turn — snapshot taken in before_agent_start
+		//      must differ from the current plan structure.
+		// See packages/modes/plan/picker.ts for the gate logic and the
+		// snapshot lifecycle reasoning.
 		const plan = currentPlan();
 		if (
-			modeState?.mode === "plan" &&
-			modeState.stage === "planning" &&
-			(plan?.phases.length ?? 0) > 0 &&
-			ctx.hasUI
+			shouldFirePicker({
+				mode: modeState?.mode,
+				stage: modeState?.stage,
+				plan,
+				snapshot: planTurnSnapshot,
+				hasUI: ctx.hasUI,
+			}) &&
+			modeState
 		) {
 			modeState.stage = "awaiting-choice";
 			persist();
+			clearPlanTurnSnapshot();
 			runDetached("plan picker", ctx, () =>
 				runPicker(ctx as ExtensionCommandContext),
 			);
@@ -2936,20 +3019,27 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// plan → auto. With a plan in hand, show the picker (Implement /
+			// plan → auto. With an actionable plan, show the picker (Implement /
 			// Park / Continue) so the user has to commit to /implement rather
-			// than stumble into auto with stale plan text. Without a plan, just
-			// flip.
+			// than stumble into auto with stale plan text. With nothing
+			// actionable (everything shipped/abandoned, or no plan at all),
+			// just flip — there's no decision to offer.
 			if (modeState.mode === "plan") {
-				const hasPlan =
-					(currentPlan()?.phases.length ?? 0) > 0 || modeState.planText;
-				if (hasPlan && ctx.hasUI) {
+				const plan = currentPlan();
+				if (shouldOfferShiftTabPicker(plan, ctx.hasUI)) {
 					runDetached("picker", ctx, () =>
 						runPicker(ctx as ExtensionCommandContext),
 					);
 				} else {
+					const hadPhases = (plan?.phases.length ?? 0) > 0;
 					setMode("auto", ctx);
-					notify(ctx, "auto mode", "info");
+					notify(
+						ctx,
+						hadPhases
+							? "auto mode — plan has no actionable phase"
+							: "auto mode",
+						"info",
+					);
 				}
 				return;
 			}
