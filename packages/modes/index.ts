@@ -19,15 +19,22 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { complete } from "@mariozechner/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	SessionManager,
+} from "@mariozechner/pi-coding-agent";
+import {
+	convertToLlm,
+	serializeConversation,
 } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { classifyBashCommand } from "./bash-classifier.js";
 import {
 	checkoutBranch,
@@ -44,6 +51,14 @@ import {
 	descriptionFromLastAssistant,
 	scanForSecrets,
 } from "./helpers.js";
+import {
+	appendPhaseEndCompaction,
+	appendPlanToImplementCompaction,
+	DEFAULT_PHASE_TOKENS,
+	hasPhaseEndCompaction,
+	hasPlanToImplementCompaction,
+	type SummariseFn,
+} from "./plan/compaction.js";
 import {
 	type Plan,
 	type Phase as PlanPhase,
@@ -170,6 +185,12 @@ export default function (pi: ExtensionAPI) {
 				type: "string",
 				default: "",
 				doc: "GitHub Project title to assign issues to when /park creates them. Leave empty to skip project assignment.",
+			},
+			{
+				key: "compaction.phaseTokens",
+				type: "number",
+				default: DEFAULT_PHASE_TOKENS,
+				doc: "Output token cap (maxTokens) on each phase-boundary compaction summary. Bounds the size of each '## Phase' section in the rolling summary; the input conversation is unbounded. Default 8000.",
 			},
 		],
 	});
@@ -1214,6 +1235,197 @@ export default function (pi: ExtensionAPI) {
 		);
 	}
 
+	// ---- Phase-boundary compaction ----------------------------------------
+	//
+	// Trigger points: /implement (plan → implement, collapses planning
+	// chatter) and /ship (phase end, freezes the just-completed phase as
+	// a section of the rolling summary).
+	//
+	// The byte-stable prefix invariant is enforced inside
+	// plan/compaction.ts — here we just resolve the model, build a
+	// SummariseFn, and call the orchestrator. See plan/compaction.ts for
+	// the cache rationale and the deferred-improvements list.
+
+	/** Once-per-session warning when no fast-tier model is configured. */
+	let warnedNoCompactionModel = false;
+
+	/**
+	 * True when ctx.sessionManager exposes the mutation methods our
+	 * compaction scheme depends on. The runtime value is currently always
+	 * a full SessionManager (verified in pi-coding-agent runner.js) but
+	 * the public type narrows to ReadonlySessionManager. The probe at
+	 * session_start verifies the runtime hasn't tightened the contract.
+	 * If it has, we silently skip phase-boundary compaction — pi's own
+	 * auto-compaction (or /compact) remains the fallback.
+	 */
+	let compactionApiAvailable = true;
+
+	function probeCompactionApi(ctx: ExtensionContext): void {
+		const sm = ctx.sessionManager as unknown as Partial<SessionManager>;
+		const ok =
+			typeof sm.appendCompaction === "function" &&
+			typeof sm.appendCustomEntry === "function";
+		if (!ok) {
+			compactionApiAvailable = false;
+			notify(
+				ctx,
+				"phase-boundary compaction disabled: pi sessionManager does not expose append methods on this version (falling back to pi auto-compaction)",
+				"warning",
+			);
+		}
+	}
+
+	function readPhaseTokensSetting(ctx: ExtensionContext): number {
+		const settings = readRelevantSettings(ctx.cwd);
+		const extCfg = settings.extensionConfig?.[EXT_ID] as
+			| Record<string, unknown>
+			| undefined;
+		const compactionCfg = extCfg?.compaction as
+			| Record<string, unknown>
+			| undefined;
+		const raw = compactionCfg?.phaseTokens;
+		if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+			return Math.floor(raw);
+		}
+		return DEFAULT_PHASE_TOKENS;
+	}
+
+	/**
+	 * Build the SummariseFn used by the compaction orchestrators. Returns
+	 * null when no fast-tier model is configured/auth'd — callers then
+	 * skip compaction (with a once-per-session warning).
+	 */
+	async function buildSummariseFn(
+		ctx: ExtensionContext,
+	): Promise<SummariseFn | null> {
+		const resolved = await resolveModel(ctx, {
+			name: "modes-compaction",
+			tier: "normal",
+			requireApiKey: true,
+		});
+		if (!resolved?.apiKey) return null;
+
+		return async ({ messages, preamble, maxTokens, signal }) => {
+			const conversationText = serializeConversation(convertToLlm(messages));
+			const prompt = `${preamble}\n\n<conversation>\n${conversationText}\n</conversation>`;
+			try {
+				const response = await complete(
+					resolved.model,
+					{
+						messages: [
+							{
+								role: "user",
+								content: [{ type: "text", text: prompt }],
+								timestamp: Date.now(),
+							},
+						],
+					},
+					{
+						apiKey: resolved.apiKey,
+						headers: resolved.headers,
+						maxTokens,
+						signal,
+					},
+				);
+				if (
+					response.stopReason === "error" ||
+					response.stopReason === "aborted"
+				) {
+					return null;
+				}
+				const text = response.content
+					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.map((c) => c.text)
+					.join("\n")
+					.trim();
+				return text || null;
+			} catch {
+				return null;
+			}
+		};
+	}
+
+	async function compactPlanToImplement(
+		ctx: ExtensionCommandContext,
+		plan: Plan,
+		activePhaseId: string,
+	): Promise<void> {
+		if (!compactionApiAvailable) return;
+		// ctx.sessionManager is typed as ReadonlySessionManager in the public
+		// extension API even though the runtime value is the full SessionManager
+		// (see runner.ts in pi-coding-agent). The append surface isn't part of
+		// the public contract; cast explicitly so callers know what's going on.
+		// probeCompactionApi() at session_start verifies the cast is still safe.
+		const sm = ctx.sessionManager as unknown as SessionManager;
+		if (hasPlanToImplementCompaction(sm)) return;
+
+		const summarise = await buildSummariseFn(ctx);
+		if (!summarise) {
+			if (!warnedNoCompactionModel) {
+				warnedNoCompactionModel = true;
+				notify(
+					ctx,
+					"compaction skipped: no fast-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
+					"warning",
+				);
+			}
+			return;
+		}
+
+		const id = await appendPlanToImplementCompaction({
+			sm,
+			plan,
+			summarise,
+			maxTokens: readPhaseTokensSetting(ctx),
+			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
+			activePhaseId,
+			signal: ctx.signal,
+		});
+		if (id !== null) {
+			notify(ctx, "context compacted: plan → implement", "info");
+		} else {
+			notify(ctx, "compaction skipped (summariser failed)", "warning");
+		}
+	}
+
+	async function compactPhaseEnd(
+		ctx: ExtensionCommandContext,
+		plan: Plan,
+		phaseId: string,
+	): Promise<void> {
+		if (!compactionApiAvailable) return;
+		const sm = ctx.sessionManager as unknown as SessionManager;
+		if (hasPhaseEndCompaction(sm, phaseId)) return;
+
+		const summarise = await buildSummariseFn(ctx);
+		if (!summarise) {
+			if (!warnedNoCompactionModel) {
+				warnedNoCompactionModel = true;
+				notify(
+					ctx,
+					"compaction skipped: no fast-tier model configured",
+					"warning",
+				);
+			}
+			return;
+		}
+
+		const id = await appendPhaseEndCompaction({
+			sm,
+			plan,
+			summarise,
+			maxTokens: readPhaseTokensSetting(ctx),
+			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
+			phaseId,
+			signal: ctx.signal,
+		});
+		if (id !== null) {
+			notify(ctx, `context compacted: phase ${phaseId} → frozen`, "info");
+		} else {
+			notify(ctx, "compaction skipped (summariser failed)", "warning");
+		}
+	}
+
 	// ---- Implement path ---------------------------------------------------
 
 	async function doImplement(
@@ -1300,6 +1512,15 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 
+		// Compact the plan→implement transition before the agent's first
+		// turn, so the planning conversation collapses into a stable
+		// `## Plan` summary section. See plan/compaction.ts for cache
+		// rationale. Only meaningful when we have an active phase —
+		// without it the orchestrator has no anchor for the marker.
+		if (plan && phase) {
+			await compactPlanToImplement(ctx, plan, phase.id);
+		}
+
 		pi.sendMessage(
 			{
 				customType: EXT_ID,
@@ -1379,6 +1600,10 @@ export default function (pi: ExtensionAPI) {
 			`phase ${phase.id} ➜ in-review (PR #${result.prNumber}${result.prUrl ? ` ${result.prUrl}` : ""})`,
 			"info",
 		);
+
+		// Freeze this phase's work as a `## Phase` section in the rolling
+		// summary. Idempotent on /ship retries via hasPhaseEndCompaction.
+		await compactPhaseEnd(ctx, plan, phase.id);
 	}
 
 	async function doSync(ctx: ExtensionCommandContext): Promise<void> {
@@ -1980,6 +2205,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		hydrateMode(ctx);
 		hydratePlan();
+		probeCompactionApi(ctx);
 
 		// Fire-and-forget sync of PR state for the active plan. Reports
 		// shipped/abandoned phases since last session.
