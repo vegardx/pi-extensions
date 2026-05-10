@@ -1,25 +1,49 @@
 /**
  * Phase-boundary compaction for the modes plan/phase model.
  *
- * Modes compacts at three trigger points, all using the same shape:
- * summarise a slice of raw messages exactly once, freeze it, append to
- * the rolling summary. Triggers:
+ * ---------------------------------------------------------------------
+ * Two flows live in this file (transitionally).
+ * ---------------------------------------------------------------------
  *
- *   1. plan → implement (`/implement` command):
- *      collapses planning chatter into `## Plan` + `## Planning notes`.
+ * (A) Mid-phase compaction — the post-fix path.
  *
- *   2. mid-phase (`turn_end` when sys + work > workingTokens):
- *      bounds in-flight context. Section: `## Phase p-X (part N, in progress)`.
- *      A phase that overflows N times produces N+1 slices.
+ *     Driven by pi via `ctx.compact()` → `session_before_compact` event
+ *     → our handler returns `{ compaction: { summary, firstKeptEntryId,
+ *     tokensBefore, details } }`. Pi then runs `appendCompaction` AND
+ *     rebuilds `agent.state.messages = sessionContext.messages` — the
+ *     rebuild step that the legacy direct-write path skipped, which is
+ *     the bug that made every prior modes compaction a runtime no-op
+ *     (the LLM kept seeing the full pre-compaction transcript and the
+ *     mid-phase trigger re-fired every turn).
  *
- *   3. phase-end (`/ship` command):
- *      freezes the just-completed phase. Section: `## Phase p-X (part N, shipped, PR #M)`.
+ *     Builder: `buildPhaseSliceCompactionResult(...)`. Pure. The
+ *     `firstKeptEntryId` and `tokensBefore` come from pi's
+ *     `preparation` (it computed them via `findCutPoint` and we trust
+ *     it). `previousSummary` is read off the branch via
+ *     `findLatestCompactionSummary` and prefixed to the new section,
+ *     preserving the append-only invariant below.
  *
- * The append-only invariant: each compaction's summary reuses the
- * previous compaction's summary byte-for-byte as a prefix. Sections are
- * never re-summarised. A phase that ran long is captured as a chain of
- * slices, each summarised once from raw messages — no summary-of-
- * summaries, no quality drift.
+ * (B) Plan→implement compaction — legacy direct-write path.
+ *
+ *     `appendPlanToImplementCompaction` still calls
+ *     `sm.appendCompaction` directly. It carries the same bug as the
+ *     pre-fix mid-phase path (the agent.state.messages rebuild never
+ *     happens), but is being deleted in Phase 2 of the plan in favour
+ *     of a deterministic plan-doc seed written via `ctx.newSession({
+ *     setup })`. Not worth fixing in the current PR.
+ *
+ *     Phase-end compaction at /ship has been deleted; per-phase
+ *     summaries move onto the plan doc in Phase 2 (also see
+ *     `compactPhaseEnd` in index.ts — currently a stub).
+ *
+ * ---------------------------------------------------------------------
+ * Append-only summary invariant.
+ * ---------------------------------------------------------------------
+ *
+ * Each compaction's summary reuses the previous compaction's summary
+ * byte-for-byte as a prefix. Sections are never re-summarised. A phase
+ * that ran long is captured as a chain of slices, each summarised once
+ * from raw messages — no summary-of-summaries, no quality drift.
  *
  * Pi's `buildSessionContext` only emits the LATEST CompactionEntry on
  * the path (verified in dist/core/session-manager.js), so the most
@@ -28,9 +52,9 @@
  * byte-identical and the prompt cache keeps hitting across phases.
  *
  * This module is intentionally pure: rendering helpers, tree
- * introspection, and orchestrators that take an injected `summarise`
- * callback. The actual LLM client wiring lives at the call site in
- * index.ts.
+ * introspection, and builders/orchestrators that take an injected
+ * `summarise` callback. The actual LLM client wiring lives at the call
+ * site in index.ts.
  *
  * ---------------------------------------------------------------------
  * Three-bucket context budget model
@@ -41,19 +65,21 @@
  * direction the KV-cache reuses (longest stable prefix first):
  *
  *   sys      — system prompt + active tool schemas. Stable prefix.
- *   summary  — rolling compaction summary (output of plan→implement +
- *              phase-slice + phase-end compactions). Grows on each
- *              compaction.
- *   work     — live messages since the most recent compaction
- *              breadcrumb. Hot tail; resets at every compaction.
+ *   summary  — rolling compaction summary (latest CompactionEntry on
+ *              the branch). Grows on each compaction.
+ *   work     — live messages since the most recent compaction. Hot
+ *              tail; resets at every compaction.
  *
  * Two configurable budgets:
  *
  *   workingTokens  — covers `sys + work`. Mid-phase compaction fires
  *                    when this is exceeded.
  *   summaryTokens  — covers `summary`. Soft-warn when exceeded; not
- *                    enforced (compaction is the only thing that grows
- *                    summary, and it does so deterministically).
+ *                    enforced.
+ *
+ * (Phase 2 of the plan reframes `summaryTokens` as the cumulative
+ * cross-phase carry-forward budget once per-phase summaries move onto
+ * the plan doc. The shape of the soft-warn stays the same.)
  *
  * Total target ceiling = workingTokens + summaryTokens. Tune both so
  * the total fits the active model's contextWindow.
@@ -571,6 +597,127 @@ export async function appendPhaseSliceCompaction(
 		} satisfies ModesCompactionDetails,
 		true,
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Mid-phase summary builder for the `session_before_compact` extension hook
+// ---------------------------------------------------------------------------
+//
+// This is the path used by mid-phase compaction post-fix. Pi drives the
+// flow via `ctx.compact()` → `session_before_compact` event → our handler
+// returns `{ compaction: { summary, firstKeptEntryId, tokensBefore, details } }`.
+// Pi then runs `appendCompaction` AND rebuilds `agent.state.messages` from
+// the post-compaction session context, which is what the legacy
+// `appendPhaseSliceCompaction` path failed to do.
+//
+// Pi's `prepareCompaction` already supplies:
+//   - firstKeptEntryId (computed from `keepRecentTokens` cut point — pi
+//     keeps the last ~20k tokens of recent turns to preserve the agent's
+//     train of thought; we reuse this verbatim).
+//   - tokensBefore (estimateContextTokens of the pre-compaction context).
+//   - previousSummary (the latest CompactionEntry's summary on the branch,
+//     i.e. the rolling-summary prefix we extend).
+//   - messagesToSummarize (boundaryStart..historyEnd; we ignore this and
+//     summarise everything since the last compaction ourselves, since
+//     `collectMessagesSinceLastCompaction` already encodes the modes shape).
+
+/** Output of `buildPhaseSliceCompactionResult`, fed back to pi. */
+export interface PhaseSliceCompactionResult {
+	summary: string;
+	firstKeptEntryId: string;
+	tokensBefore: number;
+	details: ModesCompactionDetails;
+}
+
+export interface BuildPhaseSliceCompactionOptions {
+	sm: SessionManager;
+	plan: Plan;
+	summarise: SummariseFn;
+	/** Output token cap for the summariser. */
+	maxTokens: number;
+	/** From `preparation.tokensBefore`. */
+	tokensBefore: number;
+	/** From `preparation.firstKeptEntryId` — what pi wants to keep. */
+	firstKeptEntryId: string;
+	phaseId: string;
+	signal?: AbortSignal;
+}
+
+/**
+ * Pure builder for a phase-slice (mid-phase) compaction. Returns the
+ * payload pi expects from `session_before_compact`, or null when the
+ * summariser fails or there's nothing to summarise.
+ *
+ * Throws if `phaseId` is not in the plan (indicates a wiring bug).
+ *
+ * Notes vs. the legacy `appendPhaseSliceCompaction`:
+ *   - No `appendCustomEntry` marker. We pass through pi's chosen
+ *     `firstKeptEntryId` directly — pi computed it via `findCutPoint`
+ *     and we trust it.
+ *   - No `appendCompaction` here. Pi appends after our handler returns,
+ *     and (critically) refreshes `agent.state.messages` afterwards.
+ *   - `kind` is fixed to `"in-progress"` (`modesKind: "phase-slice"`).
+ *     Phase-end compaction is being deleted; per-phase summaries move
+ *     onto the plan doc in Phase 2 of the plan.
+ */
+export async function buildPhaseSliceCompactionResult(
+	opts: BuildPhaseSliceCompactionOptions,
+): Promise<PhaseSliceCompactionResult | null> {
+	const {
+		sm,
+		plan,
+		summarise,
+		maxTokens,
+		tokensBefore,
+		firstKeptEntryId,
+		phaseId,
+		signal,
+	} = opts;
+
+	const phase = plan.phases.find((p) => p.id === phaseId);
+	if (!phase) {
+		throw new Error(
+			`buildPhaseSliceCompactionResult: phase ${phaseId} not found in plan ${plan.slug}`,
+		);
+	}
+
+	const partN = countPhaseSlicesOnBranch(sm, phaseId) + 1;
+	const messages = collectMessagesSinceLastCompaction(sm);
+
+	let body = "(no recorded work)";
+	if (messages.length > 0) {
+		const preamble = buildSummariserPreamble(
+			plan,
+			phase,
+			maxTokens,
+			partN,
+			"in-progress",
+		);
+		const out = await summarise({
+			messages,
+			preamble,
+			maxTokens,
+			signal,
+		});
+		if (out === null) return null;
+		body = out.trim();
+	}
+
+	const prev = findLatestCompactionSummary(sm);
+	const summary = buildSummary(
+		prev,
+		renderPhaseSection({ phase, body, partN, kind: "in-progress" }),
+	);
+
+	return {
+		summary,
+		firstKeptEntryId,
+		tokensBefore,
+		details: {
+			modesKind: "phase-slice",
+			modesPhaseId: phaseId,
+		} satisfies ModesCompactionDetails,
+	};
 }
 
 // ---------------------------------------------------------------------------
