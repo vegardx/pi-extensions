@@ -2590,11 +2590,22 @@ export default function (pi: ExtensionAPI) {
 			// When booting straight into plan mode in a git repo, materialise
 			// the plan file up front so plan_phase / plan_task work without
 			// the user first running `/plan`. Outside a git repo we leave the
-			// slug null — same behaviour as today.
-			const initialPlanSlug =
-				defaultMode === "plan" && isGitRepo(ctx.cwd)
-					? ensurePlanForRepo(ctx)
-					: null;
+			// slug null — same behaviour as today. Filesystem failures
+			// (unwritable `~/.pi/plans`, full disk, ...) must not break
+			// session_start; fall back to a null slug + warning instead.
+			let initialPlanSlug: string | null = null;
+			if (defaultMode === "plan" && isGitRepo(ctx.cwd)) {
+				try {
+					initialPlanSlug = ensurePlanForRepo(ctx);
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					notify(
+						ctx,
+						`modes: failed to initialize plan for fresh session — ${msg}`,
+						"warning",
+					);
+				}
+			}
 			modeState = {
 				mode: defaultMode,
 				stage: "idle",
