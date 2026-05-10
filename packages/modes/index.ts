@@ -78,6 +78,11 @@ import {
 } from "./plan/storage.js";
 import { registerPlanTools } from "./plan/tools.js";
 import {
+	buildTransitionOptions,
+	decideFromChoice,
+	type TransitionDecision,
+} from "./plan/transition.js";
+import {
 	createWorktree,
 	removeWorktree,
 	worktreeExists,
@@ -2793,6 +2798,32 @@ export default function (pi: ExtensionAPI) {
 		updateWidget(ctx);
 	});
 
+	// ---- Mode transition prompt ------------------------------------------
+
+	/**
+	 * For hack → plan transitions, ask whether to keep / lossy-compact /
+	 * start a new session. Pure decision-building lives in plan/transition.ts;
+	 * this wrapper resolves the active phase, calls ctx.ui.select, and
+	 * returns the structured decision.
+	 */
+	async function runModeTransition(
+		prev: Mode,
+		ctx: ExtensionContext,
+	): Promise<TransitionDecision> {
+		const plan = currentPlan();
+		const activePhase = plan?.phases.find((p) => p.status === "active");
+		const activePhaseId = activePhase?.id ?? null;
+		const built = buildTransitionOptions({
+			hasUI: ctx.hasUI,
+			prev,
+			next: "plan",
+			activePhaseId,
+		});
+		if (!built) return { action: "flip" };
+		const choice = await ctx.ui.select(built.title, built.options);
+		return decideFromChoice(choice, activePhaseId);
+	}
+
 	// ---- Shift+Tab shortcut -----------------------------------------------
 
 	pi.registerShortcut("shift+tab", {
@@ -2843,7 +2874,28 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// hack → plan (full circle)
+			// hack → plan (full circle). May prompt for handling carried-over
+			// context: keep / lossy-compact active phase / new session.
+			const decision = await runModeTransition("hack", ctx);
+			if (decision.action === "newSession") {
+				const cmdCtx = ctx as ExtensionCommandContext;
+				if (typeof cmdCtx.newSession === "function") {
+					await cmdCtx.newSession({});
+					return;
+				}
+				// Headless / no command-context support: fall through to flip.
+			}
+			if (decision.action === "compact") {
+				const plan = currentPlan();
+				if (plan && !compactionInFlight) {
+					compactionInFlight = true;
+					try {
+						await compactPhaseSlice(ctx, plan, decision.phaseId);
+					} finally {
+						compactionInFlight = false;
+					}
+				}
+			}
 			setMode("plan", ctx);
 			notify(ctx, "plan mode", "info");
 		},
