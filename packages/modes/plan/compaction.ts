@@ -646,7 +646,13 @@ export interface BuildPhaseSliceCompactionOptions {
 /**
  * Pure builder for a phase-slice (mid-phase) compaction. Returns the
  * payload pi expects from `session_before_compact`, or null when the
- * summariser fails or there's nothing to summarise.
+ * summariser fails.
+ *
+ * When there are zero messages since the last compaction (a phase
+ * slice fired immediately after a previous compaction with no
+ * intervening turns) the body is set to a `(no recorded work)`
+ * placeholder and a non-null result is returned — the rolling-summary
+ * prefix invariant still wants a fresh section appended.
  *
  * Throws if `phaseId` is not in the plan (indicates a wiring bug).
  *
