@@ -52,8 +52,9 @@ import {
 	scanForSecrets,
 } from "./helpers.js";
 import {
-	appendPhaseEndCompaction,
+	appendPhaseSliceCompaction,
 	appendPlanToImplementCompaction,
+	DEFAULT_MAX_CONTEXT_TOKENS,
 	DEFAULT_PHASE_TOKENS,
 	hasPhaseEndCompaction,
 	hasPlanToImplementCompaction,
@@ -191,6 +192,12 @@ export default function (pi: ExtensionAPI) {
 				type: "number",
 				default: DEFAULT_PHASE_TOKENS,
 				doc: "Output token cap (maxTokens) on each phase-boundary compaction summary. Bounds the size of each '## Phase' section in the rolling summary; the input conversation is unbounded. Default 8000.",
+			},
+			{
+				key: "compaction.maxContextTokens",
+				type: "number",
+				default: DEFAULT_MAX_CONTEXT_TOKENS,
+				doc: "Mid-phase compaction trigger threshold in tokens. When getContextUsage().tokens exceeds this on turn_end (in auto mode with an active phase), a phase-slice compaction fires. Default 170000.",
 			},
 		],
 	});
@@ -1260,6 +1267,15 @@ export default function (pi: ExtensionAPI) {
 	 */
 	let compactionApiAvailable = true;
 
+	/**
+	 * Re-entrancy guard. Mid-phase compaction runs from the `turn_end`
+	 * hook; the LLM summarisation call can take seconds, during which
+	 * pi may fire another turn_end. Without this flag we'd stack
+	 * concurrent compactions on the same branch and produce duplicate
+	 * sections. Set true at compactPhaseSlice entry, cleared in finally.
+	 */
+	let compactionInFlight = false;
+
 	function probeCompactionApi(ctx: ExtensionContext): void {
 		const sm = ctx.sessionManager as unknown as Partial<SessionManager>;
 		const ok =
@@ -1275,7 +1291,11 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
-	function readPhaseTokensSetting(ctx: ExtensionContext): number {
+	function readCompactionNumber(
+		ctx: ExtensionContext,
+		key: string,
+		fallback: number,
+	): number {
 		const settings = readRelevantSettings(ctx.cwd);
 		const extCfg = settings.extensionConfig?.[EXT_ID] as
 			| Record<string, unknown>
@@ -1283,11 +1303,23 @@ export default function (pi: ExtensionAPI) {
 		const compactionCfg = extCfg?.compaction as
 			| Record<string, unknown>
 			| undefined;
-		const raw = compactionCfg?.phaseTokens;
+		const raw = compactionCfg?.[key];
 		if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
 			return Math.floor(raw);
 		}
-		return DEFAULT_PHASE_TOKENS;
+		return fallback;
+	}
+
+	function readPhaseTokensSetting(ctx: ExtensionContext): number {
+		return readCompactionNumber(ctx, "phaseTokens", DEFAULT_PHASE_TOKENS);
+	}
+
+	function readMaxContextTokensSetting(ctx: ExtensionContext): number {
+		return readCompactionNumber(
+			ctx,
+			"maxContextTokens",
+			DEFAULT_MAX_CONTEXT_TOKENS,
+		);
 	}
 
 	/**
@@ -1410,19 +1442,75 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const id = await appendPhaseEndCompaction({
+		const id = await appendPhaseSliceCompaction({
 			sm,
 			plan,
 			summarise,
 			maxTokens: readPhaseTokensSetting(ctx),
 			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
 			phaseId,
+			kind: "end",
 			signal: ctx.signal,
 		});
 		if (id !== null) {
 			notify(ctx, `context compacted: phase ${phaseId} → frozen`, "info");
 		} else {
 			notify(ctx, "compaction skipped (summariser failed)", "warning");
+		}
+	}
+
+	/**
+	 * Mid-phase compaction. Fires from the `turn_end` hook when context
+	 * tokens exceed maxContextTokens in auto mode with an active phase.
+	 *
+	 * Same shape as compactPhaseEnd, but kind: "in-progress" — multiple
+	 * slices per phase are valid. The slice chain assembled across
+	 * triggers (in-progress × N, then end at /ship) becomes the phase's
+	 * record in the rolling summary.
+	 */
+	async function compactPhaseSlice(
+		ctx: ExtensionContext,
+		plan: Plan,
+		phaseId: string,
+	): Promise<void> {
+		if (!compactionApiAvailable) return;
+		const sm = ctx.sessionManager as unknown as SessionManager;
+
+		const summarise = await buildSummariseFn(ctx);
+		if (!summarise) {
+			if (!warnedNoCompactionModel) {
+				warnedNoCompactionModel = true;
+				notify(
+					ctx,
+					"compaction skipped: no fast-tier model configured",
+					"warning",
+				);
+			}
+			return;
+		}
+
+		const id = await appendPhaseSliceCompaction({
+			sm,
+			plan,
+			summarise,
+			maxTokens: readPhaseTokensSetting(ctx),
+			tokensBefore: ctx.getContextUsage()?.tokens ?? 0,
+			phaseId,
+			kind: "in-progress",
+			signal: ctx.signal,
+		});
+		if (id !== null) {
+			notify(
+				ctx,
+				`context compacted: phase ${phaseId} mid-phase slice`,
+				"info",
+			);
+		} else {
+			notify(
+				ctx,
+				"mid-phase compaction skipped (summariser failed)",
+				"warning",
+			);
 		}
 	}
 
@@ -2608,6 +2696,45 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_end", () => {
 		footerTui?.requestRender();
+	});
+
+	// ---- Mid-phase compaction trigger -------------------------------------
+	//
+	// Gated stack: the cheapest checks first so most turn_end events
+	// short-circuit before touching the session manager.
+	//
+	//   1. compactionApiAvailable — runtime probe at session_start
+	//   2. modeState exists and is auto/hack — only modes-driven execution
+	//   3. plan + active phase exist
+	//   4. tokens > maxContextTokens (uses ctx.getContextUsage())
+	//   5. !compactionInFlight — re-entrancy guard
+	//
+	// On every gate failure: silent return. We never want this hook to
+	// log, only act.
+
+	pi.on("turn_end", async (_event, ctx) => {
+		if (!compactionApiAvailable) return;
+		if (!modeState) return;
+		if (modeState.mode !== "auto") return;
+		if (compactionInFlight) return;
+
+		const plan = currentPlan();
+		if (!plan) return;
+		const activePhase = plan.phases.find((p) => p.status === "active");
+		if (!activePhase) return;
+
+		const usage = ctx.getContextUsage();
+		const tokens = usage?.tokens;
+		if (typeof tokens !== "number") return;
+		const threshold = readMaxContextTokensSetting(ctx);
+		if (tokens <= threshold) return;
+
+		compactionInFlight = true;
+		try {
+			await compactPhaseSlice(ctx, plan, activePhase.id);
+		} finally {
+			compactionInFlight = false;
+		}
 	});
 
 	// ---- Track plan text snapshot ----------------------------------------

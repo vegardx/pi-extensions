@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-	appendPhaseEndCompaction,
+	appendPhaseSliceCompaction,
 	appendPlanToImplementCompaction,
 	buildSummariserPreamble,
 	buildSummary,
 	collectMessagesSinceLastCompaction,
+	countPhaseSlicesOnBranch,
 	DEFAULT_PHASE_TOKENS,
 	findLatestCompactionSummary,
 	hasPhaseEndCompaction,
@@ -182,23 +183,61 @@ describe("renderPlanSection", () => {
 // ---------------------------------------------------------------------------
 
 describe("renderPhaseSection", () => {
-	it("includes status and PR number when present", () => {
+	it("formats in-progress slices with part-N", () => {
+		const phase = makePhase({
+			id: "p-1",
+			title: "Webhook retries",
+			status: "active",
+		});
+		const out = renderPhaseSection({
+			phase,
+			body: "body text",
+			partN: 2,
+			kind: "in-progress",
+		});
+		expect(out).toBe(
+			"## Phase `p-1` — Webhook retries (part 2, in progress)\n\nbody text",
+		);
+	});
+
+	it("formats end slices with PR number", () => {
 		const phase = makePhase({
 			id: "p-1",
 			title: "Webhook retries",
 			status: "in-review",
 			prNumber: 99,
 		});
-		const out = renderPhaseSection(phase, "body text");
+		const out = renderPhaseSection({
+			phase,
+			body: "body",
+			partN: 1,
+			kind: "end",
+		});
 		expect(out).toBe(
-			"## Phase `p-1` — Webhook retries (in-review, PR #99)\n\nbody text",
+			"## Phase `p-1` — Webhook retries (part 1, shipped, PR #99)\n\nbody",
 		);
 	});
 
-	it("omits PR number when undefined", () => {
+	it("always emits part-N even for N=1 (no conditional formatting)", () => {
 		const phase = makePhase({ id: "p-1", title: "X", status: "active" });
-		const out = renderPhaseSection(phase, "body");
-		expect(out).toBe("## Phase `p-1` — X (active)\n\nbody");
+		const out = renderPhaseSection({
+			phase,
+			body: "b",
+			partN: 1,
+			kind: "in-progress",
+		});
+		expect(out).toContain("(part 1, in progress)");
+	});
+
+	it("omits PR number when undefined on end slice", () => {
+		const phase = makePhase({ id: "p-1", title: "X", status: "in-review" });
+		const out = renderPhaseSection({
+			phase,
+			body: "b",
+			partN: 3,
+			kind: "end",
+		});
+		expect(out).toBe("## Phase `p-1` — X (part 3, shipped)\n\nb");
 	});
 });
 
@@ -248,6 +287,7 @@ describe("buildSummariserPreamble", () => {
 		expect(out).toContain("`p-1` — T1: G1");
 		expect(out).toContain("`p-2` — T2: G2");
 		expect(out).toContain("~8000 output tokens");
+		expect(out).toContain("MAXIMUM, not a quota");
 	});
 
 	it("for phase-end names the completed phase and only upcoming phases", () => {
@@ -286,6 +326,26 @@ describe("buildSummariserPreamble", () => {
 		if (!completed) throw new Error("fixture missing phase");
 		const out = buildSummariserPreamble(plan, completed, 5000);
 		expect(out).not.toContain("Upcoming phases");
+	});
+
+	it("for partN > 1, instructs the model not to restate prior parts", () => {
+		const plan = makePlan([makePhase({ id: "p-1" })]);
+		const completed = plan.phases[0];
+		if (!completed) throw new Error("fixture missing phase");
+		const out = buildSummariserPreamble(plan, completed, 5000, 3);
+		expect(out).toContain("part 3");
+		expect(out).toContain("Earlier parts are already captured");
+		expect(out).toContain("do NOT restate work covered by previous parts");
+	});
+
+	it("for partN <= 1, omits the prior-parts directive", () => {
+		const plan = makePlan([makePhase({ id: "p-1" })]);
+		const completed = plan.phases[0];
+		if (!completed) throw new Error("fixture missing phase");
+		const out1 = buildSummariserPreamble(plan, completed, 5000, 1);
+		const out0 = buildSummariserPreamble(plan, completed, 5000, 0);
+		expect(out1).not.toContain("Earlier parts are already captured");
+		expect(out0).not.toContain("Earlier parts are already captured");
 	});
 });
 
@@ -338,6 +398,16 @@ describe("hasPhaseEndCompaction / hasPlanToImplementCompaction", () => {
 		expect(hasPhaseEndCompaction(castSm(sm), "p-2")).toBe(false);
 	});
 
+	it("phase-slice does NOT trigger hasPhaseEndCompaction (only end does)", () => {
+		const sm = new FakeSessionManager();
+		const m = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s", m, 0, {
+			modesKind: "phase-slice",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		expect(hasPhaseEndCompaction(castSm(sm), "p-1")).toBe(false);
+	});
+
 	it("ignores compactions without modes details (e.g. smart-compact)", () => {
 		const sm = new FakeSessionManager();
 		const m = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
@@ -348,6 +418,69 @@ describe("hasPhaseEndCompaction / hasPlanToImplementCompaction", () => {
 		});
 		expect(hasPlanToImplementCompaction(castSm(sm))).toBe(false);
 		expect(hasPhaseEndCompaction(castSm(sm), "p-1")).toBe(false);
+	});
+});
+
+describe("countPhaseSlicesOnBranch", () => {
+	it("returns 0 for a fresh branch", () => {
+		const sm = new FakeSessionManager();
+		expect(countPhaseSlicesOnBranch(castSm(sm), "p-1")).toBe(0);
+	});
+
+	it("counts phase-slice entries", () => {
+		const sm = new FakeSessionManager();
+		const m1 = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s1", m1, 0, {
+			modesKind: "phase-slice",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		const m2 = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s2", m2, 0, {
+			modesKind: "phase-slice",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		expect(countPhaseSlicesOnBranch(castSm(sm), "p-1")).toBe(2);
+	});
+
+	it("counts both phase-slice and phase-end (chain ends with end)", () => {
+		const sm = new FakeSessionManager();
+		const m1 = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s1", m1, 0, {
+			modesKind: "phase-slice",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		const m2 = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s2", m2, 0, {
+			modesKind: "phase-end",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		expect(countPhaseSlicesOnBranch(castSm(sm), "p-1")).toBe(2);
+	});
+
+	it("ignores other phases", () => {
+		const sm = new FakeSessionManager();
+		const m1 = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s1", m1, 0, {
+			modesKind: "phase-slice",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		const m2 = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s2", m2, 0, {
+			modesKind: "phase-slice",
+			modesPhaseId: "p-2",
+		} satisfies ModesCompactionDetails);
+		expect(countPhaseSlicesOnBranch(castSm(sm), "p-1")).toBe(1);
+		expect(countPhaseSlicesOnBranch(castSm(sm), "p-2")).toBe(1);
+	});
+
+	it("ignores plan-to-implement compactions (not phase slices)", () => {
+		const sm = new FakeSessionManager();
+		const m = sm.appendCustomEntry(PHASE_BOUNDARY_CUSTOM_TYPE, {});
+		sm.appendCompaction("s", m, 0, {
+			modesKind: "plan-to-implement",
+			modesPhaseId: "p-1",
+		} satisfies ModesCompactionDetails);
+		expect(countPhaseSlicesOnBranch(castSm(sm), "p-1")).toBe(0);
 	});
 });
 
@@ -469,10 +602,10 @@ describe("appendPlanToImplementCompaction", () => {
 });
 
 // ---------------------------------------------------------------------------
-// appendPhaseEndCompaction
+// appendPhaseSliceCompaction (in-progress + end)
 // ---------------------------------------------------------------------------
 
-describe("appendPhaseEndCompaction", () => {
+describe("appendPhaseSliceCompaction", () => {
 	function setupPlanToImplement(
 		sm: FakeSessionManager,
 		plan: Plan,
@@ -491,150 +624,266 @@ describe("appendPhaseEndCompaction", () => {
 		} satisfies ModesCompactionDetails);
 	}
 
-	it("preserves the previous summary verbatim and appends a new section", async () => {
-		const sm = new FakeSessionManager();
-		const plan = makePlan([
-			makePhase({
-				id: "p-1",
-				title: "Endpoint",
-				goal: "POST /hook",
-				status: "in-review",
-				prNumber: 42,
-			}),
-			makePhase({
-				id: "p-2",
-				title: "Next",
-				goal: "next-up",
-				status: "planned",
-			}),
-		]);
+	describe("kind: end", () => {
+		it("preserves the previous summary verbatim and appends a new section", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([
+				makePhase({
+					id: "p-1",
+					title: "Endpoint",
+					goal: "POST /hook",
+					status: "in-review",
+					prNumber: 42,
+				}),
+				makePhase({
+					id: "p-2",
+					title: "Next",
+					goal: "next-up",
+					status: "planned",
+				}),
+			]);
 
-		const prevSummary =
-			"## Plan: Test\n- p-1 active\n\n## Planning notes\n\nstuff";
-		setupPlanToImplement(sm, plan, prevSummary);
+			const prevSummary =
+				"## Plan: Test\n- p-1 active\n\n## Planning notes\n\nstuff";
+			setupPlanToImplement(sm, plan, prevSummary);
 
-		// Phase 1's work
-		sm.appendMessage(userMsg("phase 1 work"));
-		sm.appendMessage(userMsg("more phase 1 work"));
+			// Phase 1's work
+			sm.appendMessage(userMsg("phase 1 work"));
+			sm.appendMessage(userMsg("more phase 1 work"));
 
-		const summarise: SummariseFn = vi
-			.fn()
-			.mockResolvedValue("## Done\n- endpoint shipped");
+			const summarise: SummariseFn = vi
+				.fn()
+				.mockResolvedValue("## Done\n- endpoint shipped");
 
-		const id = await appendPhaseEndCompaction({
-			sm: castSm(sm),
-			plan,
-			summarise,
-			maxTokens: DEFAULT_PHASE_TOKENS,
-			tokensBefore: 5000,
-			phaseId: "p-1",
+			const id = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 5000,
+				phaseId: "p-1",
+				kind: "end",
+			});
+
+			expect(id).toBeTruthy();
+			const last = sm.entries[sm.entries.length - 1];
+			expect(last?.type).toBe("compaction");
+
+			// THE invariant: the new summary starts with the previous summary
+			// byte-for-byte. This is what keeps the prompt cache hot.
+			expect((last?.summary as string).startsWith(prevSummary)).toBe(true);
+			// Section title with part-N + shipped + PR.
+			expect(last?.summary).toContain(
+				"## Phase `p-1` — Endpoint (part 1, shipped, PR #42)\n\n## Done\n- endpoint shipped",
+			);
+			// Details set correctly.
+			const details = last?.details as ModesCompactionDetails;
+			expect(details.modesKind).toBe("phase-end");
+			expect(details.modesPhaseId).toBe("p-1");
 		});
 
-		expect(id).toBeTruthy();
-		const last = sm.entries[sm.entries.length - 1];
-		expect(last?.type).toBe("compaction");
+		it("is idempotent on repeat calls for the same phase", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
+			setupPlanToImplement(sm, plan, "## Plan: x");
+			sm.appendMessage(userMsg("work"));
 
-		// THE invariant: the new summary starts with the previous summary
-		// byte-for-byte. This is what keeps the prompt cache hot.
-		expect((last?.summary as string).startsWith(prevSummary)).toBe(true);
-		// The new section is appended after a blank line.
-		expect(last?.summary).toContain(
-			"## Phase `p-1` — Endpoint (in-review, PR #42)\n\n## Done\n- endpoint shipped",
-		);
-	});
+			const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
 
-	it("is idempotent on repeat calls for the same phase", async () => {
-		const sm = new FakeSessionManager();
-		const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
-		setupPlanToImplement(sm, plan, "## Plan: x");
-		sm.appendMessage(userMsg("work"));
-
-		const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
-
-		const first = await appendPhaseEndCompaction({
-			sm: castSm(sm),
-			plan,
-			summarise,
-			maxTokens: DEFAULT_PHASE_TOKENS,
-			tokensBefore: 0,
-			phaseId: "p-1",
-		});
-		expect(first).toBeTruthy();
-		const after = sm.entries.length;
-
-		const second = await appendPhaseEndCompaction({
-			sm: castSm(sm),
-			plan,
-			summarise,
-			maxTokens: DEFAULT_PHASE_TOKENS,
-			tokensBefore: 0,
-			phaseId: "p-1",
-		});
-		expect(second).toBeNull();
-		expect(sm.entries.length).toBe(after); // no new entries
-		expect(summarise).toHaveBeenCalledTimes(1); // not called again
-	});
-
-	it("appends nothing on summariser error", async () => {
-		const sm = new FakeSessionManager();
-		const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
-		setupPlanToImplement(sm, plan, "## Plan: x");
-		sm.appendMessage(userMsg("work"));
-		const before = sm.entries.length;
-
-		const summarise: SummariseFn = vi.fn().mockResolvedValue(null);
-
-		const id = await appendPhaseEndCompaction({
-			sm: castSm(sm),
-			plan,
-			summarise,
-			maxTokens: DEFAULT_PHASE_TOKENS,
-			tokensBefore: 0,
-			phaseId: "p-1",
-		});
-
-		expect(id).toBeNull();
-		expect(sm.entries.length).toBe(before);
-	});
-
-	it("uses '(no recorded work)' body when there are no messages since last compaction", async () => {
-		const sm = new FakeSessionManager();
-		const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
-		setupPlanToImplement(sm, plan, "## Plan: x");
-		// No message between the prior compaction and this call.
-
-		const summarise: SummariseFn = vi.fn();
-
-		const id = await appendPhaseEndCompaction({
-			sm: castSm(sm),
-			plan,
-			summarise,
-			maxTokens: DEFAULT_PHASE_TOKENS,
-			tokensBefore: 0,
-			phaseId: "p-1",
-		});
-
-		expect(id).toBeTruthy();
-		expect(summarise).not.toHaveBeenCalled();
-		const last = sm.entries[sm.entries.length - 1];
-		expect(last?.summary).toContain("(no recorded work)");
-	});
-
-	it("throws when phaseId is not in the plan", async () => {
-		const sm = new FakeSessionManager();
-		const plan = makePlan([makePhase({ id: "p-1" })]);
-		const summarise: SummariseFn = vi.fn();
-
-		await expect(
-			appendPhaseEndCompaction({
+			const first = await appendPhaseSliceCompaction({
 				sm: castSm(sm),
 				plan,
 				summarise,
 				maxTokens: DEFAULT_PHASE_TOKENS,
 				tokensBefore: 0,
-				phaseId: "p-bogus",
-			}),
-		).rejects.toThrow(/p-bogus.*not found/);
+				phaseId: "p-1",
+				kind: "end",
+			});
+			expect(first).toBeTruthy();
+			const after = sm.entries.length;
+
+			const second = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "end",
+			});
+			expect(second).toBeNull();
+			expect(sm.entries.length).toBe(after); // no new entries
+			expect(summarise).toHaveBeenCalledTimes(1); // not called again
+		});
+
+		it("appends nothing on summariser error", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
+			setupPlanToImplement(sm, plan, "## Plan: x");
+			sm.appendMessage(userMsg("work"));
+			const before = sm.entries.length;
+
+			const summarise: SummariseFn = vi.fn().mockResolvedValue(null);
+
+			const id = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "end",
+			});
+
+			expect(id).toBeNull();
+			expect(sm.entries.length).toBe(before);
+		});
+
+		it("uses '(no recorded work)' body when there are no messages since last compaction", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
+			setupPlanToImplement(sm, plan, "## Plan: x");
+			// No message between the prior compaction and this call.
+
+			const summarise: SummariseFn = vi.fn();
+
+			const id = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "end",
+			});
+
+			expect(id).toBeTruthy();
+			expect(summarise).not.toHaveBeenCalled();
+			const last = sm.entries[sm.entries.length - 1];
+			expect(last?.summary).toContain("(no recorded work)");
+		});
+
+		it("throws when phaseId is not in the plan", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([makePhase({ id: "p-1" })]);
+			const summarise: SummariseFn = vi.fn();
+
+			await expect(
+				appendPhaseSliceCompaction({
+					sm: castSm(sm),
+					plan,
+					summarise,
+					maxTokens: DEFAULT_PHASE_TOKENS,
+					tokensBefore: 0,
+					phaseId: "p-bogus",
+					kind: "end",
+				}),
+			).rejects.toThrow(/p-bogus.*not found/);
+		});
+	});
+
+	describe("kind: in-progress", () => {
+		it("appends a phase-slice compaction with details.modesKind = 'phase-slice'", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([
+				makePhase({ id: "p-1", title: "T", status: "active" }),
+			]);
+			setupPlanToImplement(sm, plan, "## Plan: T");
+			sm.appendMessage(userMsg("partial work"));
+
+			const summarise: SummariseFn = vi.fn().mockResolvedValue("partial body");
+
+			const id = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "in-progress",
+			});
+
+			expect(id).toBeTruthy();
+			const last = sm.entries[sm.entries.length - 1];
+			const details = last?.details as ModesCompactionDetails;
+			expect(details.modesKind).toBe("phase-slice");
+			expect(details.modesPhaseId).toBe("p-1");
+			expect(last?.summary).toContain(
+				"## Phase `p-1` — T (part 1, in progress)",
+			);
+		});
+
+		it("is NOT idempotent — multiple slices per phase are valid by design", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([
+				makePhase({ id: "p-1", title: "T", status: "active" }),
+			]);
+			setupPlanToImplement(sm, plan, "## Plan: T");
+			sm.appendMessage(userMsg("partial 1"));
+
+			const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
+
+			const a = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "in-progress",
+			});
+			expect(a).toBeTruthy();
+
+			sm.appendMessage(userMsg("partial 2"));
+			const b = await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "in-progress",
+			});
+			expect(b).toBeTruthy();
+			expect(b).not.toBe(a);
+			expect(summarise).toHaveBeenCalledTimes(2);
+		});
+
+		it("increments part-N across consecutive slices", async () => {
+			const sm = new FakeSessionManager();
+			const plan = makePlan([
+				makePhase({ id: "p-1", title: "T", status: "active" }),
+			]);
+			setupPlanToImplement(sm, plan, "## Plan: T");
+
+			const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
+
+			sm.appendMessage(userMsg("a"));
+			await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "in-progress",
+			});
+			sm.appendMessage(userMsg("b"));
+			await appendPhaseSliceCompaction({
+				sm: castSm(sm),
+				plan,
+				summarise,
+				maxTokens: DEFAULT_PHASE_TOKENS,
+				tokensBefore: 0,
+				phaseId: "p-1",
+				kind: "in-progress",
+			});
+
+			const last = sm.entries[sm.entries.length - 1];
+			expect(last?.summary).toContain(
+				"## Phase `p-1` — T (part 2, in progress)",
+			);
+		});
 	});
 });
 
@@ -690,13 +939,14 @@ describe("rolling summary across phases (cache invariant)", () => {
 		// phase 1 work + ship
 		sm.appendMessage(userMsg("p1 work a"));
 		sm.appendMessage(userMsg("p1 work b"));
-		await appendPhaseEndCompaction({
+		await appendPhaseSliceCompaction({
 			sm: castSm(sm),
 			plan,
 			summarise: summariseStub,
 			maxTokens: DEFAULT_PHASE_TOKENS,
 			tokensBefore: 0,
 			phaseId: "p-1",
+			kind: "end",
 		});
 		const summaryAfterP1 = (
 			sm.entries[sm.entries.length - 1] as unknown as { summary: string }
@@ -704,13 +954,14 @@ describe("rolling summary across phases (cache invariant)", () => {
 
 		// phase 2 work + ship
 		sm.appendMessage(userMsg("p2 work"));
-		await appendPhaseEndCompaction({
+		await appendPhaseSliceCompaction({
 			sm: castSm(sm),
 			plan,
 			summarise: summariseStub,
 			maxTokens: DEFAULT_PHASE_TOKENS,
 			tokensBefore: 0,
 			phaseId: "p-2",
+			kind: "end",
 		});
 		const summaryAfterP2 = (
 			sm.entries[sm.entries.length - 1] as unknown as { summary: string }
@@ -726,6 +977,102 @@ describe("rolling summary across phases (cache invariant)", () => {
 		expect(summaryAfterP2).toContain("## Phase `p-1` — P1");
 		expect(summaryAfterP2).toContain("## Phase `p-2` — P2");
 		expect(summaryAfterP2).not.toContain("## Phase `p-3`");
+	});
+
+	it("slice chain within ONE phase: 2 in-progress slices + 1 end, prefix stable across all", async () => {
+		const sm = new FakeSessionManager();
+		const plan = makePlan([
+			makePhase({
+				id: "p-long",
+				title: "Long phase",
+				goal: "lots of work",
+				status: "in-review",
+				prNumber: 100,
+			}),
+		]);
+		const summarise: SummariseFn = async ({ messages }) =>
+			`body for ${messages.length} msgs`;
+
+		// plan→implement
+		sm.appendMessage(userMsg("planning"));
+		await appendPlanToImplementCompaction({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			activePhaseId: "p-long",
+		});
+		const sumA = (
+			sm.entries[sm.entries.length - 1] as unknown as { summary: string }
+		).summary;
+
+		// First mid-phase slice
+		sm.appendMessage(userMsg("work-a-1"));
+		sm.appendMessage(userMsg("work-a-2"));
+		await appendPhaseSliceCompaction({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			phaseId: "p-long",
+			kind: "in-progress",
+		});
+		const sumB = (
+			sm.entries[sm.entries.length - 1] as unknown as { summary: string }
+		).summary;
+
+		// Second mid-phase slice
+		sm.appendMessage(userMsg("work-b-1"));
+		await appendPhaseSliceCompaction({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			phaseId: "p-long",
+			kind: "in-progress",
+		});
+		const sumC = (
+			sm.entries[sm.entries.length - 1] as unknown as { summary: string }
+		).summary;
+
+		// /ship — final slice
+		sm.appendMessage(userMsg("work-final"));
+		await appendPhaseSliceCompaction({
+			sm: castSm(sm),
+			plan,
+			summarise,
+			maxTokens: DEFAULT_PHASE_TOKENS,
+			tokensBefore: 0,
+			phaseId: "p-long",
+			kind: "end",
+		});
+		const sumD = (
+			sm.entries[sm.entries.length - 1] as unknown as { summary: string }
+		).summary;
+
+		// Prefix invariant across the entire slice chain.
+		expect(sumB.startsWith(sumA)).toBe(true);
+		expect(sumC.startsWith(sumB)).toBe(true);
+		expect(sumD.startsWith(sumC)).toBe(true);
+
+		// Section titles increment part-N.
+		expect(sumD).toContain(
+			"## Phase `p-long` — Long phase (part 1, in progress)",
+		);
+		expect(sumD).toContain(
+			"## Phase `p-long` — Long phase (part 2, in progress)",
+		);
+		expect(sumD).toContain(
+			"## Phase `p-long` — Long phase (part 3, shipped, PR #100)",
+		);
+
+		// Each part is in the summary exactly once (no dupe / re-summarisation).
+		expect(sumD.match(/part 1, in progress/g)?.length).toBe(1);
+		expect(sumD.match(/part 2, in progress/g)?.length).toBe(1);
+		expect(sumD.match(/part 3, shipped/g)?.length).toBe(1);
 	});
 });
 
