@@ -52,7 +52,6 @@ import {
 	scanForSecrets,
 } from "./helpers.js";
 import {
-	appendPhaseSliceCompaction,
 	appendPlanToImplementCompaction,
 	buildPhaseSliceCompactionResult,
 	computeContextBuckets,
@@ -1662,7 +1661,7 @@ export default function (pi: ExtensionAPI) {
 	// See plan/compaction.ts for the byte-stable prefix invariant and the
 	// three-bucket budget model.
 
-	/** Once-per-session warning when no fast-tier model is configured. */
+	/** Once-per-session warning when no normal-tier model is configured. */
 	let warnedNoCompactionModel = false;
 
 	/**
@@ -1819,7 +1818,7 @@ export default function (pi: ExtensionAPI) {
 
 	/**
 	 * Build the SummariseFn used by the compaction orchestrators. Returns
-	 * null when no fast-tier model is configured/auth'd — callers then
+	 * null when no normal-tier model is configured/auth'd — callers then
 	 * skip compaction (with a once-per-session warning).
 	 */
 	async function buildSummariseFn(
@@ -1891,7 +1890,7 @@ export default function (pi: ExtensionAPI) {
 				warnedNoCompactionModel = true;
 				notify(
 					ctx,
-					"compaction skipped: no fast-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
+					"compaction skipped: no normal-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
 					"warning",
 				);
 			}
@@ -2953,6 +2952,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_before_compact", async (event, ctx) => {
 		const pending = pendingCompactionKind;
+		pendingCompactionKind = null;
 		if (!pending) return {};
 
 		const plan = currentPlan();
@@ -2964,7 +2964,7 @@ export default function (pi: ExtensionAPI) {
 				warnedNoCompactionModel = true;
 				notify(
 					ctx,
-					"compaction skipped: no fast-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
+					"compaction skipped: no normal-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
 					"warning",
 				);
 			}
