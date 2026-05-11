@@ -64,6 +64,7 @@ import {
 	findLatestCompactionSummary,
 	type SummariseFn,
 	shouldCompactMidPhase,
+	shouldResumeAfterCompaction,
 } from "./plan/compaction.js";
 import {
 	buildCompletionPrompt,
@@ -1930,9 +1931,20 @@ export default function (pi: ExtensionAPI) {
 	): Promise<void> {
 		if (modeState?.mode === "hack") return;
 
+		// Capture the stage at entry. The post-compaction continuation kick
+		// (below) only fires when we entered in `executing`, which scopes it
+		// to the auto-mode `turn_end` trigger path. The Shift+Tab
+		// hack→plan compaction path enters with stage=`idle`, so it skips the
+		// kick and lets the user drive the next turn manually. The manual
+		// `/compact` slash command goes through pi's own path and never
+		// reaches this function.
+		const stageAtEntry = modeState?.stage;
+
 		pendingCompactionKind = { kind: "phase-slice", phaseId };
+		let compacted = false;
 		try {
 			await compactAwait(ctx);
+			compacted = true;
 			notify(
 				ctx,
 				`context compacted: phase ${phaseId} mid-phase slice`,
@@ -1951,6 +1963,32 @@ export default function (pi: ExtensionAPI) {
 		} finally {
 			pendingCompactionKind = null;
 		}
+
+		// Kick a follow-up turn so the agent resumes work after the rebuild.
+		// Without this, `ctx.compact()` returns, pi rebuilds messages, and
+		// the agent goes idle mid-phase — the user has to type "continue"
+		// manually, which defeats auto mode.
+		const plan = currentPlan();
+		const remaining = activeTasks(plan).filter(({ task }) => !task.done);
+		const resume = shouldResumeAfterCompaction({
+			compacted,
+			stageAtEntry,
+			remainingTaskCount: remaining.length,
+		});
+		if (!resume) return;
+
+		pi.sendMessage(
+			{
+				customType: EXT_ID,
+				content:
+					"[modes: context was compacted mid-phase. The rolling summary above " +
+					"captures what was done so far. Continue executing the active phase's " +
+					"remaining tasks — do NOT restart from the beginning.]",
+				display: false,
+				details: { postCompactionResume: true, phaseId },
+			},
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
 	}
 
 	// ---- Implement path ---------------------------------------------------

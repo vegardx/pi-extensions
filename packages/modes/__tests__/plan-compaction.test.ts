@@ -19,6 +19,7 @@ import {
 	renderPlanSection,
 	type SummariseFn,
 	shouldCompactMidPhase,
+	shouldResumeAfterCompaction,
 } from "../plan/compaction.js";
 import type { Phase, Plan } from "../plan/schema.js";
 
@@ -833,5 +834,80 @@ describe("computeCarryForwardSummaryChars", () => {
 			makePhase({ id: "p-5", status: "shipped", summary: "12345" }),
 		]);
 		expect(computeCarryForwardSummaryChars(plan)).toBe(8);
+	});
+});
+
+describe("shouldResumeAfterCompaction", () => {
+	it("returns true when compacted, executing, and tasks remain", () => {
+		expect(
+			shouldResumeAfterCompaction({
+				compacted: true,
+				stageAtEntry: "executing",
+				remainingTaskCount: 3,
+			}),
+		).toBe(true);
+	});
+
+	it("returns false when compaction was skipped/failed", () => {
+		// Failure path: don't poke the agent into a turn it isn't ready for;
+		// pi auto-compaction will retry on the next overflow.
+		expect(
+			shouldResumeAfterCompaction({
+				compacted: false,
+				stageAtEntry: "executing",
+				remainingTaskCount: 3,
+			}),
+		).toBe(false);
+	});
+
+	it("returns false for non-executing stages (Shift+Tab hack→plan path)", () => {
+		// Shift+Tab compaction enters with stage=idle while leaving auto.
+		// We must not synthesise a turn for the user.
+		for (const stage of ["idle", "planning", "reviewing", "fixing"]) {
+			expect(
+				shouldResumeAfterCompaction({
+					compacted: true,
+					stageAtEntry: stage,
+					remainingTaskCount: 3,
+				}),
+			).toBe(false);
+		}
+	});
+
+	it("returns false when stageAtEntry is null/undefined", () => {
+		expect(
+			shouldResumeAfterCompaction({
+				compacted: true,
+				stageAtEntry: null,
+				remainingTaskCount: 3,
+			}),
+		).toBe(false);
+		expect(
+			shouldResumeAfterCompaction({
+				compacted: true,
+				stageAtEntry: undefined,
+				remainingTaskCount: 3,
+			}),
+		).toBe(false);
+	});
+
+	it("returns false when no tasks remain (exec-complete handler will fire)", () => {
+		expect(
+			shouldResumeAfterCompaction({
+				compacted: true,
+				stageAtEntry: "executing",
+				remainingTaskCount: 0,
+			}),
+		).toBe(false);
+	});
+
+	it("treats negative remaining counts defensively", () => {
+		expect(
+			shouldResumeAfterCompaction({
+				compacted: true,
+				stageAtEntry: "executing",
+				remainingTaskCount: -1,
+			}),
+		).toBe(false);
 	});
 });
