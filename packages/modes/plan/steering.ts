@@ -24,7 +24,7 @@ import type { Phase, Plan } from "./schema.js";
 import { WORKTREE_STATUSES } from "./schema.js";
 
 export type SteeringSource = "interactive" | "rpc" | "extension";
-export type SteeringMode = "plan" | "auto" | "hack";
+export type SteeringMode = "plan" | "auto" | "ask" | "hack";
 
 export interface SteeringInput {
 	text: string;
@@ -42,7 +42,8 @@ function inflightPhase(plan: Plan): Phase | null {
  * routing classifier to the auto-mode preamble.
  *
  * Returns false for:
- *   - non-auto modes
+ *   - modes other than auto/ask (the only ones that run the
+ *     auto-mode preamble where the classifier attaches)
  *   - extension-sourced messages (sendMessage / sendUserMessage)
  *   - empty / whitespace-only text
  *   - slash commands (skills, templates, /ship etc. — pi routes these)
@@ -54,7 +55,7 @@ function inflightPhase(plan: Plan): Phase | null {
  *     to attach — keep the gate aligned with what actually fires)
  */
 export function shouldInjectSteeringClassifier(input: SteeringInput): boolean {
-	if (input.mode !== "auto") return false;
+	if (input.mode !== "auto" && input.mode !== "ask") return false;
 	if (input.source === "extension") return false;
 	const text = input.text;
 	if (text.trim().length === 0) return false;

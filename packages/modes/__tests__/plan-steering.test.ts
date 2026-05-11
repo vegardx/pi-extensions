@@ -78,6 +78,17 @@ describe("shouldInjectSteeringClassifier", () => {
 		).toBe(true);
 	});
 
+	it("returns true for ask mode too — same preamble path as auto", () => {
+		expect(
+			shouldInjectSteeringClassifier({
+				text: "also add retry-with-jitter",
+				source: "interactive",
+				mode: "ask",
+				plan: makePlan([makePhase()]),
+			}),
+		).toBe(true);
+	});
+
 	it("returns true when the in-flight phase is needs-attention", () => {
 		expect(
 			shouldInjectSteeringClassifier({
@@ -225,4 +236,4 @@ describe("shouldInjectSteeringClassifier", () => {
 	});
 });
 
-type SteeringMode = "plan" | "auto" | "hack";
+type SteeringMode = "plan" | "auto" | "ask" | "hack";

@@ -306,8 +306,10 @@ describe("buildPickerCopy", () => {
 		expect(copy.title).toContain("p-active");
 		expect(copy.title).toContain("in flight");
 		expect(copy.title).toContain("feat/p-active");
-		expect(copy.implementLabel).toMatch(/^Resume implementation/);
-		expect(copy.implementLabel).toContain("feat/p-active");
+		expect(copy.implementAutoLabel).toMatch(/^Resume \(auto\)/);
+		expect(copy.implementAutoLabel).toContain("feat/p-active");
+		expect(copy.implementAskLabel).toMatch(/^Resume \(ask\)/);
+		expect(copy.implementAskLabel).toContain("feat/p-active");
 	});
 
 	it("treats needs-attention as in-flight", () => {
@@ -320,7 +322,8 @@ describe("buildPickerCopy", () => {
 		]);
 		const copy = buildPickerCopy(plan, "feat/p-fix");
 		expect(copy.kind).toBe("in-flight");
-		expect(copy.implementLabel).toMatch(/^Resume implementation/);
+		expect(copy.implementAutoLabel).toMatch(/^Resume \(auto\)/);
+		expect(copy.implementAskLabel).toMatch(/^Resume \(ask\)/);
 	});
 
 	it("prefers in-flight phase over a planned successor", () => {
@@ -342,9 +345,8 @@ describe("buildPickerCopy", () => {
 		expect(copy.kind).toBe("fresh");
 		expect(copy.title).toContain("plan ready");
 		expect(copy.title).toContain("feat/p-one");
-		expect(copy.implementLabel).toBe(
-			"Implement \u2014 create branch and execute",
-		);
+		expect(copy.implementAutoLabel).toMatch(/^Implement \(auto\)/);
+		expect(copy.implementAskLabel).toMatch(/^Implement \(ask\)/);
 	});
 
 	it("omits branch suffix in title when currentBranch is null", () => {
@@ -392,16 +394,29 @@ describe("planPickerView", () => {
 		expect(view.action).toBe("bail");
 	});
 
-	it("returns a 'show' action with three options for a fresh plan", () => {
+	it("returns a 'show' action with four options for a fresh plan (auto first by default)", () => {
 		const plan = makePlan([makePhase({ status: "planned" })]);
 		const view = planPickerView(plan, "feat/p-one");
 		expect(view.action).toBe("show");
 		if (view.action === "show") {
-			expect(view.options).toHaveLength(3);
-			expect(view.options[0]).toMatch(/^Implement/);
-			expect(view.options[1]).toMatch(/^Park/);
-			expect(view.options[2]).toMatch(/^Continue discussing/);
+			expect(view.options).toHaveLength(4);
+			expect(view.options[0]).toMatch(/^Implement \(auto\)/);
+			expect(view.options[1]).toMatch(/^Implement \(ask\)/);
+			expect(view.options[2]).toMatch(/^Park/);
+			expect(view.options[3]).toMatch(/^Continue discussing/);
 			expect(view.title).toContain("plan ready");
+		}
+	});
+
+	it("flips implement order when implementDefault is 'ask'", () => {
+		const plan = makePlan([makePhase({ status: "planned" })]);
+		const view = planPickerView(plan, "feat/p-one", "ask");
+		expect(view.action).toBe("show");
+		if (view.action === "show") {
+			expect(view.options[0]).toMatch(/^Implement \(ask\)/);
+			expect(view.options[1]).toMatch(/^Implement \(auto\)/);
+			expect(view.options[2]).toMatch(/^Park/);
+			expect(view.options[3]).toMatch(/^Continue discussing/);
 		}
 	});
 
@@ -416,7 +431,8 @@ describe("planPickerView", () => {
 		const view = planPickerView(plan, "feat/p-active");
 		expect(view.action).toBe("show");
 		if (view.action === "show") {
-			expect(view.options[0]).toMatch(/^Resume implementation/);
+			expect(view.options[0]).toMatch(/^Resume \(auto\)/);
+			expect(view.options[1]).toMatch(/^Resume \(ask\)/);
 			expect(view.title).toContain("in flight");
 		}
 	});

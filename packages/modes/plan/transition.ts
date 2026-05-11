@@ -11,7 +11,7 @@
  * tested without instantiating the extension factory.
  */
 
-export type TransitionMode = "plan" | "auto" | "hack";
+export type TransitionMode = "plan" | "auto" | "ask" | "hack";
 
 export type TransitionDecision =
 	| { action: "flip" }
@@ -48,15 +48,16 @@ const OPT_COMPACT_PREFIX = "Lossy-compact phase";
  *
  * Returns null when no prompt is needed:
  *   - next mode isn't plan
- *   - prev mode wasn't auto/hack (transitions like ask→plan don't carry
- *     heavy context)
+ *   - prev mode wasn't auto/ask/hack (only the active execution modes
+ *     carry context worth prompting about)
  *   - headless (!hasUI) — silently keep the existing context
  */
 export function buildTransitionOptions(
 	input: TransitionInput,
 ): TransitionPrompt | null {
 	if (input.next !== "plan") return null;
-	if (input.prev !== "auto" && input.prev !== "hack") return null;
+	if (input.prev !== "auto" && input.prev !== "ask" && input.prev !== "hack")
+		return null;
 	if (!input.hasUI) return null;
 
 	const opts: string[] = [OPT_KEEP];

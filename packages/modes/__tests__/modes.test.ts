@@ -322,7 +322,7 @@ describe("descriptionFromLastAssistant", () => {
 	});
 });
 
-import { resolveDefaultMode } from "../index.js";
+import { resolveDefaultMode, resolveImplementDefault } from "../index.js";
 
 describe("resolveDefaultMode", () => {
 	it("defaults to plan on undefined / null (fresh session, no setting)", () => {
@@ -336,11 +336,8 @@ describe("resolveDefaultMode", () => {
 	it("accepts each known mode", () => {
 		expect(resolveDefaultMode("plan")).toEqual({ mode: "plan", valid: true });
 		expect(resolveDefaultMode("auto")).toEqual({ mode: "auto", valid: true });
+		expect(resolveDefaultMode("ask")).toEqual({ mode: "ask", valid: true });
 		expect(resolveDefaultMode("hack")).toEqual({ mode: "hack", valid: true });
-	});
-
-	it("rejects removed `ask` mode (was a valid value before this PR)", () => {
-		expect(resolveDefaultMode("ask")).toEqual({ mode: "plan", valid: false });
 	});
 
 	it("rejects unknown strings, falls back to plan + invalid", () => {
@@ -353,5 +350,55 @@ describe("resolveDefaultMode", () => {
 		expect(resolveDefaultMode(42)).toEqual({ mode: "plan", valid: false });
 		expect(resolveDefaultMode({})).toEqual({ mode: "plan", valid: false });
 		expect(resolveDefaultMode([])).toEqual({ mode: "plan", valid: false });
+	});
+});
+
+describe("resolveImplementDefault", () => {
+	it("defaults to auto on undefined / null (no setting)", () => {
+		expect(resolveImplementDefault(undefined)).toEqual({
+			mode: "auto",
+			valid: true,
+		});
+		expect(resolveImplementDefault(null)).toEqual({
+			mode: "auto",
+			valid: true,
+		});
+	});
+
+	it("accepts auto and ask", () => {
+		expect(resolveImplementDefault("auto")).toEqual({
+			mode: "auto",
+			valid: true,
+		});
+		expect(resolveImplementDefault("ask")).toEqual({
+			mode: "ask",
+			valid: true,
+		});
+	});
+
+	it("rejects unknown strings, falls back to auto + invalid", () => {
+		expect(resolveImplementDefault("plan")).toEqual({
+			mode: "auto",
+			valid: false,
+		});
+		expect(resolveImplementDefault("hack")).toEqual({
+			mode: "auto",
+			valid: false,
+		});
+		expect(resolveImplementDefault("yolo")).toEqual({
+			mode: "auto",
+			valid: false,
+		});
+	});
+
+	it("rejects non-strings, falls back to auto + invalid", () => {
+		expect(resolveImplementDefault(42)).toEqual({
+			mode: "auto",
+			valid: false,
+		});
+		expect(resolveImplementDefault({})).toEqual({
+			mode: "auto",
+			valid: false,
+		});
 	});
 });

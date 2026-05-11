@@ -136,9 +136,9 @@ const STATUS_GLYPH: Record<string, string> = {
 
 // ---- Types ----------------------------------------------------------------
 
-type Mode = "plan" | "auto" | "hack";
+type Mode = "plan" | "auto" | "ask" | "hack";
 
-const ALL_MODES: readonly Mode[] = ["plan", "auto", "hack"] as const;
+const ALL_MODES: readonly Mode[] = ["plan", "auto", "ask", "hack"] as const;
 
 /**
  * Validate an extensionConfig.modes.defaultMode value. Falls back to
@@ -155,6 +155,27 @@ export function resolveDefaultMode(raw: unknown): {
 		return { mode: raw as Mode, valid: true };
 	}
 	return { mode: "plan", valid: false };
+}
+
+export type ImplementMode = "auto" | "ask";
+
+const IMPLEMENT_MODES: readonly ImplementMode[] = ["auto", "ask"] as const;
+
+/**
+ * Validate an extensionConfig.modes.implementDefault value. Falls back
+ * to "auto" on missing/invalid input — the picker's auto-first ordering
+ * matches the documented default mode story.
+ */
+export function resolveImplementDefault(raw: unknown): {
+	mode: ImplementMode;
+	valid: boolean;
+} {
+	if (raw === undefined || raw === null) return { mode: "auto", valid: true };
+	if (typeof raw !== "string") return { mode: "auto", valid: false };
+	if ((IMPLEMENT_MODES as readonly string[]).includes(raw)) {
+		return { mode: raw as ImplementMode, valid: true };
+	}
+	return { mode: "auto", valid: false };
 }
 type Stage =
 	| "idle"
@@ -258,7 +279,13 @@ export default function (pi: ExtensionAPI) {
 				key: "defaultMode",
 				type: "string",
 				default: "plan",
-				doc: "Mode for fresh sessions: plan | auto | hack. Existing persisted sessions keep their saved mode.",
+				doc: "Mode for fresh sessions: plan | auto | ask | hack. Existing persisted sessions keep their saved mode.",
+			},
+			{
+				key: "implementDefault",
+				type: "string",
+				default: "auto",
+				doc: "Default option highlighted in the /implement picker: auto | ask. `auto` chugs through commit/ship/next phase autonomously; `ask` pauses at git boundaries. Set to `ask` if you want a human-in-the-loop default.",
 			},
 		],
 	});
@@ -340,16 +367,11 @@ export default function (pi: ExtensionAPI) {
 				latest = entry.data as ModeState;
 			}
 		}
-		// Migrate persisted state from old mode names. "default" was an
-		// even older name; "ask" was a halfway-house mode that's been
-		// removed (full tools + per-action confirmation belongs in code
-		// review, not mode design). Both map to hack — closest in spirit
-		// to ask (full tools).
-		if (
-			latest &&
-			((latest.mode as string) === "default" ||
-				(latest.mode as string) === "ask")
-		) {
+		// Migrate persisted state from old mode names. "default" was the
+		// original name for hack; map forward to keep stale sessions
+		// loadable. We used to map "ask" → "hack" too, back when ask was
+		// removed; now ask is a real mode again, so it stays as-is.
+		if (latest && (latest.mode as string) === "default") {
 			latest.mode = "hack";
 		}
 		modeState = latest ?? null;
@@ -841,16 +863,22 @@ export default function (pi: ExtensionAPI) {
 	const MODE_LABELS: Record<Mode, string> = {
 		plan: "plan",
 		auto: "auto",
+		ask: "ask",
 		hack: "hack",
 	};
-	const MODE_COLORS: Record<Mode, "warning" | "accent" | "error"> = {
-		plan: "warning",
-		auto: "accent",
-		// `hack` is the default mode and the most permissive: full tools, no
-		// plan ceremony, no compaction. Red footer flags "no safety net" —
-		// the contrast when entering plan/auto is the visual point.
-		hack: "error",
-	};
+	const MODE_COLORS: Record<Mode, "warning" | "accent" | "success" | "error"> =
+		{
+			plan: "warning",
+			auto: "accent",
+			// `ask` sits between plan and auto: full tools (so the agent can
+			// edit/run things), but it pauses at git boundaries. `success`
+			// (green) reads as "active but supervised".
+			ask: "success",
+			// `hack` is the default mode and the most permissive: full tools, no
+			// plan ceremony, no compaction. Red footer flags "no safety net" —
+			// the contrast when entering plan/auto is the visual point.
+			hack: "error",
+		};
 
 	function updateWidget(ctx: ExtensionContext): void {
 		if (!ctx.hasUI) return;
@@ -1242,7 +1270,21 @@ export default function (pi: ExtensionAPI) {
 		// of plan mode (e.g. Shift+Tab) between scheduling and execution, bail.
 		if (!modeState || modeState.mode !== "plan") return;
 
-		const view = planPickerView(currentPlan(), modeState.branch);
+		const { mode: implementDefault, valid: implementDefaultValid } =
+			readImplementDefaultSetting(ctx);
+		if (!implementDefaultValid) {
+			notify(
+				ctx,
+				'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
+				"warning",
+			);
+		}
+
+		const view = planPickerView(
+			currentPlan(),
+			modeState.branch,
+			implementDefault,
+		);
 		if (view.action === "bail") {
 			// The auto-pop gate blocks this case, but the Shift+Tab and
 			// /plan resume paths can still land here. Bail gracefully
@@ -1267,7 +1309,13 @@ export default function (pi: ExtensionAPI) {
 		if (choice.startsWith("Park")) {
 			await doPark(ctx);
 		} else {
-			await doImplement(ctx, null);
+			// Implement option — derive the mode from the label parenthetical.
+			// `(ask)` chooses ask, anything else (including the in-flight
+			// `Resume (auto)` and the fresh `Implement (auto)`) defaults to auto.
+			const implementMode: ImplementMode = choice.includes("(ask)")
+				? "ask"
+				: "auto";
+			await doImplement(ctx, null, implementMode);
 		}
 		// If the action failed / returned early, phase is still "awaiting-choice".
 		// Reset to "planning" so agent_end re-arms the picker on the next turn.
@@ -1827,6 +1875,17 @@ export default function (pi: ExtensionAPI) {
 		return resolveDefaultMode(extCfg?.defaultMode);
 	}
 
+	function readImplementDefaultSetting(ctx: ExtensionContext): {
+		mode: ImplementMode;
+		valid: boolean;
+	} {
+		const settings = readRelevantSettings(ctx.cwd);
+		const extCfg = settings.extensionConfig?.[EXT_ID] as
+			| Record<string, unknown>
+			| undefined;
+		return resolveImplementDefault(extCfg?.implementDefault);
+	}
+
 	function readWorkingTokensSetting(ctx: ExtensionContext): number {
 		return readCompactionNumber(ctx, "workingTokens", DEFAULT_WORKING_TOKENS);
 	}
@@ -2003,13 +2062,15 @@ export default function (pi: ExtensionAPI) {
 	async function doImplement(
 		ctx: ExtensionContext,
 		descriptionArg: string | null,
+		implementMode: ImplementMode = "auto",
 	): Promise<void> {
 		if (!modeState) return;
 
 		if (!isGitRepo(ctx.cwd)) {
-			// Not a git repo — skip branching, just switch to auto.
+			// Not a git repo — skip branching, just switch into the chosen
+			// execution mode.
 			modeState.stage = "executing";
-			setMode("auto", ctx);
+			setMode(implementMode, ctx);
 			if (descriptionArg) {
 				pi.sendMessage(
 					{ customType: EXT_ID, content: descriptionArg, display: false },
@@ -2018,7 +2079,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			notify(
 				ctx,
-				"auto mode — not a git repo, skipping branch creation",
+				`${implementMode} mode — not a git repo, skipping branch creation`,
 				"info",
 			);
 			return;
@@ -2159,7 +2220,7 @@ export default function (pi: ExtensionAPI) {
 			// current session.
 			branch = await createFeatureBranch(ctx, description);
 			if (!branch) return;
-			await launchExecution(ctx, null, null, branch);
+			await launchExecution(ctx, null, null, branch, implementMode);
 			return;
 		}
 
@@ -2192,7 +2253,7 @@ export default function (pi: ExtensionAPI) {
 					planRef.updatedAt = phaseRef.updatedAt;
 					savePlan(planRef);
 				}
-				await launchExecution(ctx, planRef, phaseRef, branchRef);
+				await launchExecution(ctx, planRef, phaseRef, branchRef, implementMode);
 				return;
 			}
 
@@ -2209,13 +2270,25 @@ export default function (pi: ExtensionAPI) {
 							planRef.updatedAt = phaseRef.updatedAt;
 							savePlan(planRef);
 						}
-						await launchExecution(newCtx, planRef, phaseRef, branchRef);
+						await launchExecution(
+							newCtx,
+							planRef,
+							phaseRef,
+							branchRef,
+							implementMode,
+						);
 					},
 				});
 			} else if (phase.sessionPath) {
 				await ctx.switchSession(phase.sessionPath, {
 					withSession: async (newCtx) => {
-						await launchExecution(newCtx, planRef, phaseRef, branchRef);
+						await launchExecution(
+							newCtx,
+							planRef,
+							phaseRef,
+							branchRef,
+							implementMode,
+						);
 					},
 				});
 			}
@@ -2238,12 +2311,13 @@ export default function (pi: ExtensionAPI) {
 		plan: Plan | null,
 		phase: PlanPhase | null,
 		branch: string,
+		implementMode: ImplementMode = "auto",
 	): Promise<void> {
 		if (!modeState) return;
 		modeState.branch = branch;
 		modeState.stage = "executing";
 		pi.setSessionName(branch);
-		setMode("auto", ctx);
+		setMode(implementMode, ctx);
 		persist();
 		updateWidget(ctx);
 
@@ -3276,7 +3350,7 @@ export default function (pi: ExtensionAPI) {
 			};
 		}
 
-		if (modeState.mode === "auto") {
+		if (modeState.mode === "auto" || modeState.mode === "ask") {
 			const plan = currentPlan();
 			const tasks = activeTasks(plan);
 			const phase = activePhase(plan);
@@ -3294,8 +3368,12 @@ export default function (pi: ExtensionAPI) {
 			}
 			const includeClassifier = pendingSteeringClassifier;
 			pendingSteeringClassifier = false;
+			const modeBanner =
+				modeState.mode === "auto"
+					? "[AUTO MODE — executing plan]"
+					: "[ASK MODE — executing plan, will pause at commit/ship boundaries]";
 			const lines: string[] = [
-				"[AUTO MODE — executing plan]",
+				modeBanner,
 				"",
 				`Active phase: \`${phase?.id ?? "(unknown)"}\` — only this phase's tasks are in scope.`,
 				"Do NOT start work on other phases. When all of this phase's tasks are done, run /ship.",
@@ -3314,7 +3392,7 @@ export default function (pi: ExtensionAPI) {
 				message: {
 					customType: CUSTOM_MODE_CONTEXT,
 					content: lines.join("\n"),
-					details: { modeMarker: "auto" as const },
+					details: { modeMarker: modeState.mode },
 					display: false,
 				},
 			};
@@ -3657,7 +3735,7 @@ export default function (pi: ExtensionAPI) {
 	// ---- Shift+Tab shortcut -----------------------------------------------
 
 	pi.registerShortcut("shift+tab", {
-		description: "Cycle permission mode (hack → plan → auto → hack)",
+		description: "Cycle permission mode (hack → plan → ask → auto → hack)",
 		handler: async (ctx) => {
 			if (!modeState) {
 				modeState = {
@@ -3727,26 +3805,34 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// plan → auto. With an actionable plan, show the picker (Implement /
+			// plan → ask. With an actionable plan, show the picker (Implement /
 			// Park / Continue) so the user has to commit to /implement rather
-			// than stumble into auto with stale plan text. With nothing
+			// than stumble into ask/auto with stale plan text. With nothing
 			// actionable (everything shipped/abandoned, or no plan at all),
-			// just flip — there's no decision to offer.
+			// just flip — there's no decision to offer. The picker's
+			// auto-vs-ask split is wired in a follow-up task; for now both
+			// surfaces target ask as the next step in the cycle.
 			if (modeState.mode === "plan") {
 				const plan = currentPlan();
 				if (shouldOfferShiftTabPicker(plan, ctx.hasUI)) {
 					runDetached("picker", ctx, () => runPicker(ctx));
 				} else {
 					const hadPhases = (plan?.phases.length ?? 0) > 0;
-					setMode("auto", ctx);
+					setMode("ask", ctx);
 					notify(
 						ctx,
-						hadPhases
-							? "auto mode — plan has no actionable phase"
-							: "auto mode",
+						hadPhases ? "ask mode — plan has no actionable phase" : "ask mode",
 						"info",
 					);
 				}
+				return;
+			}
+
+			// ask → auto. Going more permissive within the same plan; carrying
+			// context is fine.
+			if (modeState.mode === "ask") {
+				setMode("auto", ctx);
+				notify(ctx, "auto mode", "info");
 				return;
 			}
 
@@ -3915,9 +4001,18 @@ export default function (pi: ExtensionAPI) {
 			const description = args?.trim() || null;
 
 			if (!isGitRepo(ctx.cwd)) {
+				const { mode: implementMode, valid: implementValid } =
+					readImplementDefaultSetting(ctx);
+				if (!implementValid) {
+					notify(
+						ctx,
+						'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
+						"warning",
+					);
+				}
 				if (!modeState) {
 					modeState = {
-						mode: "auto",
+						mode: implementMode,
 						stage: "idle",
 						branch: null,
 						defaultBranch: null,
@@ -3927,7 +4022,7 @@ export default function (pi: ExtensionAPI) {
 					};
 				}
 				modeState.stage = "executing";
-				setMode("auto", ctx);
+				setMode(implementMode, ctx);
 				if (description) {
 					pi.sendMessage(
 						{ customType: EXT_ID, content: description, display: false },
@@ -3936,7 +4031,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				notify(
 					ctx,
-					"auto mode (not a git repo — skipping branch creation)",
+					`${implementMode} mode (not a git repo — skipping branch creation)`,
 					"info",
 				);
 				return;
@@ -3961,7 +4056,16 @@ export default function (pi: ExtensionAPI) {
 				modeState.defaultBranch = defaultBranch;
 			}
 
-			await doImplement(ctx, description);
+			const { mode: implementMode, valid: implementValid } =
+				readImplementDefaultSetting(ctx);
+			if (!implementValid) {
+				notify(
+					ctx,
+					'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
+					"warning",
+				);
+			}
+			await doImplement(ctx, description, implementMode);
 		},
 	});
 

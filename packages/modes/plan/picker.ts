@@ -60,7 +60,7 @@ export function snapshotPlanStructure(plan: Plan | null): string {
 }
 
 export interface PickerGateInput {
-	mode: "plan" | "auto" | "hack" | null | undefined;
+	mode: "plan" | "auto" | "ask" | "hack" | null | undefined;
 	stage: string | null | undefined;
 	plan: Plan | null;
 	/** Snapshot taken at the start of the current turn (or null). */
@@ -116,11 +116,12 @@ export type PickerCopyKind = "in-flight" | "fresh" | "none";
 export interface PickerCopy {
 	kind: PickerCopyKind;
 	title: string;
-	implementLabel: string;
+	implementAutoLabel: string;
+	implementAskLabel: string;
 }
 
 /**
- * Build the picker's title and implement-option label based on plan
+ * Build the picker's title and implement-option labels based on plan
  * state.
  *
  *   - `in-flight`: a phase is `active` or `needs-attention`. The user
@@ -129,6 +130,10 @@ export interface PickerCopy {
  *     user is starting from scratch on this phase.
  *   - `none`: no actionable phase. The picker shouldn't have been
  *     opened; copy is defensive only and the caller should bail.
+ *
+ * Two implement labels are emitted (auto + ask). The caller decides
+ * which one to surface first via `planPickerView`'s
+ * `implementDefault` argument.
  */
 export function buildPickerCopy(
 	plan: Plan | null,
@@ -141,7 +146,8 @@ export function buildPickerCopy(
 		return {
 			kind: "in-flight",
 			title: `modes: plan updated — phase \`${inFlight.id}\` in flight on \`${inFlight.branch}\``,
-			implementLabel: `Resume implementation — continue on \`${inFlight.branch}\` with the updated plan`,
+			implementAutoLabel: `Resume (auto) — continue on \`${inFlight.branch}\`, no pauses`,
+			implementAskLabel: `Resume (ask) — continue on \`${inFlight.branch}\`, pause at commit/ship`,
 		};
 	}
 	const planned = plan?.phases.find((p) => p.status === "planned");
@@ -149,13 +155,17 @@ export function buildPickerCopy(
 		return {
 			kind: "fresh",
 			title: `modes: plan ready${currentBranch ? ` (${currentBranch})` : ""} — what next?`,
-			implementLabel: "Implement — create branch and execute",
+			implementAutoLabel:
+				"Implement (auto) — chug through commit/ship/next phase, no prompts",
+			implementAskLabel:
+				"Implement (ask) — execute each phase, pause at commit/ship",
 		};
 	}
 	return {
 		kind: "none",
 		title: "modes: plan has no actionable phase",
-		implementLabel: "Implement — create branch and execute",
+		implementAutoLabel: "Implement (auto)",
+		implementAskLabel: "Implement (ask)",
 	};
 }
 
@@ -165,7 +175,10 @@ export function buildPickerCopy(
  *
  *   - `bail`: nothing actionable to ask about; the handler should
  *     notify and reset stage without opening a UI dialog.
- *   - `show`: open `ctx.ui.select` with the supplied title + 3 options.
+ *   - `show`: open `ctx.ui.select` with the supplied title + 4 options
+ *     (Implement-auto, Implement-ask, Park, Continue). The order of
+ *     auto vs. ask flips with `implementDefault` so the user's preferred
+ *     mode is the highlighted Enter-to-select option.
  *
  * Lifting this out of `runPicker` keeps the handler a thin dispatcher
  * and makes the bail wiring (which is reachable via Shift+Tab and
@@ -177,12 +190,13 @@ export type PickerView =
 	| {
 			action: "show";
 			title: string;
-			options: [string, string, string];
+			options: [string, string, string, string];
 	  };
 
 export function planPickerView(
 	plan: Plan | null,
 	currentBranch: string | null,
+	implementDefault: "auto" | "ask" = "auto",
 ): PickerView {
 	const copy = buildPickerCopy(plan, currentBranch);
 	if (copy.kind === "none") {
@@ -191,11 +205,16 @@ export function planPickerView(
 			notice: "plan has no actionable phase — staying in plan mode",
 		};
 	}
+	const implementOptions: [string, string] =
+		implementDefault === "ask"
+			? [copy.implementAskLabel, copy.implementAutoLabel]
+			: [copy.implementAutoLabel, copy.implementAskLabel];
 	return {
 		action: "show",
 		title: copy.title,
 		options: [
-			copy.implementLabel,
+			implementOptions[0],
+			implementOptions[1],
 			"Park — create GitHub tracking issue",
 			"Continue discussing — stay in plan mode",
 		],

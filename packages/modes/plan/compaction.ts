@@ -564,7 +564,7 @@ export interface MidPhaseTriggerInput {
 	/** Runtime probe result; false disables the entire feature. */
 	compactionApiAvailable: boolean;
 	/** Current modes mode, or null when no session has hydrated. */
-	mode: "plan" | "auto" | "hack" | null;
+	mode: "plan" | "auto" | "ask" | "hack" | null;
 	/** True while a compaction is in flight. Re-entrancy guard. */
 	compactionInFlight: boolean;
 	/** Whether the plan has an active phase. */
@@ -603,7 +603,7 @@ export interface MidPhaseTriggerInput {
  * short-circuit without touching the plan tree or session manager.
  *
  *   1. compactionApiAvailable — runtime probe at session_start
- *   2. mode === "auto" — only modes-driven execution; hack/plan/ask skip
+ *   2. mode ∈ {"auto", "ask"} — modes-driven plan execution; hack/plan skip
  *   3. !compactionInFlight — re-entrancy guard for slow LLM calls
  *   4. plan + active phase exist
  *   5. (tokens − summaryTokens − seedTokens) > workingTokens
@@ -618,7 +618,7 @@ export interface MidPhaseTriggerInput {
  */
 export function shouldCompactMidPhase(input: MidPhaseTriggerInput): boolean {
 	if (!input.compactionApiAvailable) return false;
-	if (input.mode !== "auto") return false;
+	if (input.mode !== "auto" && input.mode !== "ask") return false;
 	if (input.compactionInFlight) return false;
 	if (!input.hasActivePhase) return false;
 	if (typeof input.tokens !== "number") return false;
