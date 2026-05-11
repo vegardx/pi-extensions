@@ -268,6 +268,22 @@ export function taskId(title: string): string {
 	return slugify(title).replace(/^t-/, "");
 }
 
+/**
+ * Compare two phase ids ignoring a legacy `p-` prefix on either side.
+ * Plans created before the prefix-drop have `id: "p-add-webhook"` on
+ * disk; new plans have `id: "add-webhook"`. Tool callers and CLI
+ * arguments may legitimately pass either form. Normalising on every
+ * comparison lets the two coexist during the migration window.
+ */
+export function matchPhaseId(stored: string, query: string): boolean {
+	return stored.replace(/^p-/, "") === query.replace(/^p-/, "");
+}
+
+/** Companion to {@link matchPhaseId} for task ids and the legacy `t-` prefix. */
+export function matchTaskId(stored: string, query: string): boolean {
+	return stored.replace(/^t-/, "") === query.replace(/^t-/, "");
+}
+
 /** Default branch name derived from a phase id. */
 export function defaultBranchForPhase(phase: Pick<Phase, "id">): string {
 	return `feat/${phase.id}`;

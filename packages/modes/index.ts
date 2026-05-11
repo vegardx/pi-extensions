@@ -86,6 +86,7 @@ import {
 import {
 	abandonNonTerminalPhases,
 	type ImplementBranchPlan,
+	matchPhaseId,
 	type Plan,
 	type Phase as PlanPhase,
 	planImplementBranch,
@@ -2431,10 +2432,12 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// Pick phase: explicit arg > first active phase > error.
+		// Pick phase: explicit arg > first active phase > error. The arg
+		// matcher is prefix-tolerant so legacy `/ship p-foo` invocations
+		// still resolve `foo` (and vice versa).
 		const arg = args?.trim();
 		const phase = arg
-			? plan.phases.find((p) => p.id === arg)
+			? plan.phases.find((p) => matchPhaseId(p.id, arg))
 			: plan.phases.find((p) => p.status === "active");
 		if (!phase) {
 			notify(
