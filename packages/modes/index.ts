@@ -1324,6 +1324,66 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * Auto-mode end-of-phase loop: commit → ship → advance to next phase.
+	 *
+	 * Runs in place of `runPostExecPicker` when `modeState.mode === "auto"`.
+	 * The loop is best-effort — any thrown error propagates back to the
+	 * agent_end caller, which falls back to `runPostExecPicker` so the
+	 * user can recover by hand.
+	 *
+	 * Sequencing notes:
+	 *   - `runCommit({ nonInteractive: true })` stages, commits, and
+	 *     pushes. It does NOT manage the PR — that's `/ship`'s job.
+	 *   - `doShip` then pushes again (idempotent fast-forward), opens
+	 *     the PR, transitions the phase to `in-review`, and — if this
+	 *     was the last actionable phase — fires the existing
+	 *     `runCompletionPromptIfDone` (which is a no-op for non-final
+	 *     phases because `buildCompletionPrompt` returns null until
+	 *     every phase is terminal).
+	 *   - For non-final phases we then call `doImplement(ctx, null,
+	 *     "auto")`, which forks the next phase's session via
+	 *     `ctx.newSession`. After that returns the current ctx is dead
+	 *     (replaced by the new session); the next `agent_end` cycle
+	 *     will re-enter this helper from the new session.
+	 */
+	async function runAutoPhaseLoop(
+		ctx: ExtensionContext,
+		_plan: Plan,
+		completedPhase: PlanPhase | null,
+	): Promise<void> {
+		const phaseLabel = completedPhase?.id ?? "(unknown)";
+		notify(ctx, `auto: committing phase \`${phaseLabel}\`…`, "info");
+		const commitMod = await import("pi-ext-commit/core");
+		const commitResult = await commitMod.runCommit({
+			ctx: ctx as ExtensionCommandContext,
+			pi,
+			guidance: "",
+			nonInteractive: true,
+		});
+		// `clean-tree` means the agent finished the phase without staging
+		// any changes (e.g. tests-only phase whose work happened in earlier
+		// commits). That's still a valid ship, so we let it through.
+		if (!commitResult.ran && commitResult.abortReason !== "clean-tree") {
+			throw new Error(
+				`commit aborted (${commitResult.abortReason ?? "unknown"})`,
+			);
+		}
+
+		notify(ctx, `auto: shipping phase \`${phaseLabel}\`…`, "info");
+		await doShip(undefined, ctx as ExtensionCommandContext);
+
+		// `doShip` mutates the plan in place; re-read so we see the new
+		// status of the just-shipped phase before deciding whether to
+		// advance.
+		const refreshed = currentPlan();
+		const nextPlanned = refreshed?.phases.find((p) => p.status === "planned");
+		if (!nextPlanned) return;
+
+		notify(ctx, `auto: advancing to phase \`${nextPlanned.id}\`…`, "info");
+		await doImplement(ctx, null, "auto");
+	}
+
 	async function runPostExecPicker(ctx: ExtensionContext): Promise<void> {
 		if (!ctx.hasUI) {
 			if (modeState) modeState.stage = "idle";
@@ -3559,7 +3619,11 @@ export default function (pi: ExtensionAPI) {
 
 		updateWidget(ctx);
 
-		// Run batch review then post-exec picker.
+		// Run batch review, then either auto-loop (commit→ship→next) or
+		// the ask-mode post-exec picker. Branch is decided by mode at
+		// completion time, not at /implement time, so a Shift+Tab from
+		// auto→hack mid-phase still does the right thing for the user's
+		// current intent.
 		runDetached("post-exec", ctx, async () => {
 			try {
 				await runBatchReview(ctx);
@@ -3571,6 +3635,27 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			await new Promise<void>((resolve) => setImmediate(resolve));
+
+			if (modeState?.mode === "auto") {
+				if (!plan) {
+					notify(
+						ctx,
+						"auto loop skipped: no plan bound (falling back to ask-mode picker)",
+						"warning",
+					);
+				} else {
+					try {
+						await runAutoPhaseLoop(ctx, plan, completedPhase);
+						return;
+					} catch (err) {
+						notify(
+							ctx,
+							`auto loop failed: ${err instanceof Error ? err.message : String(err)} — dropping into ask-mode picker so you can recover`,
+							"error",
+						);
+					}
+				}
+			}
 			await runPostExecPicker(ctx);
 		});
 	});
