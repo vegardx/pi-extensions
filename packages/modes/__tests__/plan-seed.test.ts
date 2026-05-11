@@ -40,9 +40,9 @@ describe("renderPlanSeed", () => {
 		expect(renderPlanSeed(plan, phase)).toBe(
 			[
 				"## Plan: Test Plan (slug: test-plan)",
-				"- `p-1` [active] — First: do the thing     ← THIS PHASE",
+				"- Phase `p-1` [active] — First: do the thing     ← THIS PHASE",
 				"",
-				"You are working on phase `p-1`. Only execute its tasks. When all",
+				"You are working on Phase `p-1`. Only execute its tasks. When all",
 				"tasks are done, run `/ship` — do NOT start the next phase.",
 			].join("\n"),
 		);
@@ -97,7 +97,9 @@ describe("renderPlanSeed", () => {
 		});
 		const plan = makePlan([shipped, active]);
 		const out = renderPlanSeed(plan, active);
-		expect(out).toContain("- `p-1` [shipped] PR #42 — Done one: shipped goal");
+		expect(out).toContain(
+			"- Phase `p-1` [shipped] PR #42 — Done one: shipped goal",
+		);
 		expect(out).toContain("  Summary:");
 		expect(out).toContain("    ## What shipped");
 		expect(out).toContain("    foo");

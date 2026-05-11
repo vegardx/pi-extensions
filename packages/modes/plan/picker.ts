@@ -145,7 +145,7 @@ export function buildPickerCopy(
 	if (inFlight) {
 		return {
 			kind: "in-flight",
-			title: `modes: plan updated — phase \`${inFlight.id}\` in flight on \`${inFlight.branch}\``,
+			title: `modes: plan updated — Phase \`${inFlight.id}\` in flight on \`${inFlight.branch}\``,
 			implementAutoLabel: `Resume (auto) — continue on \`${inFlight.branch}\`, no pauses`,
 			implementAskLabel: `Resume (ask) — continue on \`${inFlight.branch}\`, pause at commit/ship`,
 		};

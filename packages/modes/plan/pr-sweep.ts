@@ -137,7 +137,7 @@ export function summarisePrSweep(results: readonly PrSweepResult[]): string {
 	if (results.length === 0) return "PR sweep: no phases with PRs.";
 	const rows = results.map((r) => {
 		if (r.error) {
-			return `  ${r.phaseId.padEnd(28)} PR #${r.prNumber}  ⚠ gh: ${r.error}`;
+			return `  Phase \`${r.phaseId}\`  PR #${r.prNumber}  ⚠ gh: ${r.error}`;
 		}
 		const flags: string[] = [];
 		if (r.state === "merged") flags.push("merged");
@@ -155,7 +155,7 @@ export function summarisePrSweep(results: readonly PrSweepResult[]): string {
 				`${r.unresolvedComments} unresolved comment${r.unresolvedComments === 1 ? "" : "s"}`,
 			);
 		}
-		return `  ${STATE_GLYPH[r.state]} ${r.phaseId.padEnd(26)} PR #${r.prNumber}  ${flags.join(", ")}`;
+		return `  ${STATE_GLYPH[r.state]} Phase \`${r.phaseId}\`  PR #${r.prNumber}  ${flags.join(", ")}`;
 	});
 	return ["Plan complete — PR sweep:", ...rows].join("\n");
 }

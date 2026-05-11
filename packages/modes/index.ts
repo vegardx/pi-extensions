@@ -1359,7 +1359,7 @@ export default function (pi: ExtensionAPI) {
 		completedPhase: PlanPhase | null,
 	): Promise<void> {
 		const phaseLabel = completedPhase?.id ?? "(unknown)";
-		notify(ctx, `auto: committing phase \`${phaseLabel}\`…`, "info");
+		notify(ctx, `auto: committing Phase \`${phaseLabel}\`…`, "info");
 		const commitMod = await import("pi-ext-commit/core");
 		const commitResult = await commitMod.runCommit({
 			ctx: ctx as ExtensionCommandContext,
@@ -1376,7 +1376,7 @@ export default function (pi: ExtensionAPI) {
 			);
 		}
 
-		notify(ctx, `auto: shipping phase \`${phaseLabel}\`…`, "info");
+		notify(ctx, `auto: shipping Phase \`${phaseLabel}\`…`, "info");
 		await doShip(undefined, ctx as ExtensionCommandContext);
 
 		// `doShip` mutates the plan in place; re-read so we see the new
@@ -1386,7 +1386,7 @@ export default function (pi: ExtensionAPI) {
 		const nextPlanned = refreshed?.phases.find((p) => p.status === "planned");
 		if (!nextPlanned) return;
 
-		notify(ctx, `auto: advancing to phase \`${nextPlanned.id}\`…`, "info");
+		notify(ctx, `auto: advancing to Phase \`${nextPlanned.id}\`…`, "info");
 		await doImplement(ctx, null, "auto");
 	}
 
@@ -4304,7 +4304,7 @@ export default function (pi: ExtensionAPI) {
 			const tasks = allTasks(plan);
 			const summary =
 				tasks.length > 0
-					? `\n${tasks.map(({ phase, task }) => `  ${task.done ? "✓" : "○"} [${phase.id}] ${task.title}`).join("\n")}`
+					? `\n${tasks.map(({ phase, task }) => `  ${task.done ? "✓" : "○"} Phase \`${phase.id}\` · ${task.title}`).join("\n")}`
 					: "";
 			const planSummary = plan ? ` | plan: ${plan.slug}` : "";
 			notify(

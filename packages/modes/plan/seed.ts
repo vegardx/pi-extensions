@@ -49,16 +49,16 @@ function indentLines(text: string, indent: number): string {
  * for stable input. Layout:
  *
  *     ## Plan: <title> (slug: <slug>)
- *     - `p-1` [shipped] PR #N — title: goal
+ *     - Phase `1` [shipped] PR #N — title: goal
  *       Summary:
  *         <phase.summary, indented; omitted if not set>
- *     - `p-2` [active]         — title: goal     ← THIS PHASE
+ *     - Phase `2` [active]         — title: goal     ← THIS PHASE
  *       Tasks:
  *         - [ ] task 1 title
  *         - [x] task 2 title
- *     - `p-3` [planned]        — title: goal
+ *     - Phase `3` [planned]        — title: goal
  *
- *     You are working on phase `p-2`. Only execute its tasks. When all
+ *     You are working on Phase `2`. Only execute its tasks. When all
  *     tasks are done, run `/ship` — do NOT start the next phase.
  */
 export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
@@ -69,7 +69,7 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 		const pr = phase.prNumber !== undefined ? ` PR #${phase.prNumber}` : "";
 		const marker = isActive ? "     ← THIS PHASE" : "";
 		lines.push(
-			`- \`${phase.id}\` [${phase.status}]${pr} — ${phase.title}: ${phase.goal}${marker}`,
+			`- Phase \`${phase.id}\` [${phase.status}]${pr} — ${phase.title}: ${phase.goal}${marker}`,
 		);
 
 		if (phase.status === "shipped" && phase.summary) {
@@ -88,7 +88,7 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 
 	lines.push("");
 	lines.push(
-		`You are working on phase \`${activePhase.id}\`. Only execute its tasks. When all`,
+		`You are working on Phase \`${activePhase.id}\`. Only execute its tasks. When all`,
 		"tasks are done, run `/ship` — do NOT start the next phase.",
 	);
 
