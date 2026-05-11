@@ -52,16 +52,13 @@ function renderRecentEntries(entries: readonly RecentEntry[]): string {
 }
 
 /**
- * Render an "Environment" key/value list. Skips fields we don't have
- * a value for so the body stays tidy.
+ * Render an "Environment" key/value list. Only includes fields that
+ * are always safe to publish — no cwd, origin, or branch paths that
+ * could leak internal hostnames.
  */
 function renderEnvironment(ctx: DerpContext): string {
 	const rows: string[] = [];
 	rows.push("- **Filed against:** `github.com/vegardx/pi-extensions`");
-	if (ctx.origin) rows.push(`- **Origin (cwd):** \`${ctx.origin.slug}\``);
-	if (ctx.branch) rows.push(`- **Branch:** \`${ctx.branch}\``);
-	if (ctx.headShort) rows.push(`- **HEAD:** \`${ctx.headShort}\``);
-	rows.push(`- **cwd:** \`${ctx.cwd}\``);
 	if (ctx.piVersion) rows.push(`- **pi version:** \`${ctx.piVersion}\``);
 	rows.push(`- **Date:** ${ctx.date}`);
 	return rows.join("\n");
@@ -71,7 +68,6 @@ function renderSessionRef(ctx: DerpContext): string {
 	const rows: string[] = [];
 	rows.push(`- **Session id:** \`${ctx.sessionId}\``);
 	if (ctx.sessionName) rows.push(`- **Session name:** ${ctx.sessionName}`);
-	if (ctx.sessionFile) rows.push(`- **Session file:** \`${ctx.sessionFile}\``);
 	return rows.join("\n");
 }
 
@@ -98,14 +94,7 @@ export function buildPolishTask(ctx: DerpContext): string {
 	lines.push("");
 	lines.push(renderEnvironment(ctx));
 	lines.push("");
-	lines.push("## Working tree");
-	lines.push("");
-	lines.push("`git status --short`:");
-	lines.push("");
-	lines.push("```");
-	lines.push(ctx.statusShort || "(clean)");
-	lines.push("```");
-	lines.push("");
+
 	lines.push("## Recent session activity");
 	lines.push("");
 	lines.push(renderRecentEntries(ctx.recentEntries));
@@ -153,14 +142,7 @@ export function buildFallbackIssue(
 	sections.push("");
 	sections.push(renderEnvironment(ctx));
 	sections.push("");
-	if (ctx.statusShort) {
-		sections.push("## Working tree");
-		sections.push("");
-		sections.push("```");
-		sections.push(ctx.statusShort);
-		sections.push("```");
-		sections.push("");
-	}
+
 	if (ctx.recentEntries.length > 0) {
 		sections.push("## Recent session activity");
 		sections.push("");

@@ -4,19 +4,8 @@ import { polishReport, type SubagentRunner } from "../polish.js";
 function makeCtx(): DerpContext {
 	return {
 		userText: "ghost text overlaps input",
-		origin: {
-			host: "github.com",
-			owner: "vegardx",
-			repo: "pi-extensions",
-			slug: "github.com/vegardx/pi-extensions",
-		},
-		branch: "main",
-		headShort: "abc1234",
-		statusShort: "",
-		cwd: "/tmp/r",
 		date: "2026-05-10",
 		sessionId: "s",
-		sessionFile: null,
 		sessionName: null,
 		piVersion: "0.73.0",
 		recentEntries: [],

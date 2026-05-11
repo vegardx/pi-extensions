@@ -10,7 +10,6 @@
  * separate modules so this one stays cheap and easy to unit-test.
  */
 
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -56,21 +55,6 @@ export function parseOriginUrl(raw: string): OriginInfo | null {
 	// the SSH regex and the host now contains `://`).
 	if (host.includes(":") || host.includes("/")) return null;
 	return { host, owner, repo, slug: `${host}/${owner}/${repo}` };
-}
-
-// ---------------------------------------------------------------------------
-// Shell helper
-// ---------------------------------------------------------------------------
-
-function runCmd(cmd: string, args: readonly string[], cwd: string): string {
-	const r = spawnSync(cmd, args, {
-		cwd,
-		encoding: "utf8",
-		shell: false,
-		env: process.env,
-	});
-	if (r.status !== 0) return "";
-	return (r.stdout ?? "").trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -195,26 +179,10 @@ export function readPiVersion(startPath: string): string | null {
 export interface DerpContext {
 	/** User-supplied free-form report text (already trimmed, non-empty). */
 	userText: string;
-	/**
-	 * Parsed `origin` remote of the cwd. Captured for context only —
-	 * issues are always filed against the hard-coded target repo, not
-	 * here. Null when there's no origin or it doesn't parse cleanly.
-	 */
-	origin: OriginInfo | null;
-	/** Current git branch name, or null on detached HEAD / no git. */
-	branch: string | null;
-	/** Short SHA of HEAD, or null. */
-	headShort: string | null;
-	/** `git status --short` (truncated), or empty string. */
-	statusShort: string;
-	/** Working directory at the time of the report. */
-	cwd: string;
 	/** ISO date (yyyy-mm-dd) when the report was filed. */
 	date: string;
 	/** pi session id. */
 	sessionId: string;
-	/** Path to the session jsonl, or null for ephemeral sessions. */
-	sessionFile: string | null;
 	/** Human-friendly session name set via `pi.setSessionName()`, or null. */
 	sessionName: string | null;
 	/** Version of `@mariozechner/pi-coding-agent` if discoverable. */
@@ -227,7 +195,6 @@ export interface GatherContextInput {
 	cwd: string;
 	userText: string;
 	sessionId: string;
-	sessionFile?: string | null;
 	sessionName?: string | null;
 	entries: readonly unknown[];
 	recentEntryCount: number;
@@ -260,43 +227,12 @@ export function gatherDerpContext(input: GatherContextInput): GatherResult {
 		};
 	}
 
-	const remoteRaw = runCmd("git", ["remote", "get-url", "origin"], input.cwd);
-	// Origin is informational only — it populates the issue body's
-	// Environment block so a maintainer can see which repo the user
-	// hit the bug in. The issue itself is filed against a hard-coded
-	// target, so a missing or unparseable origin is not a blocker.
-	const origin = remoteRaw ? parseOriginUrl(remoteRaw) : null;
-
-	const rawBranch = runCmd(
-		"git",
-		["rev-parse", "--abbrev-ref", "HEAD"],
-		input.cwd,
-	);
-	const branch =
-		rawBranch && rawBranch !== "HEAD" && !rawBranch.startsWith("fatal")
-			? rawBranch
-			: null;
-
-	const rawHead = runCmd("git", ["rev-parse", "--short", "HEAD"], input.cwd);
-	const headShort = rawHead && !rawHead.startsWith("fatal") ? rawHead : null;
-
-	const statusShort = truncate(
-		runCmd("git", ["status", "--short"], input.cwd),
-		2000,
-	);
-
 	const piVersion = readPiVersion(input.piVersionStartPath ?? input.cwd);
 
 	const ctx: DerpContext = {
 		userText,
-		origin,
-		branch,
-		headShort,
-		statusShort,
-		cwd: input.cwd,
 		date: new Date().toISOString().slice(0, 10),
 		sessionId: input.sessionId,
-		sessionFile: input.sessionFile ?? null,
 		sessionName: input.sessionName ?? null,
 		piVersion,
 		recentEntries: summariseEntries(input.entries, input.recentEntryCount),

@@ -203,21 +203,7 @@ describe("gatherDerpContext", () => {
 		if (!r.ok) expect(r.reason).toBe("empty-input");
 	});
 
-	it("returns origin: null when there's no origin remote", () => {
-		git("remote", "remove", "origin");
-		const r = gatherDerpContext({
-			cwd: repo,
-			userText: "thing broke",
-			sessionId: "s1",
-			entries: [],
-			recentEntryCount: 0,
-		});
-		expect(r.ok).toBe(true);
-		if (r.ok) expect(r.ctx.origin).toBeNull();
-	});
-
 	it("returns full context for a normal repo", () => {
-		writeFileSync(join(repo, "dirty.txt"), "uncommitted\n");
 		const r = gatherDerpContext({
 			cwd: repo,
 			userText: "  ghost text overlaps input on iTerm  ",
@@ -232,10 +218,6 @@ describe("gatherDerpContext", () => {
 		expect(r.ok).toBe(true);
 		if (!r.ok) return;
 		expect(r.ctx.userText).toBe("ghost text overlaps input on iTerm");
-		expect(r.ctx.origin?.slug).toBe("github.com/vegardx/pi-extensions");
-		expect(r.ctx.branch).toBe("main");
-		expect(r.ctx.headShort).toMatch(/^[0-9a-f]{7,}$/);
-		expect(r.ctx.statusShort).toContain("dirty.txt");
 		expect(r.ctx.recentEntries).toHaveLength(2);
 		expect(r.ctx.sessionId).toBe("abcdef1234");
 		expect(r.ctx.sessionName).toBe("test session");

@@ -164,12 +164,18 @@ describe("runDerp — input redaction (fail-closed)", () => {
 		expect(written).toContain("[REDACTED:secret-token]");
 	});
 
-	it("bails when the cwd path contains an internal host", async () => {
+	it("files successfully when cwd is an internal host path (no longer rendered)", async () => {
 		const { ctx, notifies } = fakeCtx({
 			cwd: "/Users/alice/src/dnb.ghe.com/org/repo",
 		});
-		const polish = fakePolish({ ok: true, draft: { title: "x", body: "y" } });
-		const create = fakeCreateIssue({ ok: true, url: "should-not-fire" });
+		const polish = fakePolish({
+			ok: true,
+			draft: { title: "thing broke", body: "## Summary\n\ndetails" },
+		});
+		const create = fakeCreateIssue({
+			ok: true,
+			url: "https://github.com/vegardx/pi-extensions/issues/42",
+		});
 
 		await runDerp(ctx, "thing broke", {
 			polish,
@@ -177,9 +183,11 @@ describe("runDerp — input redaction (fail-closed)", () => {
 			pendingDir,
 		});
 
-		expect(create.calls).toEqual([]);
-		const warn = notifies.find((n) => n.level === "warning");
-		expect(warn?.message).toContain("internal-host");
+		expect(create.calls).toHaveLength(1);
+		expect(notifies.at(-1)?.message).toContain(
+			"https://github.com/vegardx/pi-extensions/issues/42",
+		);
+		expect(pendingFiles()).toEqual([]);
 	});
 });
 
