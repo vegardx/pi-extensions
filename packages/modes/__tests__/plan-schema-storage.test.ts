@@ -74,13 +74,14 @@ describe("schema helpers", () => {
 		expect(slugify("UPPER")).toBe("upper");
 	});
 
-	it("phaseId prefixes with p-", () => {
-		expect(phaseId("Add validation")).toBe("p-add-validation");
-		expect(phaseId("p-already-prefixed")).toBe("p-already-prefixed");
+	it("phaseId returns plain slug, strips legacy `p-` prefix", () => {
+		expect(phaseId("Add validation")).toBe("add-validation");
+		expect(phaseId("p-already-prefixed")).toBe("already-prefixed");
 	});
 
-	it("taskId prefixes with t-", () => {
-		expect(taskId("Write tests")).toBe("t-write-tests");
+	it("taskId returns plain slug, strips legacy `t-` prefix", () => {
+		expect(taskId("Write tests")).toBe("write-tests");
+		expect(taskId("t-already-prefixed")).toBe("already-prefixed");
 	});
 
 	it("repoNameFromPath returns basename", () => {

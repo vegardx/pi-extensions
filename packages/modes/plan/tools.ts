@@ -93,12 +93,34 @@ function planSummaryMarkdown(plan: Plan): string {
 	return lines.join("\n").trimEnd();
 }
 
+/**
+ * Compare two phase ids ignoring a legacy `p-` prefix on either side.
+ * Plans created before the prefix-drop have `id: "p-add-webhook"` on
+ * disk; new plans have `id: "add-webhook"`. Tool callers may legitimately
+ * pass either form. Normalising on every comparison lets the two coexist.
+ */
+function matchPhaseId(stored: string, query: string): boolean {
+	return stored.replace(/^p-/, "") === query.replace(/^p-/, "");
+}
+
+function matchTaskId(stored: string, query: string): boolean {
+	return stored.replace(/^t-/, "") === query.replace(/^t-/, "");
+}
+
 function findPhase(plan: Plan, id: string): Phase | undefined {
-	return plan.phases.find((p) => p.id === id);
+	return plan.phases.find((p) => matchPhaseId(p.id, id));
+}
+
+function findPhaseIndex(plan: Plan, id: string): number {
+	return plan.phases.findIndex((p) => matchPhaseId(p.id, id));
 }
 
 function findTask(phase: Phase, id: string): Task | undefined {
-	return phase.tasks.find((t) => t.id === id);
+	return phase.tasks.find((t) => matchTaskId(t.id, id));
+}
+
+function findTaskIndex(phase: Phase, id: string): number {
+	return phase.tasks.findIndex((t) => matchTaskId(t.id, id));
 }
 
 export function registerPlanTools(
@@ -287,7 +309,7 @@ export function registerPlanTools(
 							details: { error: "id required" },
 						};
 					}
-					const idx = plan.phases.findIndex((p) => p.id === params.id);
+					const idx = findPhaseIndex(plan, params.id);
 					if (idx < 0) {
 						return {
 							content: [
@@ -317,7 +339,7 @@ export function registerPlanTools(
 							details: { error: "id and position required" },
 						};
 					}
-					const idx = plan.phases.findIndex((p) => p.id === params.id);
+					const idx = findPhaseIndex(plan, params.id);
 					if (idx < 0) {
 						return {
 							content: [
@@ -546,7 +568,7 @@ export function registerPlanTools(
 							details: { error: "taskId required" },
 						};
 					}
-					const idx = phase.tasks.findIndex((t) => t.id === params.taskId);
+					const idx = findTaskIndex(phase, params.taskId);
 					if (idx < 0) {
 						return {
 							content: [
@@ -593,7 +615,7 @@ export function registerPlanTools(
 							details: { error: "target phase not found" },
 						};
 					}
-					const idx = phase.tasks.findIndex((t) => t.id === params.taskId);
+					const idx = findTaskIndex(phase, params.taskId);
 					if (idx < 0) {
 						return {
 							content: [

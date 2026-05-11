@@ -242,16 +242,30 @@ export function slugify(input: string): string {
 		.replace(/-+$/, "");
 }
 
-/** Generate a phase id from a title, with `p-` prefix. */
+/**
+ * Generate a phase id from a title.
+ *
+ * Returns a plain slug — the `p-` prefix that earlier versions of
+ * modes baked in is gone. Human-rendered surfaces add a `Phase:` /
+ * `Phase \`<id>\`` annotation in surrounding prose so the kind is
+ * still readable at a glance; ids themselves stay clean (so do the
+ * derived branch names: `feat/<id>` rather than `feat/p-<id>`).
+ *
+ * Stripping a leading `p-` keeps idempotence on legacy inputs and
+ * lets callers pass already-prefixed ids during migration without
+ * ending up with an `id !== id` lookup mismatch.
+ */
 export function phaseId(title: string): string {
-	const slug = slugify(title);
-	return slug.startsWith("p-") ? slug : `p-${slug}`;
+	return slugify(title).replace(/^p-/, "");
 }
 
-/** Generate a task id from a title, with `t-` prefix. */
+/**
+ * Generate a task id from a title. Same prefix-stripping policy as
+ * {@link phaseId}: returns a plain slug, drops legacy `t-` prefixes
+ * from the input.
+ */
 export function taskId(title: string): string {
-	const slug = slugify(title);
-	return slug.startsWith("t-") ? slug : `t-${slug}`;
+	return slugify(title).replace(/^t-/, "");
 }
 
 /** Default branch name derived from a phase id. */
