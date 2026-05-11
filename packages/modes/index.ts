@@ -1309,12 +1309,11 @@ export default function (pi: ExtensionAPI) {
 		if (choice.startsWith("Park")) {
 			await doPark(ctx);
 		} else {
-			// Implement option — derive the mode from the label parenthetical.
-			// `(ask)` chooses ask, anything else (including the in-flight
-			// `Resume (auto)` and the fresh `Implement (auto)`) defaults to auto.
-			const implementMode: ImplementMode = choice.includes("(ask)")
-				? "ask"
-				: "auto";
+			// Implement option — dispatch by exact-label identity rather than
+			// substring-matching the parenthetical, which was brittle when
+			// label suffixes embedded branch names.
+			const implementMode: ImplementMode =
+				choice === view.askLabel ? "ask" : "auto";
 			await doImplement(ctx, null, implementMode);
 		}
 		// If the action failed / returned early, phase is still "awaiting-choice".
@@ -3809,9 +3808,7 @@ export default function (pi: ExtensionAPI) {
 			// Park / Continue) so the user has to commit to /implement rather
 			// than stumble into ask/auto with stale plan text. With nothing
 			// actionable (everything shipped/abandoned, or no plan at all),
-			// just flip — there's no decision to offer. The picker's
-			// auto-vs-ask split is wired in a follow-up task; for now both
-			// surfaces target ask as the next step in the cycle.
+			// just flip — there's no decision to offer.
 			if (modeState.mode === "plan") {
 				const plan = currentPlan();
 				if (shouldOfferShiftTabPicker(plan, ctx.hasUI)) {

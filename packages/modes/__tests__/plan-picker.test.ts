@@ -420,6 +420,20 @@ describe("planPickerView", () => {
 		}
 	});
 
+	it("exposes askLabel and autoLabel for exact-match dispatch", () => {
+		// The runPicker call site dispatches with `choice === view.askLabel`
+		// rather than substring-matching, so the labels must be returned
+		// by-identity. Regression guard against the brittle `includes("(ask)")`
+		// approach.
+		const plan = makePlan([makePhase({ status: "planned" })]);
+		const view = planPickerView(plan, "feat/p-one");
+		if (view.action !== "show") throw new Error("expected show");
+		expect(view.askLabel).toMatch(/^Implement \(ask\)/);
+		expect(view.autoLabel).toMatch(/^Implement \(auto\)/);
+		expect(view.options).toContain(view.askLabel);
+		expect(view.options).toContain(view.autoLabel);
+	});
+
 	it("returns a 'show' action with resume copy for an in-flight plan", () => {
 		const plan = makePlan([
 			makePhase({

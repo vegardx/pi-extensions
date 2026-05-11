@@ -191,6 +191,15 @@ export type PickerView =
 			action: "show";
 			title: string;
 			options: [string, string, string, string];
+			/**
+			 * The exact label string used for the ask option in `options`.
+			 * Returned alongside so the caller can dispatch by identity
+			 * (`choice === askLabel`) instead of substring-matching, which
+			 * was brittle when option labels embedded branch names.
+			 */
+			askLabel: string;
+			/** Companion to {@link askLabel} for the auto option. */
+			autoLabel: string;
 	  };
 
 export function planPickerView(
@@ -218,6 +227,8 @@ export function planPickerView(
 			"Park — create GitHub tracking issue",
 			"Continue discussing — stay in plan mode",
 		],
+		askLabel: copy.implementAskLabel,
+		autoLabel: copy.implementAutoLabel,
 	};
 }
 
