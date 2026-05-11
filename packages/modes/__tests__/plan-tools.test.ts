@@ -65,7 +65,7 @@ describe("plan_phase", () => {
 		const plan = loadPlan("tools-test") as Plan;
 		expect(plan.phases).toHaveLength(1);
 		expect(plan.phases[0].status).toBe("planned");
-		expect(plan.phases[0].id).toBe("p-add-validation");
+		expect(plan.phases[0].id).toBe("add-validation");
 		expect(onChanged).toHaveBeenCalledTimes(1);
 	});
 
@@ -79,14 +79,14 @@ describe("plan_phase", () => {
 		await call("plan_phase", { action: "add", title: "Foo" });
 		const bad = await call("plan_phase", {
 			action: "update",
-			id: "p-foo",
+			id: "foo",
 			status: "shipped",
 		});
 		expect(bad.details.error).toBe("invalid transition");
 
 		const good = await call("plan_phase", {
 			action: "update",
-			id: "p-foo",
+			id: "foo",
 			status: "active",
 		});
 		expect(good.details.action).toBe("update");
@@ -96,7 +96,7 @@ describe("plan_phase", () => {
 
 	it("remove deletes the phase", async () => {
 		await call("plan_phase", { action: "add", title: "Foo" });
-		await call("plan_phase", { action: "remove", id: "p-foo" });
+		await call("plan_phase", { action: "remove", id: "foo" });
 		const plan = loadPlan("tools-test") as Plan;
 		expect(plan.phases).toHaveLength(0);
 	});
@@ -106,11 +106,24 @@ describe("plan_phase", () => {
 		await call("plan_phase", { action: "add", title: "Second" });
 		await call("plan_phase", {
 			action: "reorder",
-			id: "p-second",
+			id: "second",
 			position: 0,
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases.map((p) => p.id)).toEqual(["p-second", "p-first"]);
+		expect(plan.phases.map((p) => p.id)).toEqual(["second", "first"]);
+	});
+
+	it("accepts legacy `p-` prefixed ids on tool calls", async () => {
+		await call("plan_phase", { action: "add", title: "Legacy" });
+		const r = await call("plan_phase", {
+			action: "update",
+			id: "p-legacy",
+			status: "active",
+		});
+		expect(r.details.action).toBe("update");
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[0].id).toBe("legacy");
+		expect(plan.phases[0].status).toBe("active");
 	});
 
 	it("list returns phases", async () => {
@@ -129,7 +142,7 @@ describe("plan_task", () => {
 	it("adds a task to a phase", async () => {
 		const r = await call("plan_task", {
 			action: "add",
-			phaseId: "p-phase-one",
+			phaseId: "phase-one",
 			title: "Write spec",
 			body: "Detailed body",
 		});
@@ -144,13 +157,13 @@ describe("plan_task", () => {
 	it("toggle marks a task done", async () => {
 		await call("plan_task", {
 			action: "add",
-			phaseId: "p-phase-one",
+			phaseId: "phase-one",
 			title: "Foo",
 		});
 		await call("plan_task", {
 			action: "toggle",
-			phaseId: "p-phase-one",
-			taskId: "t-foo",
+			phaseId: "phase-one",
+			taskId: "foo",
 		});
 		const plan = loadPlan("tools-test") as Plan;
 		expect(plan.phases[0].tasks[0].done).toBe(true);
@@ -159,13 +172,13 @@ describe("plan_task", () => {
 	it("remove deletes a task", async () => {
 		await call("plan_task", {
 			action: "add",
-			phaseId: "p-phase-one",
+			phaseId: "phase-one",
 			title: "Foo",
 		});
 		await call("plan_task", {
 			action: "remove",
-			phaseId: "p-phase-one",
-			taskId: "t-foo",
+			phaseId: "phase-one",
+			taskId: "foo",
 		});
 		const plan = loadPlan("tools-test") as Plan;
 		expect(plan.phases[0].tasks).toHaveLength(0);
@@ -175,35 +188,52 @@ describe("plan_task", () => {
 		await call("plan_phase", { action: "add", title: "Phase two" });
 		await call("plan_task", {
 			action: "add",
-			phaseId: "p-phase-one",
+			phaseId: "phase-one",
 			title: "Task A",
 		});
 		await call("plan_task", {
 			action: "move",
-			phaseId: "p-phase-one",
-			taskId: "t-task-a",
-			targetPhaseId: "p-phase-two",
+			phaseId: "phase-one",
+			taskId: "task-a",
+			targetPhaseId: "phase-two",
 		});
 		const plan = loadPlan("tools-test") as Plan;
 		expect(plan.phases[0].tasks).toHaveLength(0);
 		expect(plan.phases[1].tasks).toHaveLength(1);
-		expect(plan.phases[1].tasks[0].id).toBe("t-task-a");
+		expect(plan.phases[1].tasks[0].id).toBe("task-a");
 	});
 
 	it("update changes title and body", async () => {
 		await call("plan_task", {
 			action: "add",
-			phaseId: "p-phase-one",
+			phaseId: "phase-one",
 			title: "Old",
 		});
 		await call("plan_task", {
 			action: "update",
-			phaseId: "p-phase-one",
-			taskId: "t-old",
+			phaseId: "phase-one",
+			taskId: "old",
 			body: "new body",
 		});
 		const plan = loadPlan("tools-test") as Plan;
 		expect(plan.phases[0].tasks[0].body).toBe("new body");
+	});
+
+	it("accepts legacy `t-` prefixed taskId on tool calls", async () => {
+		await call("plan_task", {
+			action: "add",
+			phaseId: "phase-one",
+			title: "Migrate",
+		});
+		const r = await call("plan_task", {
+			action: "toggle",
+			phaseId: "phase-one",
+			taskId: "t-migrate",
+		});
+		expect(r.details.action).toBe("toggle");
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[0].tasks[0].id).toBe("migrate");
+		expect(plan.phases[0].tasks[0].done).toBe(true);
 	});
 });
 
@@ -216,13 +246,13 @@ describe("plan_view", () => {
 		});
 		await call("plan_task", {
 			action: "add",
-			phaseId: "p-foo",
+			phaseId: "foo",
 			title: "Step",
 		});
 		const r = await call("plan_view", {});
 		const text = (r.content[0] as any).text as string;
 		expect(text).toContain("Tools Test");
-		expect(text).toContain("p-foo");
+		expect(text).toContain("`foo`");
 		expect(text).toContain("Step");
 		expect(text).toContain("Make it work");
 	});
