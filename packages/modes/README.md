@@ -8,15 +8,28 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution. R
 |------|------|------|--------------|-------------|------------|
 | `hack` | all | all | none — full tool access | no | none — user owns context length |
 | `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
+| `ask` | all | all | none during execution; the post-exec picker pauses you at the commit/ship boundary | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 | `auto` | all | all | none — fully autonomous | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 
-Current mode is shown in the footer (`hack` renders red — no safety net). **Shift+Tab** cycles `hack → plan → auto → hack`. The cycle adds structure step by step, then drops it again.
+> **Note:** in this release, `ask` and `auto` execute the active phase the same way. The auto end-of-phase loop (commit → ship → next phase, no prompts) lands in a follow-up PR; until then both modes stop after the last task and surface the post-exec picker so you can run `/commit` and `/ship` yourself.
+
+Current mode is shown in the footer (`hack` renders red — no safety net; `ask` renders green — supervised; `auto` renders accent). **Shift+Tab** cycles `hack → plan → ask → auto → hack`. The cycle adds structure step by step, then drops it again.
 
 - `hack → plan`: prompts for handling carried-over context (keep / lossy-compact the active phase). Headless skips the prompt and silently keeps context.
-- `plan → auto`: opens a picker (Implement / Park / Continue discussing) when a plan is in flight; otherwise just flips. The picker forces an explicit `/implement` so you don't stumble into auto with stale plan text.
+- `plan → ask`: opens the picker (Implement (auto) / Implement (ask) / Park / Continue discussing) when a plan is in flight; otherwise just flips. The picker forces an explicit `/implement` so you don't stumble into execution with stale plan text.
+- `ask → auto`: flips silently — going more permissive, context flows through.
 - `auto → hack`: flips silently — going more permissive, context flows through.
 
 Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (default `plan`). Existing persisted sessions always use their saved mode.
+
+### Choosing a mode at /implement
+
+When you commit to a plan via the picker (Shift+Tab plan→ask) or `/implement`, two implement options are offered:
+
+- **Implement (auto)** — chug through commit/ship/next phase autonomously (auto-loop wiring lands in a follow-up PR; for now matches ask).
+- **Implement (ask)** — execute the phase's tasks autonomously, then pause at the commit/ship boundary so you can review the diff before it ships.
+
+`extensionConfig.modes.implementDefault` (default `auto`) controls which option is highlighted first — set it to `ask` if you prefer human-in-the-loop by default.
 
 ## Commands
 
