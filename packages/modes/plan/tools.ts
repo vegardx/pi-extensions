@@ -21,6 +21,8 @@ import { Type } from "@sinclair/typebox";
 import {
 	canTransition,
 	defaultBranchForPhase,
+	matchPhaseId,
+	matchTaskId,
 	PHASE_STATUSES,
 	type Phase,
 	type PhaseStatus,
@@ -91,20 +93,6 @@ function planSummaryMarkdown(plan: Plan): string {
 		lines.push("");
 	}
 	return lines.join("\n").trimEnd();
-}
-
-/**
- * Compare two phase ids ignoring a legacy `p-` prefix on either side.
- * Plans created before the prefix-drop have `id: "p-add-webhook"` on
- * disk; new plans have `id: "add-webhook"`. Tool callers may legitimately
- * pass either form. Normalising on every comparison lets the two coexist.
- */
-function matchPhaseId(stored: string, query: string): boolean {
-	return stored.replace(/^p-/, "") === query.replace(/^p-/, "");
-}
-
-function matchTaskId(stored: string, query: string): boolean {
-	return stored.replace(/^t-/, "") === query.replace(/^t-/, "");
 }
 
 function findPhase(plan: Plan, id: string): Phase | undefined {

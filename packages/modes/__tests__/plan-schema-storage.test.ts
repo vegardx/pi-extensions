@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
 	abandonNonTerminalPhases,
 	canTransition,
+	matchPhaseId,
+	matchTaskId,
 	type Phase,
 	type PhaseStatus,
 	type Plan,
@@ -82,6 +84,23 @@ describe("schema helpers", () => {
 	it("taskId returns plain slug, strips legacy `t-` prefix", () => {
 		expect(taskId("Write tests")).toBe("write-tests");
 		expect(taskId("t-already-prefixed")).toBe("already-prefixed");
+	});
+
+	it("matchPhaseId tolerates legacy `p-` prefix on either side", () => {
+		// New plans store plain slugs; legacy plans on disk have `p-` ids;
+		// CLI args (`/ship p-foo`) and tool callers may pass either form.
+		expect(matchPhaseId("add-webhook", "add-webhook")).toBe(true);
+		expect(matchPhaseId("add-webhook", "p-add-webhook")).toBe(true);
+		expect(matchPhaseId("p-add-webhook", "add-webhook")).toBe(true);
+		expect(matchPhaseId("p-add-webhook", "p-add-webhook")).toBe(true);
+		expect(matchPhaseId("add-webhook", "validate")).toBe(false);
+	});
+
+	it("matchTaskId tolerates legacy `t-` prefix on either side", () => {
+		expect(matchTaskId("do-thing", "do-thing")).toBe(true);
+		expect(matchTaskId("do-thing", "t-do-thing")).toBe(true);
+		expect(matchTaskId("t-do-thing", "do-thing")).toBe(true);
+		expect(matchTaskId("t-do-thing", "t-other")).toBe(false);
 	});
 
 	it("repoNameFromPath returns basename", () => {
