@@ -37,15 +37,17 @@ describe("isPlanComplete", () => {
 		expect(isPlanComplete(makePlan([]))).toBe(false);
 	});
 
-	it("is false while any phase is non-terminal", () => {
-		expect(
-			isPlanComplete(
-				makePlan([
-					makePhase({ id: "p-1", status: "shipped" }),
-					makePhase({ id: "p-2", status: "active" }),
-				]),
-			),
-		).toBe(false);
+	it("is false while any phase is non-terminal-ish (active/planned/needs-attention)", () => {
+		for (const status of ["active", "planned", "needs-attention"] as const) {
+			expect(
+				isPlanComplete(
+					makePlan([
+						makePhase({ id: "p-1", status: "shipped" }),
+						makePhase({ id: "p-2", status }),
+					]),
+				),
+			).toBe(false);
+		}
 	});
 
 	it("is true when every phase is shipped or abandoned", () => {
@@ -56,6 +58,23 @@ describe("isPlanComplete", () => {
 					makePhase({ id: "p-2", status: "abandoned" }),
 				]),
 			),
+		).toBe(true);
+	});
+
+	it("is true when every phase is shipped/abandoned/in-review", () => {
+		// /ship leaves phases at `in-review` until the PR is merged. Without
+		// counting in-review here, the completion prompt + PR sweep never
+		// fire on the auto path.
+		expect(
+			isPlanComplete(
+				makePlan([
+					makePhase({ id: "p-1", status: "shipped" }),
+					makePhase({ id: "p-2", status: "in-review" }),
+				]),
+			),
+		).toBe(true);
+		expect(
+			isPlanComplete(makePlan([makePhase({ id: "p-1", status: "in-review" })])),
 		).toBe(true);
 	});
 });
@@ -74,11 +93,26 @@ describe("buildCompletionPrompt", () => {
 		expect(buildCompletionPrompt(plan, true)).toBeNull();
 	});
 
-	it("returns a three-option prompt when the plan is complete", () => {
+	it("returns a three-option prompt when every phase is terminal", () => {
 		const plan = makePlan([makePhase({ id: "p-1", status: "shipped" })]);
 		const out = buildCompletionPrompt(plan, true);
 		expect(out).not.toBeNull();
 		expect(out?.title).toContain("complete");
+		expect(out?.title).toContain("shipped or abandoned");
+		expect(out?.options).toHaveLength(3);
+	});
+
+	it("returns a prompt with in-review wording when phases are still at review", () => {
+		// Auto-mode flow: /ship leaves the last phase at in-review. The
+		// prompt fires now (so the PR sweep can flag CI/review feedback)
+		// even though the phase isn't strictly terminal yet.
+		const plan = makePlan([
+			makePhase({ id: "p-1", status: "shipped" }),
+			makePhase({ id: "p-2", status: "in-review" }),
+		]);
+		const out = buildCompletionPrompt(plan, true);
+		expect(out).not.toBeNull();
+		expect(out?.title).toContain("in review");
 		expect(out?.options).toHaveLength(3);
 	});
 });
