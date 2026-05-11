@@ -9,9 +9,7 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution. R
 | `hack` | all | all | none — full tool access | no | none — user owns context length |
 | `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
 | `ask` | all | all | none during execution; the post-exec picker pauses you at the commit/ship boundary | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
-| `auto` | all | all | none — fully autonomous | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
-
-> **Note:** in this release, `ask` and `auto` execute the active phase the same way. The auto end-of-phase loop (commit → ship → next phase, no prompts) lands in a follow-up PR; until then both modes stop after the last task and surface the post-exec picker so you can run `/commit` and `/ship` yourself.
+| `auto` | all | all | none — fully autonomous; commits, ships, advances phases without prompting | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 
 Current mode is shown in the footer (`hack` renders red — no safety net; `ask` renders green — supervised; `auto` renders accent). **Shift+Tab** cycles `hack → plan → ask → auto → hack`. The cycle adds structure step by step, then drops it again.
 
@@ -26,10 +24,23 @@ Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (
 
 When you commit to a plan via the picker (Shift+Tab plan→ask) or `/implement`, two implement options are offered:
 
-- **Implement (auto)** — chug through commit/ship/next phase autonomously (auto-loop wiring lands in a follow-up PR; for now matches ask).
-- **Implement (ask)** — execute the phase's tasks autonomously, then pause at the commit/ship boundary so you can review the diff before it ships.
+- **Implement (auto)** — chug through the plan end-to-end. After each phase completes, auto-mode runs `/commit` (non-interactive) → `/ship` → `/implement` for the next planned phase, all without prompting. Auto does NOT wait between phases for PR review — review feedback arrives async, and the **end-of-plan PR sweep** is when you address it (see below).
+- **Implement (ask)** — execute the phase's tasks autonomously, then pause at the commit/ship boundary so you can review the diff before it ships. Same mid-phase compaction and steering classifier as auto; the difference is purely at the git boundary.
 
 `extensionConfig.modes.implementDefault` (default `auto`) controls which option is highlighted first — set it to `ask` if you prefer human-in-the-loop by default.
+
+### End-of-plan PR sweep
+
+When `/ship` lands the last actionable phase of a plan (auto or manual), modes runs a PR sweep before showing the completion picker. For every phase with a `prNumber`, it queries `gh pr view` for state, CI rollup, and review decision, and renders a single summary like:
+
+```
+Plan complete — PR sweep:
+  ✓ add-webhook                PR #142  merged, CI green, approved
+  · validate-signatures        PR #145  open, CI green, CHANGES_REQUESTED, 3 unresolved comments
+  · retry-failed               PR #148  open, CI failing
+```
+
+If any PR needs attention, the completion picker adds an extra option "Open PR #N (`<phase-id>`) in ask mode to address feedback" which drops you into ask mode on that phase's branch. Soft-fail: if `gh` is unavailable, the sweep is skipped and the existing completion picker fires unchanged.
 
 ## Commands
 
