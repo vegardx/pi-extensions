@@ -304,8 +304,7 @@ async function resolvePushTarget(
 		if (nonInteractive) {
 			notify(
 				ctx,
-				`PR #${pr.number} is cross-repo with maintainerCanModify=false — " +
-					"refusing non-interactive push (would need to format-patch or abort)`,
+				`PR #${pr.number} is cross-repo with maintainerCanModify=false — refusing non-interactive push (would need to format-patch or abort)`,
 				"error",
 			);
 			return null;

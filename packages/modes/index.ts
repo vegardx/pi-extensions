@@ -2543,13 +2543,19 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Drop the user into ask mode on a specific phase's branch, ready to
-	 * address review feedback on that phase's PR. Used by the end-of-plan
-	 * sweep when a PR needs attention.
+	 * Set up the user to address review feedback on a specific phase's
+	 * PR. Used by the end-of-plan sweep when a PR needs attention.
 	 *
-	 * Best-effort: a missing branch / missing session simply notifies and
-	 * stays put. The completion picker has already fired so we won't
-	 * re-prompt.
+	 * The phase is `in-review` after `/ship`, which means its worktree
+	 * was torn down. Bring the worktree back by flipping the phase to
+	 * `needs-attention` (a valid `in-review` transition) and running
+	 * {@link reconcileWorktrees}, then notify the user with the worktree
+	 * path — they need to open a session there to actually work on the
+	 * branch (the current pi session is bound to its own cwd).
+	 *
+	 * `modeState` is updated so when the user does open a session in
+	 * the worktree it picks up where this left off. Best-effort: a
+	 * missing branch / failed reconcile notifies and stays put.
 	 */
 	async function openFeedbackPhaseInAsk(
 		ctx: ExtensionCommandContext,
@@ -2561,9 +2567,24 @@ export default function (pi: ExtensionAPI) {
 			notify(ctx, `phase ${phaseId} not found in plan`, "error");
 			return;
 		}
+
+		// Restore the worktree if /ship tore it down. `in-review` -> `needs-
+		// attention` is a valid state-machine transition; `reconcileWorktrees`
+		// then re-creates the worktree so the user has a clean checkout to
+		// open a session in.
+		if (phase.status === "in-review") {
+			phase.status = "needs-attention";
+			phase.updatedAt = new Date().toISOString();
+			savePlan(plan);
+		}
+		reconcileWorktrees(plan, ctx);
+		savePlan(plan);
+
+		const wt = phase.worktreePath ?? worktreePath(plan, phase);
 		notify(
 			ctx,
-			`opening phase \`${phase.id}\` in ask mode — address feedback, then /commit and /ship`,
+			`Phase \`${phase.id}\` flagged needs-attention. Open a session in ${wt} ` +
+				`(branch \`${phase.branch}\`) to address feedback on PR, then /commit and /ship.`,
 			"info",
 		);
 		if (modeState) {

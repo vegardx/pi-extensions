@@ -28,12 +28,29 @@ const OPT_NEW_PLAN = "Start a new plan (new planning session)";
 const OPT_ARCHIVE = "Archive this plan and stay";
 
 /**
- * Pure check: are all phases on this plan terminal (`shipped` or
- * `abandoned`)? If yes, the plan is complete and the prompt should
- * fire on /ship.
+ * Pure check: is the plan "done as far as the user's hands go"?
+ *
+ * True when every phase is in `shipped`, `abandoned`, or `in-review`.
+ * `in-review` counts because /ship sets that status when the PR is
+ * opened — the work has left the user's hands and is at review. The
+ * later "shipped" transition happens passively when `syncPlanOnStart`
+ * sees the PR merged, but by then the completion prompt has already
+ * served its purpose. Without including `in-review` here, the prompt
+ * (and the PR sweep it gates) never fires on the auto path.
  */
 export function isPlanComplete(plan: Pick<Plan, "phases">): boolean {
 	if (plan.phases.length === 0) return false;
+	return plan.phases.every(
+		(p) => TERMINAL_STATUSES.includes(p.status) || p.status === "in-review",
+	);
+}
+
+/**
+ * True when every phase is in a strictly terminal state
+ * (`shipped`/`abandoned`). Used by surfaces that need to distinguish
+ * "merged" from "in flight at review" — e.g. the prompt title.
+ */
+function allPhasesTerminal(plan: Pick<Plan, "phases">): boolean {
 	return plan.phases.every((p) => TERMINAL_STATUSES.includes(p.status));
 }
 
@@ -48,8 +65,11 @@ export function buildCompletionPrompt(
 ): CompletionPrompt | null {
 	if (!hasUI) return null;
 	if (!isPlanComplete(plan)) return null;
+	const title = allPhasesTerminal(plan)
+		? `Plan "${plan.title}" is complete. All phases are shipped or abandoned. What next?`
+		: `Plan "${plan.title}" is complete. All phases are shipped, abandoned, or in review. What next?`;
 	return {
-		title: `Plan "${plan.title}" is complete. All phases are shipped or abandoned. What next?`,
+		title,
 		options: [OPT_STAY, OPT_NEW_PLAN, OPT_ARCHIVE],
 	};
 }
