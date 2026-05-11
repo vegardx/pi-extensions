@@ -1931,14 +1931,18 @@ export default function (pi: ExtensionAPI) {
 	): Promise<void> {
 		if (modeState?.mode === "hack") return;
 
-		// Capture the stage at entry. The post-compaction continuation kick
-		// (below) only fires when we entered in `executing`, which scopes it
-		// to the auto-mode `turn_end` trigger path. The Shift+Tab
-		// hack→plan compaction path enters with stage=`idle`, so it skips the
-		// kick and lets the user drive the next turn manually. The manual
-		// `/compact` slash command goes through pi's own path and never
-		// reaches this function.
+		// Capture the stage and mode at entry. The post-compaction
+		// continuation kick (below) only fires when we entered in
+		// `executing`, which scopes it to the auto-mode `turn_end` trigger
+		// path. The Shift+Tab hack→plan compaction path enters with
+		// stage=`idle`, so it skips the kick and lets the user drive the
+		// next turn manually. The manual `/compact` slash command goes
+		// through pi's own path and never reaches this function. We also
+		// snapshot the mode so the gate can detect a Shift+Tab during the
+		// async `ctx.compact()` call (e.g. user leaves auto mid-flight —
+		// don't kick an auto-mode follow-up turn for them).
 		const stageAtEntry = modeState?.stage;
+		const modeAtEntry = modeState?.mode;
 
 		pendingCompactionKind = { kind: "phase-slice", phaseId };
 		let compacted = false;
@@ -1973,6 +1977,9 @@ export default function (pi: ExtensionAPI) {
 		const resume = shouldResumeAfterCompaction({
 			compacted,
 			stageAtEntry,
+			modeAtEntry,
+			currentStage: modeState?.stage,
+			currentMode: modeState?.mode,
 			remainingTaskCount: remaining.length,
 		});
 		if (!resume) return;
