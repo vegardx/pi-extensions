@@ -694,6 +694,56 @@ export function computeContextBuckets(input: {
 }
 
 // ---------------------------------------------------------------------------
+// Post-compaction continuation gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Inputs to {@link shouldResumeAfterCompaction}. Pure-function shape
+ * mirrors what the call site can cheaply gather from `modeState` plus
+ * the loaded plan; no session-manager access.
+ */
+export interface ResumeAfterCompactionInput {
+	/** True iff `ctx.compact()` resolved without throwing. */
+	compacted: boolean;
+	/** Stage captured at compactPhaseSlice entry. */
+	stageAtEntry: string | null | undefined;
+	/**
+	 * Number of incomplete tasks in the active phase. 0 when there's no
+	 * active phase or every task is done.
+	 */
+	remainingTaskCount: number;
+}
+
+/**
+ * Decide whether to kick a follow-up turn after a successful mid-phase
+ * compaction.
+ *
+ * Three gates:
+ *
+ *   1. The compaction actually completed. On rejection (no compaction
+ *      model, summariser failure, pi already-compacted) we let pi's
+ *      auto-compaction handle the next overflow rather than poking
+ *      the agent into a turn it isn't ready for.
+ *
+ *   2. We entered compactPhaseSlice while `executing`. The Shift+Tab
+ *      hack→plan transition path also calls compactPhaseSlice, but
+ *      with `idle` (the user is leaving auto, not staying in it) — we
+ *      must not synthesise a turn for them.
+ *
+ *   3. The active phase has work left. If every task is already toggled
+ *      done, the agent_end exec-complete handler is the right driver,
+ *      not us.
+ */
+export function shouldResumeAfterCompaction(
+	input: ResumeAfterCompactionInput,
+): boolean {
+	if (!input.compacted) return false;
+	if (input.stageAtEntry !== "executing") return false;
+	if (input.remainingTaskCount <= 0) return false;
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // Deferred improvements — tracked here, not in the plan:
 //
 // 1. Threshold-gate the plan→implement compaction by planning-conversation
