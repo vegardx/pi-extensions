@@ -292,6 +292,7 @@ interface PushTarget {
 async function resolvePushTarget(
 	ctx: ExtensionContext,
 	branch: string,
+	nonInteractive = false,
 ): Promise<PushTarget | null> {
 	const prResult = findOpenPr(ctx.cwd, branch);
 	const pr = prResult.pr;
@@ -300,6 +301,15 @@ async function resolvePushTarget(
 	}
 
 	if (!pr.maintainerCanModify) {
+		if (nonInteractive) {
+			notify(
+				ctx,
+				`PR #${pr.number} is cross-repo with maintainerCanModify=false — " +
+					"refusing non-interactive push (would need to format-patch or abort)`,
+				"error",
+			);
+			return null;
+		}
 		const choice = await ctx.ui.select(
 			`PR #${pr.number} is cross-repo and maintainerCanModify is false`,
 			["Output patch series (Recommended)", "Abort — keep commits local"],
@@ -364,6 +374,7 @@ async function resolvePushTarget(
 async function doPush(
 	ctx: ExtensionContext,
 	target: PushTarget,
+	nonInteractive = false,
 ): Promise<boolean> {
 	const remoteRef = `${target.target}/${target.targetBranch}`;
 
@@ -386,6 +397,15 @@ async function doPush(
 		}
 		notify(ctx, "rebased onto remote (trees matched)", "info");
 		return doStandardPush();
+	}
+
+	if (nonInteractive) {
+		notify(
+			ctx,
+			`remote ${remoteRef} has commits we don't have — refusing non-interactive push (rebase / force-push need a human)`,
+			"error",
+		);
+		return false;
 	}
 
 	const choice = await ctx.ui.select(
@@ -460,6 +480,25 @@ export interface RunCommitOptions {
 	 * Defaults to false.
 	 */
 	skipReviewOffer?: boolean;
+	/**
+	 * Run the full commit pipeline without prompting the user. Used by
+	 * the modes auto-loop, which drives commit→ship→next-phase without
+	 * user input. Behaviour:
+	 *
+	 *   - Skip /review.
+	 *   - Refuse to commit on the default branch (no safe default).
+	 *   - Execute the agent-generated commit plan as-is (no edit step).
+	 *   - Push the branch (`-u origin` on fresh branches), then return.
+	 *   - Do NOT open or update a PR (that's /ship's job).
+	 *   - Do NOT prompt for tracking-issue linkage.
+	 *   - Bail on cross-repo PRs and on diverged-remote situations
+	 *     rather than guessing (rebase / force-push are interactive
+	 *     decisions).
+	 *
+	 * Throws if any `ctx.ui.*` would otherwise be invoked. Defaults
+	 * to false.
+	 */
+	nonInteractive?: boolean;
 }
 
 export interface RunCommitResult {
@@ -479,6 +518,7 @@ export async function runCommit(
 	opts: RunCommitOptions,
 ): Promise<RunCommitResult> {
 	const { ctx, pi } = opts;
+	const nonInteractive = opts.nonInteractive === true;
 	const guidance = (opts.guidance ?? "").trim();
 	const idle = () => waitForIdle(pi, ctx);
 
@@ -509,7 +549,7 @@ export async function runCommit(
 		return { ran: false, abortReason: "unsafe-branch" };
 	}
 
-	if (!ctx.hasUI) {
+	if (!ctx.hasUI && !nonInteractive) {
 		notify(
 			ctx,
 			"/commit needs an interactive UI; run pi attached to a terminal",
@@ -520,6 +560,14 @@ export async function runCommit(
 
 	const defaultBranch = detectDefaultBranch(ctx.cwd);
 	if (branch === defaultBranch) {
+		if (nonInteractive) {
+			notify(
+				ctx,
+				`refusing non-interactive commit on default branch \`${branch}\` — branch first`,
+				"error",
+			);
+			return { ran: false, abortReason: "unsafe-branch" };
+		}
 		const proceed = await ctx.ui.confirm(
 			"Commit directly on the default branch?",
 			`You're on \`${branch}\`, which is the default. Usually you'd branch first. ` +
@@ -536,8 +584,8 @@ export async function runCommit(
 	}
 
 	// ---- Step 2: offer /review first ----------------------------
-	if (opts.skipReviewOffer) {
-		notify(ctx, "skipping /review (just ran)", "info");
+	if (opts.skipReviewOffer || nonInteractive) {
+		if (!nonInteractive) notify(ctx, "skipping /review (just ran)", "info");
 	} else {
 		const reviewChoice = await ctx.ui.select("Run /review before committing?", [
 			"Run /review first (Recommended)",
@@ -600,25 +648,29 @@ export async function runCommit(
 	// ---- Step 4: execute / edit / cancel ------------------------
 	const planText = lastAssistantText(ctx) ?? "";
 	const planSummary = summarisePlan(planText);
-	const executeChoice = await ctx.ui.select(
-		`commit plan ready: ${planSummary}`,
-		["Commit (Recommended)", "Edit plan before committing", "Cancel"],
-	);
-	if (!executeChoice || executeChoice.startsWith("Cancel")) {
-		notify(ctx, "aborted — nothing committed", "info");
-		return { ran: false, abortReason: "user-cancelled" };
-	}
 	let override: string | null = null;
-	if (executeChoice.startsWith("Edit")) {
-		const edited = await ctx.ui.editor(
-			"Revise the commit plan (the agent will execute this verbatim):",
-			planText,
+	if (!nonInteractive) {
+		const executeChoice = await ctx.ui.select(
+			`commit plan ready: ${planSummary}`,
+			["Commit (Recommended)", "Edit plan before committing", "Cancel"],
 		);
-		if (!edited || edited.trim().length === 0) {
-			notify(ctx, "aborted — empty plan", "warning");
+		if (!executeChoice || executeChoice.startsWith("Cancel")) {
+			notify(ctx, "aborted — nothing committed", "info");
 			return { ran: false, abortReason: "user-cancelled" };
 		}
-		override = edited.trim();
+		if (executeChoice.startsWith("Edit")) {
+			const edited = await ctx.ui.editor(
+				"Revise the commit plan (the agent will execute this verbatim):",
+				planText,
+			);
+			if (!edited || edited.trim().length === 0) {
+				notify(ctx, "aborted — empty plan", "warning");
+				return { ran: false, abortReason: "user-cancelled" };
+			}
+			override = edited.trim();
+		}
+	} else {
+		notify(ctx, `commit plan: ${planSummary}`, "info");
 	}
 
 	// ---- Step 5: execute commits -------------------------------
@@ -642,20 +694,30 @@ export async function runCommit(
 	);
 
 	// ---- Step 6: push + PR --------------------------------------
-	const pushChoice = await ctx.ui.select("Push and manage PR?", [
-		"Push and manage PR (Recommended)",
-		"Push only",
-		"Don't push — keep commits local",
-	]);
+	// In non-interactive mode we always push, never manage the PR
+	// (that's /ship's job). The auto-loop relies on this: commit
+	// here, then /ship pushes again (idempotent fast-forward) and
+	// opens the PR.
+	let pushChoice: string | null;
+	if (nonInteractive) {
+		pushChoice = "Push only";
+	} else {
+		pushChoice =
+			(await ctx.ui.select("Push and manage PR?", [
+				"Push and manage PR (Recommended)",
+				"Push only",
+				"Don't push — keep commits local",
+			])) ?? null;
+	}
 	if (!pushChoice || pushChoice.startsWith("Don't")) {
 		notify(ctx, "commits stay local", "info");
 		return { ran: true };
 	}
 
-	const pushTarget = await resolvePushTarget(ctx, branch);
+	const pushTarget = await resolvePushTarget(ctx, branch, nonInteractive);
 	if (!pushTarget) return { ran: true };
 
-	const pushed = await doPush(ctx, pushTarget);
+	const pushed = await doPush(ctx, pushTarget, nonInteractive);
 	if (!pushed) return { ran: true };
 
 	if (pushChoice.startsWith("Push only")) {
