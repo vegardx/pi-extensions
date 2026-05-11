@@ -838,26 +838,25 @@ describe("computeCarryForwardSummaryChars", () => {
 });
 
 describe("shouldResumeAfterCompaction", () => {
-	it("returns true when compacted, executing, and tasks remain", () => {
-		expect(
-			shouldResumeAfterCompaction({
-				compacted: true,
-				stageAtEntry: "executing",
-				remainingTaskCount: 3,
-			}),
-		).toBe(true);
+	const BASE = {
+		compacted: true,
+		stageAtEntry: "executing",
+		modeAtEntry: "auto",
+		currentStage: "executing",
+		currentMode: "auto",
+		remainingTaskCount: 3,
+	} as const;
+
+	it("returns true when compacted, executing, mode unchanged, and tasks remain", () => {
+		expect(shouldResumeAfterCompaction({ ...BASE })).toBe(true);
 	});
 
 	it("returns false when compaction was skipped/failed", () => {
 		// Failure path: don't poke the agent into a turn it isn't ready for;
 		// pi auto-compaction will retry on the next overflow.
-		expect(
-			shouldResumeAfterCompaction({
-				compacted: false,
-				stageAtEntry: "executing",
-				remainingTaskCount: 3,
-			}),
-		).toBe(false);
+		expect(shouldResumeAfterCompaction({ ...BASE, compacted: false })).toBe(
+			false,
+		);
 	});
 
 	it("returns false for non-executing stages (Shift+Tab hack→plan path)", () => {
@@ -865,49 +864,46 @@ describe("shouldResumeAfterCompaction", () => {
 		// We must not synthesise a turn for the user.
 		for (const stage of ["idle", "planning", "reviewing", "fixing"]) {
 			expect(
-				shouldResumeAfterCompaction({
-					compacted: true,
-					stageAtEntry: stage,
-					remainingTaskCount: 3,
-				}),
+				shouldResumeAfterCompaction({ ...BASE, stageAtEntry: stage }),
 			).toBe(false);
 		}
 	});
 
 	it("returns false when stageAtEntry is null/undefined", () => {
+		expect(shouldResumeAfterCompaction({ ...BASE, stageAtEntry: null })).toBe(
+			false,
+		);
 		expect(
-			shouldResumeAfterCompaction({
-				compacted: true,
-				stageAtEntry: null,
-				remainingTaskCount: 3,
-			}),
+			shouldResumeAfterCompaction({ ...BASE, stageAtEntry: undefined }),
 		).toBe(false);
-		expect(
-			shouldResumeAfterCompaction({
-				compacted: true,
-				stageAtEntry: undefined,
-				remainingTaskCount: 3,
-			}),
-		).toBe(false);
+	});
+
+	it("returns false when stage drifted to non-executing during async compaction", () => {
+		// User hit Shift+Tab while ctx.compact() was running; modeState moved
+		// out of executing. The kick is no longer wanted.
+		expect(shouldResumeAfterCompaction({ ...BASE, currentStage: "idle" })).toBe(
+			false,
+		);
+	});
+
+	it("returns false when mode changed mid-flight (e.g. auto→hack via Shift+Tab)", () => {
+		expect(shouldResumeAfterCompaction({ ...BASE, currentMode: "hack" })).toBe(
+			false,
+		);
+		expect(shouldResumeAfterCompaction({ ...BASE, currentMode: "plan" })).toBe(
+			false,
+		);
 	});
 
 	it("returns false when no tasks remain (exec-complete handler will fire)", () => {
 		expect(
-			shouldResumeAfterCompaction({
-				compacted: true,
-				stageAtEntry: "executing",
-				remainingTaskCount: 0,
-			}),
+			shouldResumeAfterCompaction({ ...BASE, remainingTaskCount: 0 }),
 		).toBe(false);
 	});
 
 	it("treats negative remaining counts defensively", () => {
 		expect(
-			shouldResumeAfterCompaction({
-				compacted: true,
-				stageAtEntry: "executing",
-				remainingTaskCount: -1,
-			}),
+			shouldResumeAfterCompaction({ ...BASE, remainingTaskCount: -1 }),
 		).toBe(false);
 	});
 });

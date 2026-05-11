@@ -707,6 +707,12 @@ export interface ResumeAfterCompactionInput {
 	compacted: boolean;
 	/** Stage captured at compactPhaseSlice entry. */
 	stageAtEntry: string | null | undefined;
+	/** Mode captured at compactPhaseSlice entry. */
+	modeAtEntry: string | null | undefined;
+	/** Stage on `modeState` right now (after `ctx.compact()` resolved). */
+	currentStage: string | null | undefined;
+	/** Mode on `modeState` right now (after `ctx.compact()` resolved). */
+	currentMode: string | null | undefined;
 	/**
 	 * Number of incomplete tasks in the active phase. 0 when there's no
 	 * active phase or every task is done.
@@ -718,7 +724,7 @@ export interface ResumeAfterCompactionInput {
  * Decide whether to kick a follow-up turn after a successful mid-phase
  * compaction.
  *
- * Three gates:
+ * Five gates:
  *
  *   1. The compaction actually completed. On rejection (no compaction
  *      model, summariser failure, pi already-compacted) we let pi's
@@ -730,7 +736,15 @@ export interface ResumeAfterCompactionInput {
  *      with `idle` (the user is leaving auto, not staying in it) — we
  *      must not synthesise a turn for them.
  *
- *   3. The active phase has work left. If every task is already toggled
+ *   3. We're _still_ executing now. `ctx.compact()` is async; while it
+ *      ran the user could have hit Shift+Tab and left auto. If the
+ *      stage drifted, the original kick is no longer wanted.
+ *
+ *   4. The mode hasn't changed mid-flight. Same drift concern: a
+ *      Shift+Tab from auto to hack/plan during compaction must not
+ *      result in an auto-mode follow-up turn.
+ *
+ *   5. The active phase has work left. If every task is already toggled
  *      done, the agent_end exec-complete handler is the right driver,
  *      not us.
  */
@@ -739,6 +753,8 @@ export function shouldResumeAfterCompaction(
 ): boolean {
 	if (!input.compacted) return false;
 	if (input.stageAtEntry !== "executing") return false;
+	if (input.currentStage !== "executing") return false;
+	if (input.modeAtEntry !== input.currentMode) return false;
 	if (input.remainingTaskCount <= 0) return false;
 	return true;
 }
