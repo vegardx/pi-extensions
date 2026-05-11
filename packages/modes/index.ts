@@ -1089,6 +1089,12 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	function hasSessionControl(
+		ctx: ExtensionContext,
+	): ctx is ExtensionCommandContext {
+		return typeof (ctx as ExtensionCommandContext).newSession === "function";
+	}
+
 	function runDetached(
 		label: string,
 		ctx: ExtensionContext,
@@ -1194,7 +1200,7 @@ export default function (pi: ExtensionAPI) {
 	// ---- Branch creation --------------------------------------------------
 
 	async function createFeatureBranch(
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		description: string,
 	): Promise<string | null> {
 		const branch = await deriveBranchNameWithModel(ctx, description);
@@ -1225,7 +1231,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Picker -----------------------------------------------------------
 
-	async function runPicker(ctx: ExtensionCommandContext): Promise<void> {
+	async function runPicker(ctx: ExtensionContext): Promise<void> {
 		// Guard against stale setImmediate callbacks: if the user switched out
 		// of plan mode (e.g. Shift+Tab) between scheduling and execution, bail.
 		if (!modeState || modeState.mode !== "plan") return;
@@ -1945,7 +1951,7 @@ export default function (pi: ExtensionAPI) {
 	// ---- Implement path ---------------------------------------------------
 
 	async function doImplement(
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		descriptionArg: string | null,
 	): Promise<void> {
 		if (!modeState) return;
@@ -2127,6 +2133,18 @@ export default function (pi: ExtensionAPI) {
 			const branchRef = branch;
 			const needsNewSession =
 				branchPlan?.kind === "create" || !phase.sessionPath;
+
+			if (!hasSessionControl(ctx)) {
+				const path = ctx.sessionManager.getSessionFile();
+				if (path) {
+					phaseRef.sessionPath = path;
+					phaseRef.updatedAt = new Date().toISOString();
+					planRef.updatedAt = phaseRef.updatedAt;
+					savePlan(planRef);
+				}
+				await launchExecution(ctx, planRef, phaseRef, branchRef);
+				return;
+			}
 
 			if (needsNewSession) {
 				await ctx.newSession({
@@ -2585,7 +2603,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Park path --------------------------------------------------------
 
-	async function doPark(ctx: ExtensionCommandContext): Promise<void> {
+	async function doPark(ctx: ExtensionContext): Promise<void> {
 		if (!modeState) {
 			notify(ctx, "no active session — run /plan first", "warning");
 			return;
@@ -2828,7 +2846,7 @@ export default function (pi: ExtensionAPI) {
 	 * sub_issues API, and store the issue numbers back into the Plan.
 	 */
 	async function createPhaseIssues(
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		plan: Plan,
 		parentNumber: number,
 		tmpDir: string,
@@ -3372,9 +3390,7 @@ export default function (pi: ExtensionAPI) {
 			modeState.stage = "awaiting-choice";
 			persist();
 			clearPlanTurnSnapshot();
-			runDetached("plan picker", ctx, () =>
-				runPicker(ctx as ExtensionCommandContext),
-			);
+			runDetached("plan picker", ctx, () => runPicker(ctx));
 			return;
 		}
 
@@ -3611,12 +3627,9 @@ export default function (pi: ExtensionAPI) {
 			}
 
 			// hack → plan (cycle entry point). Prompt for handling carried-over
-			// context: keep / lossy-compact active phase. "New session" is not
-			// offered from the shortcut path because pi only exposes
-			// `newSession` on ExtensionCommandContext, not the ExtensionContext
-			// shortcuts receive — silently degrading would surprise the user.
-			// `switchSession` to the recorded planning session is, however,
-			// supported via `runDetached` (lifts to command context).
+			// context: keep / lossy-compact active phase. Session restore uses
+			// `hasSessionControl` guard — degrades to in-place mode flip when
+			// command-context methods are unavailable.
 			if (modeState.mode === "hack") {
 				const decision = await runModeTransition("hack", ctx, {
 					canStartNewSession: false,
@@ -3636,17 +3649,27 @@ export default function (pi: ExtensionAPI) {
 				const targetPath = plan?.planSessionPath;
 				const currentPath = ctx.sessionManager.getSessionFile();
 				if (targetPath && targetPath !== currentPath) {
-					runDetached("hack→plan session restore", ctx, async () => {
-						const cmdCtx = ctx as ExtensionCommandContext;
-						await cmdCtx.switchSession(targetPath, {
-							withSession: async (newCtx) => {
-								setMode("plan", newCtx);
-								persist();
-								updateWidget(newCtx);
-								notify(newCtx, "plan mode (resumed planning session)", "info");
-							},
+					if (hasSessionControl(ctx)) {
+						runDetached("hack→plan session restore", ctx, async () => {
+							await ctx.switchSession(targetPath, {
+								withSession: async (newCtx) => {
+									setMode("plan", newCtx);
+									persist();
+									updateWidget(newCtx);
+									notify(
+										newCtx,
+										"plan mode (resumed planning session)",
+										"info",
+									);
+								},
+							});
 						});
-					});
+					} else {
+						setMode("plan", ctx);
+						persist();
+						updateWidget(ctx);
+						notify(ctx, "plan mode", "info");
+					}
 					return;
 				}
 				setMode("plan", ctx);
@@ -3662,9 +3685,7 @@ export default function (pi: ExtensionAPI) {
 			if (modeState.mode === "plan") {
 				const plan = currentPlan();
 				if (shouldOfferShiftTabPicker(plan, ctx.hasUI)) {
-					runDetached("picker", ctx, () =>
-						runPicker(ctx as ExtensionCommandContext),
-					);
+					runDetached("picker", ctx, () => runPicker(ctx));
 				} else {
 					const hadPhases = (plan?.phases.length ?? 0) > 0;
 					setMode("auto", ctx);
