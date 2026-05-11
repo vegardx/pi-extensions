@@ -145,7 +145,6 @@ export async function runDerp(
 		cwd: ctx.cwd,
 		userText: args,
 		sessionId: ctx.sessionManager.getSessionId(),
-		sessionFile: ctx.sessionManager.getSessionFile() ?? null,
 		sessionName: ctx.sessionManager.getSessionName() ?? null,
 		entries,
 		recentEntryCount,
@@ -265,10 +264,8 @@ interface ContextScanResult {
 
 /**
  * Run `redactFull` over every text-bearing field of `DerpContext`.
- * Returns the cleaned context plus the combined hit list. Origin
- * slug, branch, HEAD short, cwd, sessionFile, recent-entry text, and
- * statusShort are all scanned — anything we'd hand to the polish
- * subagent or render in the issue body.
+ * Returns the cleaned context plus the combined hit list. Scanned
+ * fields: `userText`, `sessionName`, `recentEntries[].text`.
  */
 export function scanContextForSecrets(ctx: DerpContext): ContextScanResult {
 	const hits: RedactHit[] = [];
@@ -281,21 +278,7 @@ export function scanContextForSecrets(ctx: DerpContext): ContextScanResult {
 	const cleaned: DerpContext = {
 		...ctx,
 		userText: scrub(ctx.userText),
-		statusShort: scrub(ctx.statusShort),
-		cwd: scrub(ctx.cwd),
-		branch: ctx.branch ? scrub(ctx.branch) : null,
-		sessionFile: ctx.sessionFile ? scrub(ctx.sessionFile) : null,
 		sessionName: ctx.sessionName ? scrub(ctx.sessionName) : null,
-		origin: ctx.origin
-			? {
-					...ctx.origin,
-					// Origin slug is the only origin field we render; if its
-					// host is internal, redact the whole thing rather than
-					// emitting a half-scrubbed slug.
-					host: scrub(ctx.origin.host),
-					slug: scrub(ctx.origin.slug),
-				}
-			: null,
 		recentEntries: ctx.recentEntries.map((e) => ({
 			role: e.role,
 			text: scrub(e.text),

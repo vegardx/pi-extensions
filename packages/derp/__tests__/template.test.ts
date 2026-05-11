@@ -9,19 +9,8 @@ import {
 function makeCtx(overrides: Partial<DerpContext> = {}): DerpContext {
 	return {
 		userText: "ghost text overlaps the input on iTerm",
-		origin: {
-			host: "github.com",
-			owner: "vegardx",
-			repo: "pi-extensions",
-			slug: "github.com/vegardx/pi-extensions",
-		},
-		branch: "feat/foo",
-		headShort: "abc1234",
-		statusShort: "M packages/foo/index.ts",
-		cwd: "/tmp/repo",
 		date: "2026-05-10",
 		sessionId: "session-abc",
-		sessionFile: "/tmp/sess.jsonl",
 		sessionName: "test session",
 		piVersion: "0.73.0",
 		recentEntries: [
@@ -95,15 +84,15 @@ describe("buildPolishTask", () => {
 		const t = buildPolishTask(makeCtx());
 		expect(t).toContain("github.com/vegardx/pi-extensions");
 		expect(t).toContain("Filed against");
-		expect(t).toContain("feat/foo");
-		expect(t).toContain("abc1234");
 		expect(t).toContain("0.73.0");
 	});
 
-	it("omits the origin row when origin is null", () => {
-		const t = buildPolishTask(makeCtx({ origin: null }));
-		expect(t).toContain("Filed against");
+	it("does not include cwd-relative fields", () => {
+		const t = buildPolishTask(makeCtx());
 		expect(t).not.toContain("Origin (cwd)");
+		expect(t).not.toContain("Branch");
+		expect(t).not.toContain("HEAD");
+		expect(t).not.toContain("Working tree");
 	});
 
 	it("includes the recent-entries section", () => {
@@ -143,8 +132,8 @@ describe("buildFallbackIssue", () => {
 		expect(r.body).toContain("polish step skipped");
 	});
 
-	it("omits the working-tree section when status is empty", () => {
-		const r = buildFallbackIssue(makeCtx({ statusShort: "" }), "");
+	it("does not include a working-tree section", () => {
+		const r = buildFallbackIssue(makeCtx(), "");
 		expect(r.body).not.toContain("## Working tree");
 	});
 
