@@ -78,6 +78,12 @@ import {
 	snapshotPlanStructure,
 } from "./plan/picker.js";
 import {
+	type PrSweepResult,
+	pickFirstWithFeedback,
+	runEndOfPlanPrSweep,
+	summarisePrSweep,
+} from "./plan/pr-sweep.js";
+import {
 	abandonNonTerminalPhases,
 	type ImplementBranchPlan,
 	type Plan,
@@ -2486,7 +2492,39 @@ export default function (pi: ExtensionAPI) {
 		const prompt = buildCompletionPrompt(plan, ctx.hasUI);
 		if (!prompt) return;
 
-		const choice = await ctx.ui.select(prompt.title, prompt.options);
+		// Sweep PRs and surface CI/review state in one notify before the
+		// picker fires. Soft-fail: if `gh` is unavailable or every call
+		// errors, skip the sweep and offer the existing options as before.
+		let sweep: PrSweepResult[] | null = null;
+		try {
+			sweep = await runEndOfPlanPrSweep({ cwd: ctx.cwd, plan });
+		} catch (err) {
+			notify(
+				ctx,
+				`PR sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+				"warning",
+			);
+		}
+		let feedback: PrSweepResult | null = null;
+		if (sweep && sweep.length > 0) {
+			notify(ctx, summarisePrSweep(sweep), "info");
+			feedback = pickFirstWithFeedback(sweep);
+		}
+
+		const feedbackOption = feedback
+			? `Open PR #${feedback.prNumber} (\`${feedback.phaseId}\`) in ask mode to address feedback`
+			: null;
+		const options = feedbackOption
+			? [feedbackOption, ...prompt.options]
+			: prompt.options;
+
+		const choice = await ctx.ui.select(prompt.title, options);
+
+		if (feedbackOption && choice === feedbackOption && feedback) {
+			await openFeedbackPhaseInAsk(ctx, plan, feedback.phaseId);
+			return;
+		}
+
 		const decision = decideFromCompletionChoice(choice);
 		if (decision.action === "stay") return;
 
@@ -2502,6 +2540,39 @@ export default function (pi: ExtensionAPI) {
 			persist();
 		}
 		notify(ctx, "plan complete — run /plan to start the next one", "info");
+	}
+
+	/**
+	 * Drop the user into ask mode on a specific phase's branch, ready to
+	 * address review feedback on that phase's PR. Used by the end-of-plan
+	 * sweep when a PR needs attention.
+	 *
+	 * Best-effort: a missing branch / missing session simply notifies and
+	 * stays put. The completion picker has already fired so we won't
+	 * re-prompt.
+	 */
+	async function openFeedbackPhaseInAsk(
+		ctx: ExtensionCommandContext,
+		plan: Plan,
+		phaseId: string,
+	): Promise<void> {
+		const phase = plan.phases.find((p) => p.id === phaseId);
+		if (!phase) {
+			notify(ctx, `phase ${phaseId} not found in plan`, "error");
+			return;
+		}
+		notify(
+			ctx,
+			`opening phase \`${phase.id}\` in ask mode — address feedback, then /commit and /ship`,
+			"info",
+		);
+		if (modeState) {
+			modeState.branch = phase.branch;
+			modeState.stage = "executing";
+			pi.setSessionName(phase.branch);
+			setMode("ask", ctx);
+			persist();
+		}
 	}
 
 	/**
