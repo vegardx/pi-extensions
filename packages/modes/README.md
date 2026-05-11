@@ -35,9 +35,9 @@ When `/ship` lands the last actionable phase of a plan (auto or manual), modes r
 
 ```
 Plan complete — PR sweep:
-  ✓ add-webhook                PR #142  merged, CI green, approved
-  · validate-signatures        PR #145  open, CI green, CHANGES_REQUESTED, 3 unresolved comments
-  · retry-failed               PR #148  open, CI failing
+  ✓ Phase `add-webhook`           PR #142  merged, CI green, approved
+  · Phase `validate-signatures`   PR #145  open, CI green, CHANGES_REQUESTED, 3 unresolved comments
+  · Phase `retry-failed`          PR #148  open, CI failing
 ```
 
 If any PR needs attention, the completion picker adds an extra option "Open PR #N (`<phase-id>`) in ask mode to address feedback" which drops you into ask mode on that phase's branch. Soft-fail: if `gh` is unavailable, the sweep is skipped and the existing completion picker fires unchanged.
@@ -86,12 +86,12 @@ and the sessions that have ever bound it (`seenIn`). Concretely:
 
 ```
 plan: feat-payments-webhooks
-├── phase: p-add-webhook-endpoint  [shipped]    PR #142
-├── phase: p-validate-signatures   [in-review]  PR #145
-└── phase: p-retry-failed          [active]     branch: feat/p-retry-failed
-       ├── task: t-detect-failures
-       ├── task: t-retry-with-backoff
-       └── task: t-add-tests
+├── Phase: add-webhook-endpoint  [shipped]    PR #142
+├── Phase: validate-signatures   [in-review]  PR #145
+└── Phase: retry-failed          [active]     branch: feat/retry-failed
+       ├── Task: detect-failures
+       ├── Task: retry-with-backoff
+       └── Task: add-tests
 ```
 
 ### Phase status state machine
@@ -144,7 +144,7 @@ deterministic render of:
 - every phase's id, status, title, goal, and (for shipped phases) PR
   number and `phase.summary`,
 - the active phase's tasks,
-- a short instruction footer ("only execute phase `p-X`'s tasks; run
+- a short instruction footer ("only execute Phase `<id>`'s tasks; run
   `/ship` when done").
 
 No LLM call. The seed text is byte-stable for a given plan, so the prompt
@@ -174,7 +174,7 @@ A phase has a worktree iff its status is `active` or `needs-attention`.
 └── worktrees/
     └── repo-a/
         └── feat-payments-webhooks/  ← plan slug
-            └── p-retry-failed/      ← phase id, branch checked out
+            └── retry-failed/         ← phase id (slug), branch checked out
 ```
 
 - Worktree is created when a phase enters `active` (refused if main is dirty).
