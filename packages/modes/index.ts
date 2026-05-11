@@ -30,12 +30,13 @@ import {
 	convertToLlm,
 	serializeConversation,
 } from "@mariozechner/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { classifyBashCommand } from "./bash-classifier.js";
+import { composeFooterLine, type FooterRightCandidate } from "./footer.js";
 import {
 	checkoutBranch,
 	createBranch,
@@ -1057,32 +1058,36 @@ export default function (pi: ExtensionAPI) {
 							.filter((s): s is string => Boolean(s))
 							.join(" | ") || null;
 
+					// Candidates ordered richest → sparsest. composeFooterLine picks
+					// the first that fits and clamps the final line to `width` so a
+					// long usage/model label or a narrow / resized terminal cannot
+					// produce an over-wide line.
+					const candidates: FooterRightCandidate[] = [];
+
 					if (!modeState) {
-						if (!usageLabel) return [truncateToWidth(leftText, width)];
-						const right = theme.fg("muted", usageLabel);
-						const rw = visibleWidth(usageLabel);
-						const sl = truncateToWidth(leftText, Math.max(0, width - rw - 1));
-						const g = Math.max(1, width - visibleWidth(sl) - rw);
-						return [sl + " ".repeat(g) + right];
+						if (usageLabel) {
+							candidates.push({
+								visible: usageLabel,
+								styled: theme.fg("muted", usageLabel),
+							});
+						}
+						return [composeFooterLine(leftText, candidates, width)];
 					}
 
 					const label = MODE_LABELS[modeState.mode];
 					const color = MODE_COLORS[modeState.mode];
 					const sep = theme.fg("muted", " | ");
 					const modeText = theme.bold(theme.fg(color, label));
-					const rightText = usageLabel
-						? theme.fg("muted", usageLabel) + sep + modeText
-						: modeText;
 
-					const rightVisible = usageLabel ? `${usageLabel} | ${label}` : label;
-					const rightWidth = visibleWidth(rightVisible);
-					const safeLeft = truncateToWidth(
-						leftText,
-						Math.max(0, width - rightWidth - 1),
-					);
-					const gap = Math.max(1, width - visibleWidth(safeLeft) - rightWidth);
+					if (usageLabel) {
+						candidates.push({
+							visible: `${usageLabel} | ${label}`,
+							styled: theme.fg("muted", usageLabel) + sep + modeText,
+						});
+					}
+					candidates.push({ visible: label, styled: modeText });
 
-					return [safeLeft + " ".repeat(gap) + rightText];
+					return [composeFooterLine(leftText, candidates, width)];
 				},
 				dispose: footerData.onBranchChange(() => tui.requestRender()),
 			};
