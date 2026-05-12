@@ -33,6 +33,7 @@ import {
 	getRepoRoot,
 	type PrInfo,
 	removeTriageWorktree,
+	type TriageWorktree,
 } from "./worktree.js";
 
 // ---- Constants -------------------------------------------------------
@@ -293,15 +294,21 @@ export async function runCopilotTriage(
 	}
 
 	// 7. Create worktree and spawn sub-agent.
-	let wtPath: string;
+	let wt: TriageWorktree;
 	try {
-		wtPath = createTriageWorktree(pr, repoRoot);
+		wt = createTriageWorktree(pr, repoRoot);
 	} catch (err) {
 		notify(
 			`could not create worktree: ${err instanceof Error ? err.message : String(err)}`,
 			"error",
 		);
 		return;
+	}
+	if (wt.reused) {
+		notify(
+			`reusing existing worktree at ${wt.path} for PR #${pr.number} — agent will commit and push on this branch`,
+			"warning",
+		);
 	}
 
 	let rawSummary: string;
@@ -316,20 +323,24 @@ export async function runCopilotTriage(
 			provider,
 			model: modelId,
 			tools: TRIAGE_TOOLS,
-			cwd: wtPath,
+			cwd: wt.path,
 			signal: ctx.signal,
 			timeoutMs: AGENT_TIMEOUT_MS,
 		});
 		rawSummary = outcome.rawText;
 		agentError = outcome.error;
 	} finally {
-		try {
-			removeTriageWorktree(wtPath, repoRoot);
-		} catch {
-			notify(
-				`could not remove worktree at ${wtPath} — run \`git worktree prune\` to clean up`,
-				"warning",
-			);
+		// Only remove worktrees we created. A reused worktree belongs to
+		// the user (or another tool) — leave it in place.
+		if (!wt.reused) {
+			try {
+				removeTriageWorktree(wt.path, repoRoot);
+			} catch {
+				notify(
+					`could not remove worktree at ${wt.path} — run \`git worktree prune\` to clean up`,
+					"warning",
+				);
+			}
 		}
 	}
 

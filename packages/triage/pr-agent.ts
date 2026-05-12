@@ -32,6 +32,7 @@ import {
 	getRepoRoot,
 	type PrInfo,
 	removeTriageWorktree,
+	type TriageWorktree,
 } from "./worktree.js";
 
 // ---- Constants -------------------------------------------------------
@@ -310,15 +311,15 @@ export async function runPrsTriage(ctx: ExtensionContext): Promise<void> {
 		`starting ${selected.length} sub-agent${selected.length === 1 ? "" : "s"} in parallel…`,
 	);
 
-	const worktrees = new Map<number, string>();
+	const worktrees = new Map<number, TriageWorktree>();
 
 	const inputs: Array<SubagentTask<number>> = [];
 	// Parallel tracking so outcomes[i] maps back to inputPrs[i].
 	const inputPrs: PrInfo[] = [];
 	for (const { pr, reviews } of selected) {
-		let wtPath: string;
+		let wt: TriageWorktree;
 		try {
-			wtPath = createTriageWorktree(pr, repoRoot);
+			wt = createTriageWorktree(pr, repoRoot);
 		} catch (err) {
 			notify(
 				`skipping PR #${pr.number}: ${err instanceof Error ? err.message : String(err)}`,
@@ -326,7 +327,13 @@ export async function runPrsTriage(ctx: ExtensionContext): Promise<void> {
 			);
 			continue;
 		}
-		worktrees.set(pr.number, wtPath);
+		if (wt.reused) {
+			notify(
+				`reusing existing worktree at ${wt.path} for PR #${pr.number} — agent will commit and push on this branch`,
+				"warning",
+			);
+		}
+		worktrees.set(pr.number, wt);
 		inputPrs.push(pr);
 		inputs.push({
 			tag: pr.number,
@@ -335,7 +342,7 @@ export async function runPrsTriage(ctx: ExtensionContext): Promise<void> {
 			provider,
 			model: modelId,
 			tools: TRIAGE_TOOLS,
-			cwd: wtPath,
+			cwd: wt.path,
 			signal: ctx.signal,
 			timeoutMs: AGENT_TIMEOUT_MS,
 		});
@@ -346,13 +353,15 @@ export async function runPrsTriage(ctx: ExtensionContext): Promise<void> {
 	// 8. Run all sub-agents in parallel (cap at 5 to avoid overload).
 	const outcomes = await runSubagentsParallel(inputs, { maxParallel: 5 });
 
-	// 9. Clean up worktrees.
-	for (const [prNumber, wtPath] of worktrees) {
+	// 9. Clean up worktrees we created. Reused worktrees belong to the
+	//    user (or another tool) — leave them in place.
+	for (const [prNumber, wt] of worktrees) {
+		if (wt.reused) continue;
 		try {
-			removeTriageWorktree(wtPath, repoRoot);
+			removeTriageWorktree(wt.path, repoRoot);
 		} catch {
 			notify(
-				`could not remove worktree for PR #${prNumber} at ${wtPath} — run \`git worktree prune\` to clean up`,
+				`could not remove worktree for PR #${prNumber} at ${wt.path} — run \`git worktree prune\` to clean up`,
 				"warning",
 			);
 		}
