@@ -22,6 +22,7 @@ interface FakeCtxOptions {
 	cwd?: string;
 	entries?: unknown[];
 	sessionId?: string;
+	sessionName?: string | null;
 }
 
 function fakeCtx(opts: FakeCtxOptions = {}): {
@@ -48,7 +49,7 @@ function fakeCtx(opts: FakeCtxOptions = {}): {
 			getEntries: () => opts.entries ?? [],
 			getSessionId: () => opts.sessionId ?? "fake-session",
 			getSessionFile: () => null,
-			getSessionName: () => null,
+			getSessionName: () => opts.sessionName ?? null,
 			getBranch: () => [],
 			getLeafId: () => null,
 		},
@@ -188,6 +189,60 @@ describe("runDerp — input redaction (fail-closed)", () => {
 			"https://github.com/vegardx/pi-extensions/issues/42",
 		);
 		expect(pendingFiles()).toEqual([]);
+	});
+
+	it("bails and stashes when sessionName contains an internal host", async () => {
+		const { ctx, notifies } = fakeCtx({
+			sessionName: "debugging issue on dnb.ghe.com/org/repo",
+		});
+		const polish = fakePolish({
+			ok: true,
+			draft: { title: "x", body: "y" },
+		});
+		const create = fakeCreateIssue({ ok: true, url: "should-not-fire" });
+
+		await runDerp(ctx, "something broke", {
+			polish,
+			createIssue: create.fn,
+			pendingDir,
+		});
+
+		expect(create.calls).toEqual([]);
+		const warn = notifies.find((n) => n.level === "warning");
+		expect(warn?.message).toContain("internal-host");
+		expect(warn?.message).toContain("not filing");
+		expect(pendingFiles()).toHaveLength(1);
+	});
+
+	it("bails and stashes when a recent entry contains a token", async () => {
+		const { ctx, notifies } = fakeCtx({
+			entries: [
+				{ role: "user", text: "my token is ghp_AbCdEf1234567890ZzYy, help" },
+			],
+		});
+		const polish = fakePolish({
+			ok: true,
+			draft: { title: "x", body: "y" },
+		});
+		const create = fakeCreateIssue({ ok: true, url: "should-not-fire" });
+
+		await runDerp(ctx, "something broke", {
+			polish,
+			createIssue: create.fn,
+			pendingDir,
+		});
+
+		expect(create.calls).toEqual([]);
+		const warn = notifies.find((n) => n.level === "warning");
+		expect(warn?.message).toContain("secret-token");
+		expect(warn?.message).toContain("not filing");
+		const files = pendingFiles();
+		expect(files).toHaveLength(1);
+		const first = files[0];
+		if (!first) throw new Error("unreachable");
+		const written = readFileSync(join(pendingDir, first), "utf8");
+		expect(written).not.toContain("ghp_AbCdEf1234567890ZzYy");
+		expect(written).toContain("[REDACTED:secret-token]");
 	});
 });
 

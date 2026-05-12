@@ -1,8 +1,8 @@
 /**
  * Context gathering for /derp.
  *
- * Pure-ish: spawns short-lived git processes, reads pi's session
- * state, then returns a plain `DerpContext` value. No mutation, no
+ * Pure-ish: reads pi's session state and crawls node_modules for
+ * version info, then returns a plain `DerpContext` value. No mutation, no
  * pi.sendMessage, no agent turn — that's the whole point of /derp.
  *
  * Everything here runs synchronously inside the slash-command
