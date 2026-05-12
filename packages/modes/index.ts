@@ -70,6 +70,7 @@ import {
 	buildCompletionPrompt,
 	decideFromCompletionChoice,
 } from "./plan/completion.js";
+import { DelegateAgents } from "./plan/delegate-tools.js";
 import {
 	classifyImplementContext,
 	planPickerView,
@@ -129,6 +130,8 @@ const PLAN_ONLY_TOOLS = [
 	"websearch",
 	"webfetch",
 	"ask",
+	"explore",
+	"research",
 ] as const;
 
 /** Glyphs shown next to a phase in the widget for each status. */
@@ -305,6 +308,24 @@ export default function (pi: ExtensionAPI) {
 	// Stored TUI instance from the footer factory, used to trigger re-renders
 	// when the mode changes without reinstalling the footer.
 	let footerTui: { requestRender(): void } | null = null;
+
+	// Persistent codebase-explore and web-research sub-agents. Created lazily
+	// on first tool call; disposed when leaving plan mode, on /implement, or
+	// on session shutdown.
+	let delegateAgents: DelegateAgents | null = null;
+
+	function ensureDelegateAgents(ctx: ExtensionContext): DelegateAgents {
+		if (!delegateAgents) {
+			delegateAgents = new DelegateAgents(ctx);
+		}
+		return delegateAgents;
+	}
+
+	function disposeDelegateAgents(): void {
+		if (!delegateAgents) return;
+		void delegateAgents.dispose().catch(() => {});
+		delegateAgents = null;
+	}
 
 	// Questions queued by the `ask` tool during a single agent turn.
 	let pendingQuestions: PendingQuestion[] = [];
@@ -1152,8 +1173,11 @@ export default function (pi: ExtensionAPI) {
 			pi.setActiveTools([...PLAN_ONLY_TOOLS, ...planTools]);
 		} else {
 			// Restore prior tools and ensure plan_* tools are included.
+			// Exclude `explore` — it is plan-mode only; `research` stays.
 			const extra = planTools.filter((t) => !modeState?.priorTools.includes(t));
-			const withPlanTools = [...modeState.priorTools, ...extra];
+			const withPlanTools = [...modeState.priorTools, ...extra].filter(
+				(t) => t !== "explore",
+			);
 			pi.setActiveTools(withPlanTools);
 		}
 	}
@@ -1169,9 +1193,9 @@ export default function (pi: ExtensionAPI) {
 	function setMode(mode: Mode, ctx: ExtensionContext): void {
 		if (!modeState) return;
 		if (modeState.mode === "plan" && mode !== "plan") {
-			// Leaving plan mode — any captured snapshot is now stale, since
-			// the next plan turn will be a fresh entry.
+			// Leaving plan mode — snapshot and delegate agents are stale.
 			clearPlanTurnSnapshot();
+			disposeDelegateAgents();
 		}
 		modeState.mode = mode;
 		persist();
@@ -3267,6 +3291,65 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	// ---- Delegate tools: explore + research ----------------------------
+
+	pi.registerTool({
+		name: "explore",
+		label: "Explore Codebase",
+		description:
+			"Ask the codebase-exploration agent a question about this repository. " +
+			"The agent reads source files, greps patterns, and returns a focused " +
+			"summary. Use this instead of reading files directly to keep this " +
+			"context lean. The agent is persistent — it remembers prior questions " +
+			"in this session.",
+		promptSnippet: "Ask a persistent sub-agent to explore the codebase",
+		promptGuidelines: [
+			"Use explore(question) when you need to understand the codebase before planning — " +
+				"e.g. how a module works, where a pattern is used, what files are relevant. " +
+				"The sub-agent reads files and returns a focused summary without polluting this context.",
+			"The agent is persistent: it remembers earlier answers in this session. " +
+				"Ask follow-up questions naturally.",
+			"Available in plan mode only.",
+		],
+		parameters: Type.Object({
+			question: Type.String({
+				description: "What to find out about the codebase.",
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await ensureDelegateAgents(ctx).explore(params.question);
+			return { content: [{ type: "text", text: result }], details: {} };
+		},
+	});
+
+	pi.registerTool({
+		name: "research",
+		label: "Research",
+		description:
+			"Ask the research agent to look up documentation, libraries, APIs, or " +
+			"prior art on the web. Returns a concise structured summary. Use this " +
+			"instead of web searching directly to keep this context lean. The agent " +
+			"is persistent — it remembers prior questions in this session.",
+		promptSnippet: "Ask a persistent sub-agent to research a topic on the web",
+		promptGuidelines: [
+			"Use research(question) when you need external information — library docs, " +
+				"API references, best practices, or prior art. The sub-agent searches the " +
+				"web and returns a focused summary without polluting this context.",
+			"The agent is persistent: it remembers earlier answers in this session. " +
+				"Ask follow-up questions naturally.",
+			"Available in plan mode and auto/ask mode.",
+		],
+		parameters: Type.Object({
+			question: Type.String({
+				description: "What to research.",
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await ensureDelegateAgents(ctx).research(params.question);
+			return { content: [{ type: "text", text: result }], details: {} };
+		},
+	});
+
 	// ---- Plan tools (phase / task) ---------------------------------------
 
 	registerPlanTools(pi, {
@@ -3360,6 +3443,7 @@ export default function (pi: ExtensionAPI) {
 		// session switches (/new, /resume, /fork).
 		if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 		footerTui = null;
+		disposeDelegateAgents();
 	});
 
 	// ---- session_before_compact: modes-flavoured mid-phase compaction ----
@@ -3467,6 +3551,11 @@ export default function (pi: ExtensionAPI) {
 						"option or type a free-text answer.",
 						"Do NOT ask questions inline in your response when using the `ask` tool —",
 						"the dialog replaces inline questions.",
+						"",
+						"To keep this context lean, delegate heavy lookups to persistent sub-agents:",
+						"  explore(question)   → reads the codebase; remembers earlier answers this session",
+						"  research(question)  → searches the web; remembers earlier answers this session",
+						"Start with explore when you need to understand existing code before planning.",
 					].join("\n"),
 					details: { modeMarker: "plan" as const },
 					display: false,
@@ -3528,6 +3617,7 @@ export default function (pi: ExtensionAPI) {
 				"Execute each task in order. Call plan_task(toggle, phaseId, taskId)",
 				"after completing each one. Do not stop to ask for confirmation unless",
 				"genuinely stuck.",
+				"If you need to look up a library, API, or external reference: research(question).",
 			];
 			if (includeClassifier) {
 				lines.push("", STEERING_CLASSIFIER);
