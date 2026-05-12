@@ -263,9 +263,9 @@ interface ContextScanResult {
 }
 
 /**
- * Run `redactFull` over every text-bearing field of `DerpContext`.
- * Returns the cleaned context plus the combined hit list. Scanned
- * fields: `userText`, `sessionName`, `recentEntries[].text`.
+ * Run `redactFull` over the user-visible text fields of `DerpContext`
+ * (allowlist: `userText`, `sessionName`, `recentEntries[].text`).
+ * Returns the cleaned context plus the combined hit list.
  */
 export function scanContextForSecrets(ctx: DerpContext): ContextScanResult {
 	const hits: RedactHit[] = [];
