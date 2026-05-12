@@ -4,6 +4,8 @@ import { join } from "node:path";
 import {
 	abandonNonTerminalPhases,
 	canTransition,
+	effectiveDependsOn,
+	effectiveTaskKind,
 	matchPhaseId,
 	matchTaskId,
 	type Phase,
@@ -22,6 +24,7 @@ import {
 	deletePlan,
 	listPlans,
 	loadPlan,
+	migratePlan,
 	planExists,
 	plansForRepo,
 	plansForSession,
@@ -215,12 +218,18 @@ describe("abandonNonTerminalPhases", () => {
 });
 
 describe("storage", () => {
-	it("saves and loads a plan", () => {
+	it("saves and loads a plan (lazy-migrates v1 \u2192 v2)", () => {
 		const plan = makePlan();
 		savePlan(plan);
 		expect(planExists(plan.slug)).toBe(true);
 		const loaded = loadPlan(plan.slug);
-		expect(loaded).toEqual(plan);
+		// loadPlan applies migratePlan: v1 plans on disk come back stamped
+		// with schemaVersion=2 and followUps=[] so callers always see v2.
+		expect(loaded).toEqual({
+			...plan,
+			schemaVersion: 2,
+			followUps: [],
+		});
 	});
 
 	it("loadPlan returns null for missing plan", () => {
@@ -630,5 +639,138 @@ describe("planImplementBranch", () => {
 		const b = planImplementBranch(plan, phase, DEFAULT, false);
 		expect(a).toEqual(b);
 		expect(a.kind).toBe("create");
+	});
+});
+
+describe("migratePlan", () => {
+	it("v1 → v2: backfills dependsOn from array order, defaults task.kind, adds followUps + schemaVersion", () => {
+		const v1: Plan = {
+			slug: "legacy",
+			title: "Legacy",
+			repo: { path: "/r" },
+			phases: [
+				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
+				makePhase({ id: "b", branch: "feat/b", status: "in-review" }),
+				makePhase({ id: "c", branch: "feat/c", status: "planned" }),
+			],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-02T00:00:00.000Z",
+		};
+		v1.phases[0].tasks = [
+			{
+				id: "t-1",
+				title: "do thing",
+				body: "",
+				done: true,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+			},
+		];
+
+		const out = migratePlan(v1);
+		expect(out.schemaVersion).toBe(2);
+		expect(out.followUps).toEqual([]);
+		// Chain root has no parent; later phases get the previous phase as parent.
+		expect(out.phases[0].dependsOn).toEqual([]);
+		expect(out.phases[1].dependsOn).toEqual(["a"]);
+		expect(out.phases[2].dependsOn).toEqual(["b"]);
+		// Existing tasks default to deliverable.
+		expect(out.phases[0].tasks[0].kind).toBe("deliverable");
+	});
+
+	it("derive parent skips abandoned phases", () => {
+		const v1: Plan = {
+			slug: "legacy-skip",
+			title: "Legacy skip",
+			repo: { path: "/r" },
+			phases: [
+				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
+				makePhase({ id: "b", branch: "feat/b", status: "abandoned" }),
+				makePhase({ id: "c", branch: "feat/c", status: "planned" }),
+			],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-02T00:00:00.000Z",
+		};
+		const out = migratePlan(v1);
+		// `c`'s parent should be `a`, not the abandoned `b`.
+		expect(out.phases[2].dependsOn).toEqual(["a"]);
+	});
+
+	it("is idempotent: v2 → v2 returns the same shape", () => {
+		const v1: Plan = {
+			slug: "idem",
+			title: "Idem",
+			repo: { path: "/r" },
+			phases: [
+				makePhase({ id: "a", branch: "feat/a", status: "in-review" }),
+				makePhase({ id: "b", branch: "feat/b", status: "planned" }),
+			],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-02T00:00:00.000Z",
+		};
+		const once = migratePlan(v1);
+		const twice = migratePlan(once);
+		expect(twice).toEqual(once);
+	});
+
+	it("normalises a v2 plan that was hand-edited and dropped fields", () => {
+		const partial: Plan = {
+			slug: "partial-v2",
+			title: "Partial",
+			repo: { path: "/r" },
+			schemaVersion: 2,
+			phases: [
+				{
+					...makePhase({ id: "a", branch: "feat/a", status: "planned" }),
+					// dependsOn missing — simulate hand-edit.
+				},
+			],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-02T00:00:00.000Z",
+		};
+		const out = migratePlan(partial);
+		expect(out.phases[0].dependsOn).toEqual([]);
+		expect(out.followUps).toEqual([]);
+	});
+});
+
+describe("effectiveDependsOn", () => {
+	it("returns stored dependsOn when present", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "a", branch: "feat/a" }),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(effectiveDependsOn(plan, plan.phases[1])).toEqual(["a"]);
+	});
+
+	it("falls back to nearest non-abandoned predecessor when dependsOn unset", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
+				makePhase({ id: "b", branch: "feat/b", status: "abandoned" }),
+				makePhase({ id: "c", branch: "feat/c", status: "planned" }),
+			],
+		});
+		expect(effectiveDependsOn(plan, plan.phases[2])).toEqual(["a"]);
+	});
+
+	it("returns [] for first phase", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "a", branch: "feat/a" })],
+		});
+		expect(effectiveDependsOn(plan, plan.phases[0])).toEqual([]);
+	});
+});
+
+describe("effectiveTaskKind", () => {
+	it("defaults to deliverable when kind absent", () => {
+		expect(effectiveTaskKind({})).toBe("deliverable");
+	});
+
+	it("returns explicit kind", () => {
+		expect(effectiveTaskKind({ kind: "followUp" })).toBe("followUp");
+		expect(effectiveTaskKind({ kind: "manual" })).toBe("manual");
 	});
 });

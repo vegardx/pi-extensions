@@ -23,7 +23,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Plan } from "./schema.js";
+import type { Phase, Plan, Task } from "./schema.js";
 import { TERMINAL_STATUSES } from "./schema.js";
 
 let plansRoot = join(homedir(), ".pi", "plans");
@@ -102,11 +102,96 @@ export function loadPlan(slug: string): Plan | null {
 		const raw = readFileSync(path, "utf8");
 		const parsed = JSON.parse(raw) as Plan;
 		if (typeof parsed.slug !== "string") return null;
-		return parsed;
+		return migratePlan(parsed);
 	} catch {
 		return null;
 	}
 }
+
+/**
+ * Lazy on-load migration to the current schema version. Pure: takes
+ * a parsed plan, returns a normalised plan. Idempotent — running
+ * twice produces the same shape.
+ *
+ * v1 → v2 changes:
+ *   - Phase.dependsOn back-filled from array order (nearest non-
+ *     abandoned predecessor, or [] for the first phase).
+ *   - Task.kind defaulted to "deliverable" on every existing task.
+ *   - Plan.followUps initialised to [].
+ *   - schemaVersion stamped to 2.
+ *
+ * The migrated plan is returned in-memory; the next savePlan persists
+ * the new shape. Callers don't need to know the version — they always
+ * see v2-shaped plans.
+ */
+export function migratePlan(input: Plan): Plan {
+	if ((input.schemaVersion ?? 1) >= CURRENT_SCHEMA_VERSION) {
+		// Already current. Still normalise tasks/followUps in case the
+		// on-disk file was hand-edited and dropped a field.
+		return normaliseV2(input);
+	}
+	const phases: Phase[] = input.phases.map((phase, idx) => {
+		const dependsOn =
+			phase.dependsOn ?? deriveLegacyDependsOn(input.phases, idx);
+		return {
+			...phase,
+			dependsOn,
+			tasks: phase.tasks.map(normaliseTask),
+		};
+	});
+	return {
+		...input,
+		schemaVersion: CURRENT_SCHEMA_VERSION,
+		phases,
+		followUps: (input.followUps ?? []).map(normaliseTask),
+	};
+}
+
+function normaliseV2(plan: Plan): Plan {
+	let mutated = false;
+	const phases = plan.phases.map((phase) => {
+		let phaseMutated = false;
+		let tasks = phase.tasks;
+		if (phase.tasks.some((t) => t.kind === undefined)) {
+			tasks = phase.tasks.map(normaliseTask);
+			phaseMutated = true;
+		}
+		if (phase.dependsOn === undefined) {
+			phaseMutated = true;
+			return { ...phase, tasks, dependsOn: [] };
+		}
+		if (phaseMutated) {
+			mutated = true;
+			return { ...phase, tasks };
+		}
+		return phase;
+	});
+	const followUps = plan.followUps ?? [];
+	const followUpsNormalised = followUps.map(normaliseTask);
+	if (
+		plan.followUps === undefined ||
+		followUps.some((t) => t.kind === undefined)
+	) {
+		mutated = true;
+	}
+	if (!mutated) return plan;
+	return { ...plan, phases, followUps: followUpsNormalised };
+}
+
+function normaliseTask(task: Task): Task {
+	if (task.kind !== undefined) return task;
+	return { ...task, kind: "deliverable" };
+}
+
+function deriveLegacyDependsOn(phases: Phase[], idx: number): string[] {
+	for (let i = idx - 1; i >= 0; i--) {
+		const prev = phases[i];
+		if (prev && prev.status !== "abandoned") return [prev.id];
+	}
+	return [];
+}
+
+const CURRENT_SCHEMA_VERSION = 2;
 
 /** Persist a plan and refresh the index. Caller is responsible for `updatedAt`. */
 export function savePlan(plan: Plan): void {

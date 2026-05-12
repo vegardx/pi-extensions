@@ -268,3 +268,228 @@ describe("plan_view", () => {
 		expect((r.details as any).error).toBeDefined();
 	});
 });
+
+describe("plan_phase dependsOn", () => {
+	it("stores dependsOn on add", async () => {
+		await call("plan_phase", { action: "add", title: "First" });
+		const r = await call("plan_phase", {
+			action: "add",
+			title: "Second",
+			dependsOn: ["first"],
+		});
+		expect(r.details.action).toBe("add");
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[1].dependsOn).toEqual(["first"]);
+	});
+
+	it("rejects multi-parent on add (chain-only constraint)", async () => {
+		await call("plan_phase", { action: "add", title: "A" });
+		await call("plan_phase", { action: "add", title: "B" });
+		const r = await call("plan_phase", {
+			action: "add",
+			title: "C",
+			dependsOn: ["a", "b"],
+		});
+		expect(r.details.error).toContain("cannot depend on multiple phases");
+	});
+
+	it("rejects unknown dependsOn id", async () => {
+		const r = await call("plan_phase", {
+			action: "add",
+			title: "X",
+			dependsOn: ["nope"],
+		});
+		expect(r.details.error).toContain("unknown phase");
+	});
+
+	it("rejects self-reference on update", async () => {
+		await call("plan_phase", { action: "add", title: "Solo" });
+		const r = await call("plan_phase", {
+			action: "update",
+			id: "solo",
+			dependsOn: ["solo"],
+		});
+		expect(r.details.error).toContain("cannot depend on itself");
+	});
+
+	it("detects 2-cycle on update (A → B → A)", async () => {
+		// Add A and B as roots so neither has a dependsOn yet, then create
+		// the chain manually with updates.
+		await call("plan_phase", { action: "add", title: "A" });
+		await call("plan_phase", { action: "add", title: "B" });
+		await call("plan_phase", {
+			action: "update",
+			id: "b",
+			dependsOn: ["a"],
+		});
+		// Now point A back at B: this should be a cycle.
+		const r = await call("plan_phase", {
+			action: "update",
+			id: "a",
+			dependsOn: ["b"],
+		});
+		expect(r.details.error).toContain("cycle");
+	});
+
+	it("detects 3-cycle on update (A → B → C → A)", async () => {
+		await call("plan_phase", { action: "add", title: "A" });
+		await call("plan_phase", { action: "add", title: "B" });
+		await call("plan_phase", { action: "add", title: "C" });
+		await call("plan_phase", {
+			action: "update",
+			id: "b",
+			dependsOn: ["a"],
+		});
+		await call("plan_phase", {
+			action: "update",
+			id: "c",
+			dependsOn: ["b"],
+		});
+		const r = await call("plan_phase", {
+			action: "update",
+			id: "a",
+			dependsOn: ["c"],
+		});
+		expect(r.details.error).toContain("cycle");
+	});
+
+	it("canonicalises legacy `p-` prefix in dependsOn", async () => {
+		await call("plan_phase", { action: "add", title: "Root" });
+		const r = await call("plan_phase", {
+			action: "add",
+			title: "Child",
+			dependsOn: ["p-root"],
+		});
+		expect(r.details.action).toBe("add");
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[1].dependsOn).toEqual(["root"]);
+	});
+});
+
+describe("plan_task kind + @plan sentinel", () => {
+	it("round-trips kind on add and update", async () => {
+		await call("plan_phase", { action: "add", title: "P" });
+		await call("plan_task", {
+			action: "add",
+			phaseId: "p",
+			title: "Note",
+			kind: "followUp",
+		});
+		const plan1 = loadPlan("tools-test") as Plan;
+		expect(plan1.phases[0].tasks[0].kind).toBe("followUp");
+
+		await call("plan_task", {
+			action: "update",
+			phaseId: "p",
+			taskId: "note",
+			kind: "manual",
+		});
+		const plan2 = loadPlan("tools-test") as Plan;
+		expect(plan2.phases[0].tasks[0].kind).toBe("manual");
+	});
+
+	it("defaults kind to deliverable when omitted", async () => {
+		await call("plan_phase", { action: "add", title: "P" });
+		await call("plan_task", {
+			action: "add",
+			phaseId: "p",
+			title: "T",
+		});
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[0].tasks[0].kind).toBe("deliverable");
+	});
+
+	it("@plan: add stores task on plan.followUps", async () => {
+		await call("plan_task", {
+			action: "add",
+			phaseId: "@plan",
+			title: "Cross-cutting note",
+			kind: "followUp",
+		});
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.followUps).toHaveLength(1);
+		expect(plan.followUps?.[0].title).toBe("Cross-cutting note");
+		expect(plan.followUps?.[0].kind).toBe("followUp");
+	});
+
+	it("@plan: toggle marks plan-level task done", async () => {
+		await call("plan_task", {
+			action: "add",
+			phaseId: "@plan",
+			title: "Tell support",
+		});
+		await call("plan_task", {
+			action: "toggle",
+			phaseId: "@plan",
+			taskId: "tell-support",
+		});
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.followUps?.[0].done).toBe(true);
+	});
+
+	it("@plan: move from phase to @plan and back", async () => {
+		await call("plan_phase", { action: "add", title: "Phase" });
+		await call("plan_task", {
+			action: "add",
+			phaseId: "phase",
+			title: "Mover",
+		});
+		await call("plan_task", {
+			action: "move",
+			phaseId: "phase",
+			taskId: "mover",
+			targetPhaseId: "@plan",
+		});
+		let plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[0].tasks).toHaveLength(0);
+		expect(plan.followUps?.[0].id).toBe("mover");
+
+		await call("plan_task", {
+			action: "move",
+			phaseId: "@plan",
+			taskId: "mover",
+			targetPhaseId: "phase",
+		});
+		plan = loadPlan("tools-test") as Plan;
+		expect(plan.followUps).toHaveLength(0);
+		expect(plan.phases[0].tasks[0].id).toBe("mover");
+	});
+});
+
+describe("plan_view markdown rendering", () => {
+	it("renders dependsOn header, task kind markers, and follow-ups section", async () => {
+		await call("plan_phase", { action: "add", title: "Root" });
+		await call("plan_phase", {
+			action: "add",
+			title: "Child",
+			dependsOn: ["root"],
+		});
+		await call("plan_task", {
+			action: "add",
+			phaseId: "child",
+			title: "Ship it",
+		});
+		await call("plan_task", {
+			action: "add",
+			phaseId: "child",
+			title: "Open question",
+			kind: "question",
+		});
+		await call("plan_task", {
+			action: "add",
+			phaseId: "@plan",
+			title: "Tell support",
+			kind: "followUp",
+		});
+		const r = await call("plan_view", {});
+		const text = (r.content[0] as any).text as string;
+		expect(text).toContain("depends on: `root`");
+		// Deliverable still uses [ ]/[x].
+		expect(text).toMatch(/- \[ \] \*\*Ship it\*\*/);
+		// Question kind rendered with [?] marker.
+		expect(text).toContain("[?] **Open question**");
+		// Follow-ups section appears at the end.
+		expect(text).toContain("## Follow-ups");
+		expect(text).toContain("[~] **Tell support**");
+	});
+});

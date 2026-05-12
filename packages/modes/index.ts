@@ -899,7 +899,9 @@ export default function (pi: ExtensionAPI) {
 			slug,
 			title: `Plan for ${repoName}`,
 			repo: { path: ctx.cwd },
+			schemaVersion: 2,
 			phases: [],
+			followUps: [],
 			createdBy: {
 				sessionId,
 				...(sessionName ? { sessionName } : {}),

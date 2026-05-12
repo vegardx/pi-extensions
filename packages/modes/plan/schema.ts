@@ -101,6 +101,32 @@ export function isPlanStuck(plan: Pick<Plan, "phases">): boolean {
 	return nonTerminal.every(isStuckPhase);
 }
 
+/**
+ * Kinds of work captured by a Task.
+ *
+ *   - `deliverable` — agent-actionable acceptance criterion. Gates
+ *     phase completion: a phase isn't done until every deliverable
+ *     task is checked.
+ *   - `followUp` — informational note carried alongside the phase
+ *     (or at plan level). Doesn't block ship; surfaced in PR/issue
+ *     bodies for the human reviewer.
+ *   - `question` — open design question for a side-conversation;
+ *     never blocks ship.
+ *   - `manual` — manual / human-only step (e.g. "smoke on staging");
+ *     surfaces as a reviewer checklist on the PR, never blocks ship.
+ *
+ * The agent should set `kind` explicitly when adding a task; missing
+ * `kind` is read as `deliverable` for back-compat with v1 plans.
+ */
+export const TASK_KINDS = [
+	"deliverable",
+	"followUp",
+	"question",
+	"manual",
+] as const;
+
+export type TaskKind = (typeof TASK_KINDS)[number];
+
 export interface Task {
 	id: string;
 	/** Short, scannable. No length cap — but agent should keep it concise. */
@@ -108,8 +134,18 @@ export interface Task {
 	/** Detailed: context, acceptance criteria, files, test notes. */
 	body: string;
 	done: boolean;
+	/**
+	 * Optional for back-compat with v1 plans. Read via
+	 * {@link effectiveTaskKind} which defaults to `deliverable`.
+	 */
+	kind?: TaskKind;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/** Read a task's kind, defaulting to `deliverable` for v1 plans. */
+export function effectiveTaskKind(task: Pick<Task, "kind">): TaskKind {
+	return task.kind ?? "deliverable";
 }
 
 export interface Phase {
@@ -120,6 +156,20 @@ export interface Phase {
 	status: PhaseStatus;
 	/** Git branch — typically `feat/<phase-id>`. */
 	branch: string;
+	/**
+	 * Phase ids this phase depends on. Authoritative dependency edge —
+	 * the `phases[]` array order is purely cosmetic from v2 onwards.
+	 *
+	 * Constraint enforced at write time (in `plan_phase`): at most one
+	 * parent. Multi-parent (diamond) DAGs are rejected because the
+	 * compaction-summary carry-forward only flows along a chain; phases
+	 * that would share a child must instead be chained.
+	 *
+	 * Optional for back-compat with v1 plans, which encoded the
+	 * dependency implicitly via array order. Read via
+	 * {@link effectiveDependsOn}.
+	 */
+	dependsOn?: string[];
 	/**
 	 * Absolute path to the worktree where this phase's branch is currently
 	 * checked out. Undefined while no worktree exists. May point at the
@@ -183,6 +233,22 @@ export interface Plan {
 	slug: string;
 	title: string;
 	repo: PlanRepo;
+	/**
+	 * On-disk schema version. Absent / 1 = legacy (linear array order is
+	 * the implicit dependency edge, no Task.kind, no plan.followUps).
+	 * 2 adds Phase.dependsOn + Task.kind + Plan.followUps. Migration runs
+	 * lazily on `loadPlan`.
+	 */
+	schemaVersion?: number;
+	/**
+	 * Plan-level standalone tasks. Used for follow-ups that aren't tied
+	 * to a specific phase (e.g. "after release: tell support", "open
+	 * design question to revisit"). Surfaced on the parent /park issue
+	 * and in plan_view; never blocks any /ship.
+	 *
+	 * Optional for back-compat with v1 plans.
+	 */
+	followUps?: Task[];
 	/** GitHub plan-tracking issue (parent of phase sub-issues) after /park. */
 	parentIssueNumber?: number;
 	phases: Phase[];
@@ -287,6 +353,33 @@ export function matchTaskId(stored: string, query: string): boolean {
 /** Default branch name derived from a phase id. */
 export function defaultBranchForPhase(phase: Pick<Phase, "id">): string {
 	return `feat/${phase.id}`;
+}
+
+/**
+ * Read a phase's `dependsOn`, defaulting to a single-parent fallback
+ * derived from the array order for v1 plans that don't yet have the
+ * field set on disk.
+ *
+ * Fallback rule: parent = nearest preceding non-abandoned phase. If
+ * the phase is the first in the array (or every preceding phase is
+ * abandoned), the fallback is `[]`.
+ *
+ * Plans persisted under v2 always have `dependsOn` populated by
+ * `migratePlan`, so this fallback only matters for in-memory plan
+ * objects that bypass storage (e.g. fixtures, ad-hoc test plans).
+ */
+export function effectiveDependsOn(
+	plan: Pick<Plan, "phases">,
+	phase: Pick<Phase, "id" | "dependsOn">,
+): string[] {
+	if (phase.dependsOn !== undefined) return phase.dependsOn;
+	const idx = plan.phases.findIndex((p) => p.id === phase.id);
+	if (idx <= 0) return [];
+	for (let i = idx - 1; i >= 0; i--) {
+		const prev = plan.phases[i];
+		if (prev && prev.status !== "abandoned") return [prev.id];
+	}
+	return [];
 }
 
 /** Repo-name derivation — the basename used for worktree path scoping. */
