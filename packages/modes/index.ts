@@ -3779,7 +3779,12 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		const seedChars = computeSeedChars(ctx);
-		const nonSysTokens = Math.ceil((seedChars + messageChars) / 4);
+		// Also subtract the compaction summary so it isn't absorbed into
+		// pinnedSysTokens and then double-counted via `sum` in the footer.
+		const summaryCharsAtPin = computeSummaryChars(ctx);
+		const nonSysTokens = Math.ceil(
+			(seedChars + messageChars + summaryCharsAtPin) / 4,
+		);
 		pinnedSysTokens = Math.max(0, usage.tokens - nonSysTokens);
 		footerTui?.requestRender();
 	});
