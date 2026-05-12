@@ -69,6 +69,7 @@ import {
 import {
 	buildCompletionPrompt,
 	decideFromCompletionChoice,
+	NEW_PLAN_STALE_MESSAGE,
 } from "./plan/completion.js";
 import { DelegateAgents } from "./plan/delegate-tools.js";
 import {
@@ -688,7 +689,7 @@ export default function (pi: ExtensionAPI) {
 	 */
 	async function doPlanArchive(
 		slug: string,
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 	): Promise<void> {
 		const { listPlans } = await import("./plan/storage.js");
 		const known = listPlans().some((p) => p.slug === slug);
@@ -1216,9 +1217,7 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Git sync ---------------------------------------------------------
 
-	async function syncToDefault(
-		ctx: ExtensionCommandContext,
-	): Promise<string | null> {
+	async function syncToDefault(ctx: ExtensionContext): Promise<string | null> {
 		if (!isGitRepo(ctx.cwd)) {
 			notify(ctx, "not inside a git repository", "error");
 			return null;
@@ -2612,7 +2611,7 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	async function runCompletionPromptIfDone(
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		plan: Plan,
 	): Promise<void> {
 		const prompt = buildCompletionPrompt(plan, ctx.hasUI);
@@ -2694,6 +2693,22 @@ export default function (pi: ExtensionAPI) {
 		// plan mode. syncToDefault must run in the current (command) ctx
 		// because it may show a confirm dialog; newSession then carries the
 		// resolved branch name into the new context.
+		//
+		// On the auto-loop path the ctx coming from `agent_end` is a plain
+		// `ExtensionContext` with no `newSession` — in that case we degrade
+		// to a notify telling the user to open a fresh session manually.
+		// The next `session_start` rehydrates plan mode from the cleared
+		// slug below.
+		if (!hasSessionControl(ctx)) {
+			if (modeState) {
+				modeState.currentPlanSlug = null;
+				modeState.stage = "idle";
+				persist();
+			}
+			notify(ctx, NEW_PLAN_STALE_MESSAGE, "info");
+			return;
+		}
+
 		const priorTools = modeState?.priorTools ?? pi.getActiveTools();
 		const defaultBranch = await syncToDefault(ctx);
 		if (!defaultBranch) return;
@@ -2741,7 +2756,7 @@ export default function (pi: ExtensionAPI) {
 	 * missing branch / failed reconcile notifies and stays put.
 	 */
 	async function openFeedbackPhaseInAsk(
-		ctx: ExtensionCommandContext,
+		ctx: ExtensionContext,
 		plan: Plan,
 		phaseId: string,
 	): Promise<void> {
