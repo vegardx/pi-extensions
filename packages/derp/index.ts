@@ -36,6 +36,7 @@ import {
 	type RelevantSettings,
 	readRelevantSettings,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { type DerpContext, gatherDerpContext } from "./context.js";
 import { createIssue, writePendingReport } from "./gh.js";
 import { polishReport } from "./polish.js";
@@ -111,12 +112,33 @@ export default function (pi: ExtensionAPI) {
 }
 
 /**
+ * Resolve the model to use for the polish subagent. Uses tier `fast`
+ * so the user's preferred cheap/quick model is picked up automatically
+ * via `backgroundModels.primary.fast` or the per-extension override
+ * `extensionConfig.derp.model`. Falls back to the active session model.
+ *
+ * Exported so tests can call it directly.
+ */
+export async function defaultResolvePolishModel(
+	ctx: ExtensionContext,
+): Promise<{ provider: string; id: string } | null> {
+	const resolved = await resolveModel(ctx, { name: EXT_ID, tier: "fast" });
+	if (!resolved) return null;
+	return { provider: resolved.model.provider, id: resolved.model.id };
+}
+
+/**
  * Test seam: the production path uses `createIssue` from `gh.ts`,
  * but `__tests__/index.test.ts` injects a stub.
  */
 export interface RunDerpDeps {
 	createIssue?: typeof createIssue;
 	polish?: typeof polishReport;
+	/**
+	 * Override model resolution (e.g. return a fixed spec in tests
+	 * without needing a real ModelRegistry).
+	 */
+	resolvePolishModel?: typeof defaultResolvePolishModel;
 	pendingDir?: string;
 }
 
@@ -140,6 +162,10 @@ export async function runDerp(
 	const polishTimeoutMs = getNumberConfig(settings, "polishTimeoutMs", 30000);
 
 	const entries = ctx.sessionManager.getEntries();
+	const polishFn = deps.polish ?? polishReport;
+	const resolvePolishModelFn =
+		deps.resolvePolishModel ?? defaultResolvePolishModel;
+	const polishModel = await resolvePolishModelFn(ctx);
 
 	const gathered = gatherDerpContext({
 		cwd: ctx.cwd,
@@ -160,11 +186,19 @@ export async function runDerp(
 	// ---- Layer-1 redaction: input scrub -----------------------------
 	const inputScan = scanContextForSecrets(rawCtx);
 	if (inputScan.hits.length > 0) {
+		const pendingDraft = await buildPendingDraft({
+			ctx,
+			derpCtx: inputScan.cleanedCtx,
+			polishModel,
+			polishFn,
+			polishTimeoutMs,
+			titlePrefix,
+		});
 		bailOnRedaction({
 			ctx,
 			hits: inputScan.hits,
 			where: "input",
-			draft: buildFallbackIssue(inputScan.cleanedCtx, titlePrefix),
+			...pendingDraft,
 			pendingDir: deps.pendingDir,
 		});
 		return;
@@ -172,11 +206,10 @@ export async function runDerp(
 	const derpCtx = inputScan.cleanedCtx;
 
 	// ---- Polish step ------------------------------------------------
-	const polishFn = deps.polish ?? polishReport;
 	let draft: IssueDraft;
 	let polishSkipped = false;
 
-	if (!ctx.model) {
+	if (!polishModel) {
 		polishSkipped = true;
 		ctx.ui.notify(
 			"derp: no active session model — filing with deterministic template.",
@@ -187,8 +220,8 @@ export async function runDerp(
 		ctx.ui.notify(`derp: polishing report for ${TARGET_REPO}…`, "info");
 		const polished = await polishFn({
 			ctx: derpCtx,
-			provider: ctx.model.provider,
-			model: ctx.model.id,
+			provider: polishModel.provider,
+			model: polishModel.id,
 			cwd: ctx.cwd,
 			timeoutMs: polishTimeoutMs,
 		});
@@ -217,6 +250,7 @@ export async function runDerp(
 			hits: outputHits,
 			where: "polish output",
 			draft: { title: titleScan.text, body: bodyScan.text },
+			wasPolished: false,
 			pendingDir: deps.pendingDir,
 		});
 		return;
@@ -287,17 +321,64 @@ export function scanContextForSecrets(ctx: DerpContext): ContextScanResult {
 	return { cleanedCtx: cleaned, hits };
 }
 
+/**
+ * Attempt to polish `derpCtx` into a pending-file draft. If polish
+ * succeeds and the output is clean, returns the polished draft;
+ * otherwise falls back to the deterministic template. Used in the
+ * Layer-1 redaction bail path so stashed reports are readable.
+ */
+async function buildPendingDraft(args: {
+	ctx: ExtensionContext;
+	derpCtx: DerpContext;
+	polishModel: { provider: string; id: string } | null;
+	polishFn: typeof polishReport;
+	polishTimeoutMs: number;
+	titlePrefix: string;
+}): Promise<{ draft: IssueDraft; wasPolished: boolean }> {
+	if (args.polishModel) {
+		const attempt = await args.polishFn({
+			ctx: args.derpCtx,
+			provider: args.polishModel.provider,
+			model: args.polishModel.id,
+			cwd: args.ctx.cwd,
+			timeoutMs: args.polishTimeoutMs,
+		});
+		if (attempt.ok) {
+			const ts = redactFull(attempt.draft.title);
+			const bs = redactFull(attempt.draft.body);
+			// Only use the polished draft if it's also clean — if the LLM
+			// managed to reproduce a secret from the cleaned context, fall
+			// back to the raw template rather than stashing tainted content.
+			if (ts.hits.length === 0 && bs.hits.length === 0) {
+				return {
+					draft: {
+						title: applyTitlePrefix(ts.text, args.titlePrefix),
+						body: bs.text,
+					},
+					wasPolished: true,
+				};
+			}
+		}
+	}
+	return {
+		draft: buildFallbackIssue(args.derpCtx, args.titlePrefix),
+		wasPolished: false,
+	};
+}
+
 function bailOnRedaction(args: {
 	ctx: ExtensionContext;
 	hits: RedactHit[];
 	where: string;
 	draft: IssueDraft;
+	wasPolished: boolean;
 	pendingDir?: string;
 }): void {
 	const kinds = summariseHitKinds(args.hits).join(", ");
 	const path = writePendingReport(args.draft, TARGET_HOST, args.pendingDir);
+	const qualifier = args.wasPolished ? "(polished)" : "(raw)";
 	args.ctx.ui.notify(
-		`derp: ${args.where} contained secret-shaped content (${kinds}) — not filing. Review at ${path}; if safe, run \`gh issue create -R ${TARGET_REPO} --body-file ${path}\`.`,
+		`derp: ${args.where} contained secret-shaped content (${kinds}) — not filing ${qualifier}. Review at ${path}; if safe, run \`gh issue create -R ${TARGET_REPO} --body-file ${path}\`.`,
 		"warning",
 	);
 }

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { GhRunner, IssueCreateOutcome } from "../gh.js";
-import { runDerp } from "../index.js";
+import { defaultResolvePolishModel, runDerp } from "../index.js";
 import type { PolishOutcome } from "../polish.js";
 
 interface NotifyCall {
@@ -29,12 +29,13 @@ function fakeCtx(opts: FakeCtxOptions = {}): {
 	notifies: NotifyCall[];
 } {
 	const notifies: NotifyCall[] = [];
+	const model =
+		opts.model === undefined
+			? { provider: "anthropic", id: "claude-x" }
+			: opts.model;
 	const ctx = {
 		cwd: opts.cwd ?? "/tmp/fake",
-		model:
-			opts.model === undefined
-				? { provider: "anthropic", id: "claude-x" }
-				: opts.model,
+		model,
 		hasUI: true,
 		ui: {
 			notify: (message: string, level: string) => {
@@ -52,7 +53,14 @@ function fakeCtx(opts: FakeCtxOptions = {}): {
 			getBranch: () => [],
 			getLeafId: () => null,
 		},
-		modelRegistry: {},
+		modelRegistry: {
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({
+				ok: true as const,
+				apiKey: "test-key",
+				headers: undefined,
+			}),
+		},
 	} as unknown as ExtensionContext;
 	return { ctx, notifies };
 }
@@ -137,11 +145,11 @@ describe("runDerp — empty input", () => {
 });
 
 describe("runDerp — input redaction (fail-closed)", () => {
-	it("bails and stashes when user text contains a token", async () => {
+	it("bails and stashes with polished content when polish succeeds", async () => {
 		const { ctx, notifies } = fakeCtx();
 		const polish = fakePolish({
 			ok: true,
-			draft: { title: "x", body: "y" },
+			draft: { title: "thing broke", body: "## Summary\n\npolished details" },
 		});
 		const create = fakeCreateIssue({ ok: true, url: "should-not-fire" });
 
@@ -154,14 +162,42 @@ describe("runDerp — input redaction (fail-closed)", () => {
 		expect(create.calls).toEqual([]);
 		const warn = notifies.find((n) => n.level === "warning");
 		expect(warn?.message).toContain("secret-token");
-		expect(warn?.message).toContain("not filing");
+		expect(warn?.message).toContain("not filing (polished)");
 		const files = pendingFiles();
 		expect(files).toHaveLength(1);
 		const first = files[0];
 		if (!first) throw new Error("unreachable");
 		const written = readFileSync(join(pendingDir, first), "utf8");
+		// Token must not appear in any form
+		expect(written).not.toContain("ghp_AbCdEf1234567890ZzYy");
+		// Polished content is present
+		expect(written).toContain("polished details");
+	});
+
+	it("bails and stashes with raw fallback when polish fails in bail path", async () => {
+		const { ctx, notifies } = fakeCtx();
+		const polish = fakePolish({
+			ok: false,
+			reason: "subagent-error",
+			detail: "timeout",
+		});
+		const create = fakeCreateIssue({ ok: true, url: "should-not-fire" });
+
+		await runDerp(
+			ctx,
+			"this is broken, my token is ghp_AbCdEf1234567890ZzYy please debug",
+			{ polish, createIssue: create.fn, pendingDir },
+		);
+
+		expect(create.calls).toEqual([]);
+		const warn = notifies.find((n) => n.level === "warning");
+		expect(warn?.message).toContain("secret-token");
+		expect(warn?.message).toContain("not filing (raw)");
+		const written = readFileSync(join(pendingDir, pendingFiles()[0]!), "utf8");
+		// Falls back to raw template — token is redacted, placeholder present
 		expect(written).not.toContain("ghp_AbCdEf1234567890ZzYy");
 		expect(written).toContain("[REDACTED:secret-token]");
+		expect(written).toContain("polish step skipped");
 	});
 
 	it("files successfully when cwd is an internal host path (no longer rendered)", async () => {
@@ -266,5 +302,40 @@ describe("runDerp — polish failure falls back", () => {
 		const warn = notifies.find((n) => n.level === "warning");
 		expect(warn?.message).toContain("polish failed");
 		expect(notifies.at(-1)?.message).toContain("(raw template)");
+	});
+});
+
+describe("defaultResolvePolishModel", () => {
+	it("returns provider/id from ctx.model when no configured override", async () => {
+		const { ctx } = fakeCtx();
+		const result = await defaultResolvePolishModel(ctx);
+		expect(result).toEqual({ provider: "anthropic", id: "claude-x" });
+	});
+
+	it("returns null when ctx.model is null and no override configured", async () => {
+		const { ctx } = fakeCtx({ model: null });
+		const result = await defaultResolvePolishModel(ctx);
+		expect(result).toBeNull();
+	});
+
+	it("returns model from registry when find() resolves a configured spec", async () => {
+		const { ctx } = fakeCtx();
+		const fakeModel = { provider: "google", id: "gemini-flash" };
+		// Inject a registry that resolves the lookup
+		(ctx as unknown as Record<string, unknown>).modelRegistry = {
+			find: (p: string, id: string) =>
+				p === "google" && id === "gemini-flash" ? fakeModel : undefined,
+			getApiKeyAndHeaders: async () => ({
+				ok: true as const,
+				apiKey: "key",
+				headers: undefined,
+			}),
+		};
+		// resolveModel reads settings from cwd (/tmp/fake) — no settings file
+		// there, so no extensionConfig.derp.model spec is configured.
+		// Falls back to ctx.model (anthropic/claude-x) via the registry mock.
+		const result = await defaultResolvePolishModel(ctx);
+		expect(result?.provider).toBe("anthropic");
+		expect(result?.id).toBe("claude-x");
 	});
 });
