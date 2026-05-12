@@ -2637,14 +2637,45 @@ export default function (pi: ExtensionAPI) {
 			feedback = pickFirstWithFeedback(sweep);
 		}
 
+		// Build "Watch for Copilot review" options for every open PR in the
+		// sweep. These appear before the feedback option and the standard
+		// three-option set so the most-actionable choices are at the top.
+		const copilotOptions: Array<{ label: string; result: PrSweepResult }> = (
+			sweep ?? []
+		)
+			.filter((r) => r.state === "open" && !r.error)
+			.map((r) => ({
+				label: `Watch for Copilot review on PR #${r.prNumber} (\`${r.phaseId}\`)`,
+				result: r,
+			}));
+
 		const feedbackOption = feedback
 			? `Open PR #${feedback.prNumber} (\`${feedback.phaseId}\`) in ask mode to address feedback`
 			: null;
-		const options = feedbackOption
-			? [feedbackOption, ...prompt.options]
-			: prompt.options;
+
+		const options = [
+			...copilotOptions.map((o) => o.label),
+			...(feedbackOption ? [feedbackOption] : []),
+			...prompt.options,
+		];
 
 		const choice = await ctx.ui.select(prompt.title, options);
+
+		// Copilot-watch pick: switch to ask mode on the PR branch, then fire
+		// /triage copilot N as a follow-up so the watcher starts immediately.
+		const copilotPick = copilotOptions.find((o) => o.label === choice);
+		if (copilotPick) {
+			await openFeedbackPhaseInAsk(ctx, plan, copilotPick.result.phaseId);
+			pi.sendMessage(
+				{
+					customType: EXT_ID,
+					content: `/triage copilot ${copilotPick.result.prNumber}`,
+					display: false,
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+			return;
+		}
 
 		if (feedbackOption && choice === feedbackOption && feedback) {
 			await openFeedbackPhaseInAsk(ctx, plan, feedback.phaseId);
@@ -2659,13 +2690,39 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		// `newPlan`: drop the current plan binding so the next /plan call
-		// creates a fresh plan rather than rebinding the just-completed one.
+		// `newPlan`: open a fresh session on the default branch, already in
+		// plan mode. syncToDefault must run in the current (command) ctx
+		// because it may show a confirm dialog; newSession then carries the
+		// resolved branch name into the new context.
+		const priorTools = modeState?.priorTools ?? pi.getActiveTools();
+		const defaultBranch = await syncToDefault(ctx);
+		if (!defaultBranch) return;
+
 		if (modeState) {
 			modeState.currentPlanSlug = null;
 			persist();
 		}
-		notify(ctx, "plan complete — run /plan to start the next one", "info");
+
+		await ctx.newSession({
+			withSession: async (newCtx) => {
+				const planSlug = ensurePlanForRepo(newCtx);
+				modeState = {
+					mode: "plan",
+					stage: "planning",
+					branch: null,
+					defaultBranch,
+					priorTools,
+					planText: null,
+					currentPlanSlug: planSlug,
+				};
+				persist();
+				applyModeTools();
+				installFooter(newCtx);
+				updateWidget(newCtx);
+				recordPlanSessionPathIfMissing(newCtx, planSlug);
+				notify(newCtx, `plan mode on ${defaultBranch}`, "info");
+			},
+		});
 	}
 
 	/**
