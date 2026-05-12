@@ -96,6 +96,7 @@ import {
 	TERMINAL_STATUSES,
 	WORKTREE_STATUSES,
 } from "./plan/schema.js";
+import { type ScrutinyFinding, scrutinizePlan } from "./plan/scrutinize.js";
 import { PLAN_SEED_CUSTOM_TYPE, seedPlanDoc } from "./plan/seed.js";
 import { shipPhase } from "./plan/ship.js";
 import {
@@ -285,6 +286,12 @@ export default function (pi: ExtensionAPI) {
 				type: "number",
 				default: DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
 				doc: "Footer cap (denominator) used while in plan mode. Plan mode is exempt from modes' mid-phase compaction \u2014 the human is in the loop \u2014 so this only affects the footer display. 0 means 'use the active model's contextWindow'. Default 0.",
+			},
+			{
+				key: "scrutinize.enable",
+				type: "boolean",
+				default: false,
+				doc: "Run a plan-scrutinizer sub-agent before the implement picker. Finds gaps, risks, and missing tasks. Uses backgroundModels.secondary.heavy (falls back to primary.heavy then session model). Off by default — adds ~20–40s latency.",
 			},
 			{
 				key: "defaultMode",
@@ -1346,6 +1353,105 @@ export default function (pi: ExtensionAPI) {
 			modeState.stage = "planning";
 			persist();
 		}
+	}
+
+	/** Format the findings dialog title, including a count per severity. */
+	function formatFindingsTitle(findings: ScrutinyFinding[]): string {
+		const high = findings.filter((f) => f.severity === "high").length;
+		const medium = findings.filter((f) => f.severity === "medium").length;
+		const low = findings.filter((f) => f.severity === "low").length;
+		const parts: string[] = [];
+		if (high) parts.push(`${high} high`);
+		if (medium) parts.push(`${medium} medium`);
+		if (low) parts.push(`${low} low`);
+		return `🔍 Plan scrutiny: ${parts.join(", ")} finding${findings.length === 1 ? "" : "s"}`;
+	}
+
+	/** Format findings as a concise markdown message for the agent. */
+	function formatFindingsMessage(findings: ScrutinyFinding[]): string {
+		const LEVELS = ["high", "medium", "low"] as const;
+		const sections: string[] = [
+			"The plan scrutinizer found the following gaps and risks. Please address them before finalising the plan:",
+		];
+		for (const level of LEVELS) {
+			const group = findings.filter((f) => f.severity === level);
+			if (group.length === 0) continue;
+			sections.push(
+				`\n### ${level.charAt(0).toUpperCase() + level.slice(1)} severity`,
+			);
+			for (const f of group) {
+				const scope = f.phase ? ` \`${f.phase}\`` : " (cross-cutting)";
+				sections.push(`- **${f.finding}**${scope}: ${f.detail}`);
+			}
+		}
+		return sections.join("\n");
+	}
+
+	/**
+	 * Run the plan scrutinizer (if enabled) then show the picker.
+	 *
+	 * Called from `agent_end` via `runDetached`. Headless sessions skip the
+	 * scrutinizer — there is no UI to surface findings through.
+	 */
+	async function runPickerMaybeScrutinize(
+		ctx: ExtensionContext,
+	): Promise<void> {
+		const settings = readRelevantSettings(ctx.cwd);
+		const scrutinizeCfg = settings.extensionConfig?.[EXT_ID]?.scrutinize;
+		const scrutinizeEnabled =
+			ctx.hasUI &&
+			scrutinizeCfg !== null &&
+			typeof scrutinizeCfg === "object" &&
+			!Array.isArray(scrutinizeCfg) &&
+			(scrutinizeCfg as Record<string, unknown>).enable === true;
+
+		if (!scrutinizeEnabled) {
+			return runPicker(ctx);
+		}
+
+		const plan = currentPlan();
+		if (!plan) return runPicker(ctx);
+
+		notify(ctx, "🔍 Scrutinizing plan…", "info");
+		const result = await scrutinizePlan(plan, ctx);
+
+		if (result.error) {
+			// Non-fatal — log and proceed to picker.
+			notify(ctx, `scrutinize error: ${result.error}`, "warning");
+			return runPicker(ctx);
+		}
+
+		if (result.findings.length === 0) {
+			return runPicker(ctx);
+		}
+
+		// Surface findings to the user.
+		const choice = await ctx.ui.select(formatFindingsTitle(result.findings), [
+			"Apply findings to plan",
+			"Dismiss — proceed to picker",
+		]);
+
+		if (choice === "Apply findings to plan") {
+			// Send findings as a follow-up so the agent incorporates them
+			// in the next planning turn. Reset stage so the picker re-arms.
+			pi.sendMessage(
+				{
+					customType: EXT_ID,
+					content: formatFindingsMessage(result.findings),
+					display: false,
+					details: { scrutinyFindings: true },
+				},
+				{ deliverAs: "followUp", triggerTurn: true },
+			);
+			if (modeState?.stage === "awaiting-choice") {
+				modeState.stage = "planning";
+				persist();
+			}
+			return;
+		}
+
+		// "Dismiss — proceed to picker"
+		return runPicker(ctx);
 	}
 
 	/**
@@ -3756,7 +3862,7 @@ export default function (pi: ExtensionAPI) {
 			modeState.stage = "awaiting-choice";
 			persist();
 			clearPlanTurnSnapshot();
-			runDetached("plan picker", ctx, () => runPicker(ctx));
+			runDetached("plan picker", ctx, () => runPickerMaybeScrutinize(ctx));
 			return;
 		}
 

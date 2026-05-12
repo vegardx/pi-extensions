@@ -1,0 +1,177 @@
+/**
+ * Plan scrutinizer — runs a one-shot sub-agent that reviews the plan for
+ * gaps, risks, and missing considerations before the implement picker fires.
+ *
+ * The sub-agent uses `tools: []` (pure reasoning). Input is a stripped-down
+ * JSON representation of the plan to keep the prompt tight. Output is parsed
+ * back to a typed findings array.
+ *
+ * Opt-in via `extensionConfig.modes.scrutinize.enable: true`. Off by default
+ * because the secondary-heavy model adds ~20–40s of latency.
+ */
+
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { candidateJsonPayloads } from "@vegardx/pi-extensions-shared/json-extraction.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
+import type { Plan } from "./schema.js";
+
+const PROMPTS_DIR = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"prompts",
+);
+
+const SYSTEM_PROMPT_PATH = join(PROMPTS_DIR, "scrutinize-plan.md");
+
+/** Maximum body length included in the plan payload sent to the sub-agent. */
+const MAX_BODY_CHARS = 500;
+
+/** waitForIdle timeout — scrutiny over a multi-phase plan can take a while. */
+const TIMEOUT_MS = 120_000;
+
+export interface ScrutinyFinding {
+	severity: "high" | "medium" | "low";
+	/** Phase ID, or null for cross-cutting findings. */
+	phase: string | null;
+	/** ≤ 10-word imperative summary. */
+	finding: string;
+	/** Concrete explanation of the gap or risk. */
+	detail: string;
+}
+
+export interface ScrutinyResult {
+	findings: ScrutinyFinding[];
+	/** Present when the sub-agent failed or returned unparseable output. */
+	error?: string;
+}
+
+/** Compact plan representation sent to the sub-agent. */
+interface PlanPayloadPhase {
+	id: string;
+	title: string;
+	goal: string;
+	status: string;
+	tasks: Array<{
+		id: string;
+		title: string;
+		body: string;
+		done: boolean;
+	}>;
+}
+
+/**
+ * Serialise the plan to the compact JSON payload sent to the scrutinizer.
+ *
+ * Strips `phase.summary` (implementation narrative — not useful for gap
+ * analysis) and truncates `task.body` to MAX_BODY_CHARS to keep the prompt
+ * within reason.
+ */
+function serialisePlan(plan: Plan): string {
+	const phases: PlanPayloadPhase[] = plan.phases.map((phase) => ({
+		id: phase.id,
+		title: phase.title,
+		goal: phase.goal,
+		status: phase.status,
+		tasks: phase.tasks.map((task) => ({
+			id: task.id,
+			title: task.title,
+			body:
+				task.body.length > MAX_BODY_CHARS
+					? task.body.slice(0, MAX_BODY_CHARS) + "…"
+					: task.body,
+			done: task.done,
+		})),
+	}));
+	return JSON.stringify(phases, null, 2);
+}
+
+function isValidFinding(item: unknown): item is ScrutinyFinding {
+	if (!item || typeof item !== "object") return false;
+	const f = item as Record<string, unknown>;
+	return (
+		(f.severity === "high" ||
+			f.severity === "medium" ||
+			f.severity === "low") &&
+		(f.phase === null || typeof f.phase === "string") &&
+		typeof f.finding === "string" &&
+		typeof f.detail === "string"
+	);
+}
+
+/**
+ * Run the scrutinizer sub-agent against `plan`.
+ *
+ * Model resolution order:
+ *   1. backgroundModels.secondary.heavy (falls back to primary.heavy inside
+ *      the resolver when secondary.heavy is not configured)
+ *   2. Active session model (ctx.model) when neither heavy tier is configured
+ */
+export async function scrutinizePlan(
+	plan: Plan,
+	ctx: ExtensionContext,
+	opts?: { signal?: AbortSignal },
+): Promise<ScrutinyResult> {
+	// Resolve model: secondary.heavy → primary.heavy (resolver handles that
+	// fallback internally) → session model
+	const resolved = await resolveModel(ctx, {
+		name: "modes",
+		tier: "heavy",
+		set: "secondary",
+	});
+
+	const provider = resolved?.model.provider ?? ctx.model?.provider;
+	const model = resolved?.model.id ?? ctx.model?.id;
+
+	if (!provider || !model) {
+		return {
+			findings: [],
+			error:
+				"no model configured for scrutinize (set backgroundModels.secondary.heavy or backgroundModels.primary.heavy)",
+		};
+	}
+
+	const planJson = serialisePlan(plan);
+	const task = `Scrutinize this plan and return a JSON array of findings.\n\n${planJson}`;
+
+	const outcome = await runSubagent({
+		tag: "scrutinize",
+		task,
+		systemPromptPath: SYSTEM_PROMPT_PATH,
+		tools: [],
+		provider,
+		model,
+		cwd: ctx.cwd,
+		timeoutMs: TIMEOUT_MS,
+		signal: opts?.signal,
+	});
+
+	if (outcome.error) {
+		return { findings: [], error: outcome.error };
+	}
+
+	if (!outcome.rawText.trim()) {
+		return { findings: [], error: "scrutinizer produced no output" };
+	}
+
+	// Try each candidate JSON payload in order; first valid parse wins.
+	for (const candidate of candidateJsonPayloads(outcome.rawText)) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+
+		const findings = (parsed as unknown[]).filter(isValidFinding);
+		return { findings };
+	}
+
+	return {
+		findings: [],
+		error: `scrutinizer output is not valid JSON: ${outcome.rawText.slice(0, 120)}`,
+	};
+}
