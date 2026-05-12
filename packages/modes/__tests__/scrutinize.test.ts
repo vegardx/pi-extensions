@@ -150,7 +150,7 @@ describe("scrutinizePlan", () => {
 			expect(result.error).toBe("scrutinizer produced no output");
 		});
 
-		it("drops malformed entries, keeps valid ones", async () => {
+		it("drops malformed entries, keeps valid ones, and sets error", async () => {
 			const mixed = [
 				VALID_FINDINGS[0],
 				{ severity: "high", phase: "p1" }, // missing finding + detail
@@ -162,8 +162,11 @@ describe("scrutinizePlan", () => {
 			});
 
 			const result = await scrutinizePlan(makePlan(), MOCK_CTX);
-			expect(result.error).toBeUndefined();
+			// Valid findings are still returned
 			expect(result.findings).toHaveLength(2);
+			// But error is set to signal the output wasn't fully clean
+			expect(result.error).toContain("1 malformed entry");
+			expect(result.error).toContain("kept 2 valid");
 		});
 	});
 
