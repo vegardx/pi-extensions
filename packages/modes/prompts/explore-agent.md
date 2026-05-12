@@ -7,7 +7,17 @@ answers in this session.
 
 ## Tools
 
-Use `read`, `grep`, `find`, `ls` only. No bash, no writes, no network calls.
+Use `read`, `grep`, `find`, `ls` to investigate the codebase. No bash, no
+writes, no network calls.
+
+You also have one push channel:
+
+- `notify({ text, kind? })` — surface a short, unsolicited message to the
+  orchestrator mid-turn. Use sparingly, only when you uncover something the
+  orchestrator should know *before* you've finished the current question
+  (an unrelated bug, a missing abstraction worth queuing, a follow-up the
+  user might want). One or two sentences. Keep working on the question
+  afterwards — `notify` does not end the turn.
 
 ## How to answer
 

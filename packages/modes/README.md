@@ -7,7 +7,7 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution. R
 | Mode | Tools | Bash | Confirmation | Plan needed | Compaction |
 |------|------|------|--------------|-------------|------------|
 | `hack` | all | all | none — full tool access | no | none — user owns context length |
-| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
+| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`, `explore_ask`, `explore_check`, `explore_wait`, `research`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
 | `ask` | all | all | none during execution; the post-exec picker pauses you at the commit/ship boundary | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 | `auto` | all | all | none — fully autonomous; commits, ships, advances phases without prompting | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 
@@ -241,6 +241,29 @@ The agent uses three tools to manage the plan:
 | `plan_view` | read-only markdown summary |
 
 State persists in `~/.pi/plans/<slug>/plan.json`.
+
+### Async explore (plan mode)
+
+Plan mode delegates codebase questions to a persistent sub-agent through a
+three-tool **mailbox** rather than a single blocking call. The orchestrator
+fires questions, keeps planning, then drains answers when ready. Slow
+turns no longer stall the main agent and never wipe accumulated context.
+
+| Tool | Blocking? | Returns |
+|------|-----------|---------|
+| `explore_ask({ question })` | no | `{ id, status: "queued" }` — fire and forget |
+| `explore_check({ id?, drain? })` | no | `{ tasks[], notifications[] }` — drain by default |
+| `explore_wait({ id, timeoutMs? })` | yes (opt-in) | terminal `Task` record |
+
+The sub-agent itself can push unsolicited messages back via a
+`notify({ text, kind? })` tool registered inside its own process — calls
+are observed via the RPC event stream and surface on the next
+`explore_check`. Use this when the sub-agent uncovers something the
+orchestrator should know *before* the answer is finished.
+
+A `wait` timeout returns a synthetic terminal record but does **not**
+kill the sub-agent: the next `explore_check` / `explore_wait` may still
+observe the eventual completion.
 
 ## Plan-mode write protection
 
