@@ -1172,13 +1172,17 @@ export default function (pi: ExtensionAPI) {
 		if (modeState.mode === "plan") {
 			pi.setActiveTools([...PLAN_ONLY_TOOLS, ...planTools]);
 		} else {
-			// Restore prior tools and ensure plan_* tools are included.
-			// Exclude `explore` — it is plan-mode only; `research` stays.
-			const extra = planTools.filter((t) => !modeState?.priorTools.includes(t));
-			const withPlanTools = [...modeState.priorTools, ...extra].filter(
+			// Restore prior tools and ensure plan_* + research are included.
+			// `explore` is plan-mode only so it is removed.
+			// `research` is available in auto/ask/hack so it is always re-added.
+			const alwaysInclude = [...planTools, "research"];
+			const extra = alwaysInclude.filter(
+				(t) => !modeState?.priorTools.includes(t),
+			);
+			const withExtras = [...modeState.priorTools, ...extra].filter(
 				(t) => t !== "explore",
 			);
-			pi.setActiveTools(withPlanTools);
+			pi.setActiveTools(withExtras);
 		}
 	}
 
