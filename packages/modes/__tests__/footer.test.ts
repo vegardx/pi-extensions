@@ -29,7 +29,7 @@ describe("composeFooterLine", () => {
 	it("never returns a line wider than the terminal when right side overflows", () => {
 		// Reproduces the user crash: right-side label wider than terminal.
 		const longRight =
-			"sys 5k · sum 2k · work 58k · 65k/250k · (1000k) | Claude Opus 4.7 (EU) | auto";
+			"65k/250k (5k/2k/58k) | Claude Opus 4.7 Extended Context EU | auto";
 		const line = composeFooterLine(
 			"~/repo (main)",
 			[{ visible: longRight, styled: muted(longRight) }],

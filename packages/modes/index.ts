@@ -332,6 +332,11 @@ export default function (pi: ExtensionAPI) {
 	//     slug changes — both invalidate any stored structure.
 	let planTurnSnapshot: string | null = null;
 
+	// Pinned sys token count derived from the first real API response.
+	// Null until the first turn completes; reset on session start.
+	// Avoids chars/4 error for JSON-heavy tool schemas (2–3 chars/token).
+	let pinnedSysTokens: number | null = null;
+
 	function clearPlanTurnSnapshot(): void {
 		planTurnSnapshot = null;
 	}
@@ -931,26 +936,13 @@ export default function (pi: ExtensionAPI) {
 		const usage = ctx.getContextUsage();
 		if (!usage) return null;
 
-		// Plan mode is exempt from mid-phase compaction (the human is in the
-		// loop), so the three-bucket breakdown adds noise. Render the simple
-		// `current/limit` form there — limit defaults to the explicit plan
-		// override (`compaction.planMaxContextTokens`) and falls back to the
-		// active model's contextWindow when unset.
-		if (modeState?.mode === "plan") {
-			const limit = readPlanMaxContextTokensSetting(ctx) ?? usage.contextWindow;
-			if (!limit) return null;
-			const current =
-				usage.tokens !== null ? `${Math.round(usage.tokens / 1000)}k` : "?";
-			const cap = `${Math.round(limit / 1000)}k`;
-			return `${current}/${cap}`;
-		}
-
-		// Auto/hack: four-bucket breakdown. Order sys → seed → sum → work
-		// matches the actual prefix layout in API requests and the direction
-		// the KV-cache reuses (longest stable prefix first).
-		const workingTokens = readWorkingTokensSetting(ctx);
-		const summaryTokensBudget = readSummaryTokensSetting(ctx);
-		const denom = workingTokens + summaryTokensBudget;
+		// Plan mode uses its own configurable cap (falls back to the model's
+		// contextWindow). All other modes use the working + summary budget.
+		const limit: number | null =
+			modeState?.mode === "plan"
+				? (readPlanMaxContextTokensSetting(ctx) ?? usage.contextWindow ?? null)
+				: readWorkingTokensSetting(ctx) + readSummaryTokensSetting(ctx);
+		if (!limit) return null;
 
 		const systemPromptChars = ctx.getSystemPrompt().length;
 		const toolSchemaChars = computeToolSchemaChars();
@@ -965,21 +957,17 @@ export default function (pi: ExtensionAPI) {
 			seedChars,
 		});
 
+		// Use the pinned sys value when available — more accurate than
+		// chars/4 for JSON-heavy tool schemas. Recompute work accordingly.
+		const sys = pinnedSysTokens ?? buckets.sys;
+		const sum = buckets.seed + buckets.summary;
+		const work =
+			buckets.total !== null ? Math.max(0, buckets.total - sys - sum) : 0;
+
 		const k = (n: number) => `${Math.round(n / 1000)}k`;
-		const parts: string[] = [`sys ${k(buckets.sys)}`];
-		if (buckets.seed > 0) parts.push(`seed ${k(buckets.seed)}`);
-		if (buckets.summary > 0) parts.push(`sum ${k(buckets.summary)}`);
-		parts.push(buckets.total === null ? "work ?" : `work ${k(buckets.work)}`);
+		const total = buckets.total !== null ? k(buckets.total) : "0k";
 
-		const numer = buckets.total === null ? "?" : k(buckets.total);
-		parts.push(`${numer}/${k(denom)}`);
-
-		// Trailing model contextWindow is shown only when it adds info
-		// (i.e. differs from our denominator). Drops cleanly when unknown.
-		const cw = usage.contextWindow;
-		if (cw && cw !== denom) parts.push(`(${k(cw)})`);
-
-		return parts.join(" · ");
+		return `${total}/${k(limit)} (${k(sys)}/${k(sum)}/${k(work)})`;
 	}
 
 	/**
@@ -3301,6 +3289,7 @@ export default function (pi: ExtensionAPI) {
 		hydrateMode(ctx);
 		hydratePlan(ctx);
 		summaryBudgetWarnFired = false;
+		pinnedSysTokens = null;
 
 		// Fire-and-forget sync of PR state for the active plan. Reports
 		// shipped/abandoned phases since last session.
@@ -3758,6 +3747,40 @@ export default function (pi: ExtensionAPI) {
 	// ---- Refresh footer context usage after each LLM turn ----------------
 
 	pi.on("turn_end", () => {
+		footerTui?.requestRender();
+	});
+
+	// Pin sys token count from the first real API response. chars/4 is
+	// inaccurate for JSON-heavy tool schemas (2–3 chars/token); the real
+	// total minus the cost of the turn-1 messages gives a much tighter
+	// estimate that stays constant for the session lifetime.
+	pi.on("turn_end", (_event, ctx) => {
+		if (pinnedSysTokens !== null) return;
+		const usage = ctx.getContextUsage();
+		if (!usage || usage.tokens === null) return;
+
+		// Sum char lengths of all message-type entries on the branch
+		// (user + assistant turn 1). Custom-message entries (seed) are
+		// counted separately via computeSeedChars.
+		let messageChars = 0;
+		for (const e of ctx.sessionManager.getBranch()) {
+			if (e.type !== "message") continue;
+			const content = (e as { message?: { content?: unknown } }).message
+				?.content;
+			if (typeof content === "string") {
+				messageChars += content.length;
+			} else if (content != null) {
+				try {
+					messageChars += JSON.stringify(content).length;
+				} catch {
+					// Non-serialisable content — skip rather than crash.
+				}
+			}
+		}
+
+		const seedChars = computeSeedChars(ctx);
+		const nonSysTokens = Math.ceil((seedChars + messageChars) / 4);
+		pinnedSysTokens = Math.max(0, usage.tokens - nonSysTokens);
 		footerTui?.requestRender();
 	});
 
