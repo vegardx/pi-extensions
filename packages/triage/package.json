@@ -4,14 +4,22 @@
   "version": "0.0.1",
   "type": "module",
   "pi": {
+    "extensions": ["./index.ts"],
     "skills": ["./skills/"]
+  },
+  "exports": {
+    ".": "./index.ts",
+    "./pr-agent": "./pr-agent.ts",
+    "./worktree": "./worktree.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
-    "@sinclair/typebox": "*"
+    "@sinclair/typebox": "*",
+    "@vegardx/pi-extensions-shared": "*"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-coding-agent": { "optional": true },
-    "@sinclair/typebox": { "optional": true }
+    "@sinclair/typebox": { "optional": true },
+    "@vegardx/pi-extensions-shared": { "optional": true }
   }
 }
