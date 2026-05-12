@@ -73,6 +73,11 @@ import {
 } from "./plan/completion.js";
 import { DelegateAgents } from "./plan/delegate-tools.js";
 import {
+	ExploreMailbox,
+	type ExploreNotification,
+	type ExploreTask,
+} from "./plan/explore-mailbox.js";
+import {
 	classifyImplementContext,
 	planPickerView,
 	shouldFirePicker,
@@ -132,9 +137,13 @@ const PLAN_ONLY_TOOLS = [
 	"websearch",
 	"webfetch",
 	"ask",
-	"explore",
+	"explore_ask",
+	"explore_check",
+	"explore_wait",
 	"research",
 ] as const;
+
+const EXPLORE_TOOLS = ["explore_ask", "explore_check", "explore_wait"] as const;
 
 /** Glyphs shown next to a phase in the widget for each status. */
 const STATUS_GLYPH: Record<string, string> = {
@@ -317,10 +326,11 @@ export default function (pi: ExtensionAPI) {
 	// when the mode changes without reinstalling the footer.
 	let footerTui: { requestRender(): void } | null = null;
 
-	// Persistent codebase-explore and web-research sub-agents. Created lazily
-	// on first tool call; disposed when leaving plan mode, on /implement, or
-	// on session shutdown.
+	// Persistent codebase-explore mailbox and web-research sub-agent.
+	// Created lazily on first tool call; disposed when leaving plan mode,
+	// on /implement, or on session shutdown.
 	let delegateAgents: DelegateAgents | null = null;
+	let exploreMailbox: ExploreMailbox | null = null;
 
 	function ensureDelegateAgents(ctx: ExtensionContext): DelegateAgents {
 		if (!delegateAgents) {
@@ -329,10 +339,104 @@ export default function (pi: ExtensionAPI) {
 		return delegateAgents;
 	}
 
+	function ensureExploreMailbox(ctx: ExtensionContext): ExploreMailbox {
+		if (!exploreMailbox) {
+			exploreMailbox = new ExploreMailbox(ctx);
+			exploreMailbox.onChange((state) => renderExploreWidget(ctx, state));
+		}
+		return exploreMailbox;
+	}
+
 	function disposeDelegateAgents(): void {
-		if (!delegateAgents) return;
-		void delegateAgents.dispose().catch(() => {});
-		delegateAgents = null;
+		if (delegateAgents) {
+			void delegateAgents.dispose().catch(() => {});
+			delegateAgents = null;
+		}
+		if (exploreMailbox) {
+			const m = exploreMailbox;
+			exploreMailbox = null;
+			void m.dispose().catch(() => {});
+		}
+	}
+
+	function renderExploreWidget(
+		ctx: ExtensionContext,
+		state: { tasks: ExploreTask[]; notifications: ExploreNotification[] },
+	): void {
+		if (!ctx.hasUI) return;
+		if (state.tasks.length === 0 && state.notifications.length === 0) {
+			ctx.ui.setWidget("delegate-explore", undefined);
+			return;
+		}
+		const running = state.tasks.filter((t) => t.status === "running").length;
+		const queued = state.tasks.filter((t) => t.status === "queued").length;
+		const header = `🔍 Explore (${running} running, ${queued} queued)`;
+		const rows: string[] = [header];
+		for (const t of state.tasks) {
+			rows.push(
+				`  ${statusGlyph(t.status)} ${t.id}: ${truncate(t.question, 56)}` +
+					(t.status === "running" && t.lastToolSummary
+						? `  · ${t.lastToolSummary}`
+						: ""),
+			);
+		}
+		for (const n of state.notifications.slice(-3)) {
+			rows.push(`  💬 ${n.kind ? `[${n.kind}] ` : ""}${truncate(n.text, 64)}`);
+		}
+		ctx.ui.setWidget("delegate-explore", rows);
+	}
+
+	function statusGlyph(s: ExploreTask["status"]): string {
+		switch (s) {
+			case "queued":
+				return "⌛";
+			case "running":
+				return "⏳";
+			case "done":
+				return "🟢";
+			case "error":
+				return "❌";
+			case "timeout":
+				return "⏱";
+		}
+	}
+
+	function truncate(s: string, n: number): string {
+		const flat = s.replace(/\s+/g, " ").trim();
+		return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat;
+	}
+
+	function formatTask(task: ExploreTask): string {
+		const header = `[${task.id}] ${task.status}`;
+		if (task.status === "done" && task.text) {
+			return `${header}\n\n${task.text}`;
+		}
+		if (task.error) {
+			return `${header}: ${task.error}`;
+		}
+		return header;
+	}
+
+	function formatCheckResult(result: {
+		tasks: ExploreTask[];
+		notifications: ExploreNotification[];
+	}): string {
+		if (result.tasks.length === 0 && result.notifications.length === 0) {
+			return "[explore_check] mailbox empty";
+		}
+		const parts: string[] = [];
+		for (const t of result.tasks) {
+			parts.push(formatTask(t));
+		}
+		if (result.notifications.length > 0) {
+			parts.push("--- notifications ---");
+			for (const n of result.notifications) {
+				const tag = n.kind ? `[${n.kind}]` : "[notify]";
+				const from = n.taskId ? ` (during ${n.taskId})` : "";
+				parts.push(`${tag}${from} ${n.text}`);
+			}
+		}
+		return parts.join("\n\n");
 	}
 
 	// Questions queued by the `ask` tool during a single agent turn.
@@ -1181,14 +1285,14 @@ export default function (pi: ExtensionAPI) {
 			pi.setActiveTools([...PLAN_ONLY_TOOLS, ...planTools]);
 		} else {
 			// Restore prior tools and ensure plan_* + research are included.
-			// `explore` is plan-mode only so it is removed.
+			// The explore_* triad is plan-mode only so it is removed.
 			// `research` is available in auto/ask/hack so it is always re-added.
 			const alwaysInclude = [...planTools, "research"];
 			const extra = alwaysInclude.filter(
 				(t) => !modeState?.priorTools.includes(t),
 			);
 			const withExtras = [...modeState.priorTools, ...extra].filter(
-				(t) => t !== "explore",
+				(t) => !EXPLORE_TOOLS.includes(t as (typeof EXPLORE_TOOLS)[number]),
 			);
 			pi.setActiveTools(withExtras);
 		}
@@ -3476,21 +3580,20 @@ export default function (pi: ExtensionAPI) {
 	// ---- Delegate tools: explore + research ----------------------------
 
 	pi.registerTool({
-		name: "explore",
-		label: "Explore Codebase",
+		name: "explore_ask",
+		label: "Ask Explorer",
 		description:
-			"Ask the codebase-exploration agent a question about this repository. " +
-			"The agent reads source files, greps patterns, and returns a focused " +
-			"summary. Use this instead of reading files directly to keep this " +
-			"context lean. The agent is persistent — it remembers prior questions " +
-			"in this session.",
-		promptSnippet: "Ask a persistent sub-agent to explore the codebase",
+			"Queue a question for the codebase-exploration sub-agent. Returns " +
+			"immediately with a task id — does NOT block while the sub-agent " +
+			"works. Use explore_check to drain answers, or explore_wait to " +
+			"opt-in to blocking on a specific id. The sub-agent is persistent: " +
+			"it remembers prior questions in this session.",
+		promptSnippet: "Queue a codebase question (non-blocking)",
 		promptGuidelines: [
-			"Use explore(question) when you need to understand the codebase before planning — " +
-				"e.g. how a module works, where a pattern is used, what files are relevant. " +
-				"The sub-agent reads files and returns a focused summary without polluting this context.",
-			"The agent is persistent: it remembers earlier answers in this session. " +
-				"Ask follow-up questions naturally.",
+			"Use explore_ask when you want to start a codebase lookup but keep planning. " +
+				"It returns { id } right away — the sub-agent works in the background.",
+			"Fire several explore_ask calls back-to-back when you have multiple " +
+				"questions; they queue in order on the persistent sub-agent.",
 			"Available in plan mode only.",
 		],
 		parameters: Type.Object({
@@ -3499,14 +3602,95 @@ export default function (pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			if (ctx.hasUI)
-				ctx.ui.setWidget("delegate-explore", ["🔍 Exploring codebase..."]);
 			try {
-				const result = await ensureDelegateAgents(ctx).explore(params.question);
-				return { content: [{ type: "text", text: result }], details: {} };
-			} finally {
-				if (ctx.hasUI) ctx.ui.setWidget("delegate-explore", undefined);
+				const { id } = await ensureExploreMailbox(ctx).ask(params.question);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `[explore_ask] queued as ${id}`,
+						},
+					],
+					details: { id, status: "queued", question: params.question },
+				};
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				return {
+					content: [{ type: "text", text: `[explore_ask error: ${msg}]` }],
+					details: { error: msg },
+				};
 			}
+		},
+	});
+
+	pi.registerTool({
+		name: "explore_check",
+		label: "Check Explorer",
+		description:
+			"Drain the explore mailbox: returns completed/in-flight task records " +
+			"and any notify() messages the sub-agent emitted mid-turn. Non-blocking. " +
+			"By default removes terminal tasks (done/error/timeout) and notifications " +
+			"so each one is reported once. Pass { id } to peek at a single task without " +
+			"draining.",
+		promptSnippet: "Drain completed explore answers and notifications",
+		promptGuidelines: [
+			"Call explore_check periodically while planning to fold in completed answers.",
+			"Notifications are unsolicited messages from the sub-agent — treat them like " +
+				"hints, not requests. Read them, decide, move on.",
+			"Available in plan mode only.",
+		],
+		parameters: Type.Object({
+			id: Type.Optional(
+				Type.String({ description: "Peek at a single task id; never drains." }),
+			),
+			drain: Type.Optional(
+				Type.Boolean({
+					description:
+						"Default true. When false, leaves terminal tasks/notifications in place.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const mailbox = ensureExploreMailbox(ctx);
+			const opts: { id?: string; drain?: boolean } = {};
+			if (params.id !== undefined) opts.id = params.id;
+			if (params.drain !== undefined) opts.drain = params.drain;
+			const result = mailbox.check(opts);
+			return {
+				content: [{ type: "text", text: formatCheckResult(result) }],
+				details: result,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "explore_wait",
+		label: "Wait for Explorer",
+		description:
+			"Block until the named explore task reaches a terminal state, or the " +
+			"timeout fires. Use this only when you genuinely cannot continue " +
+			"planning without that specific answer — prefer explore_check for " +
+			"polling. A timeout returns a synthetic terminal record but does NOT " +
+			"kill the sub-agent: the next check/wait may still observe the real " +
+			"completion.",
+		promptSnippet: "Block on a specific explore task (opt-in)",
+		promptGuidelines: [
+			"Default timeout is 120s. Pass timeoutMs only when you need a different bound.",
+			"Available in plan mode only.",
+		],
+		parameters: Type.Object({
+			id: Type.String({ description: "Task id returned by explore_ask." }),
+			timeoutMs: Type.Optional(
+				Type.Number({ description: "Wait timeout in ms (default 120000)." }),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const mailbox = ensureExploreMailbox(ctx);
+			const task = await mailbox.wait(params.id, params.timeoutMs);
+			return {
+				content: [{ type: "text", text: formatTask(task) }],
+				details: task,
+			};
 		},
 	});
 
@@ -3741,9 +3925,13 @@ export default function (pi: ExtensionAPI) {
 						"the dialog replaces inline questions.",
 						"",
 						"To keep this context lean, delegate heavy lookups to persistent sub-agents:",
-						"  explore(question)   → reads the codebase; remembers earlier answers this session",
-						"  research(question)  → searches the web; remembers earlier answers this session",
-						"Start with explore when you need to understand existing code before planning.",
+						"  explore_ask(question)        → queue a codebase question (returns immediately)",
+						"  explore_check({ id?, drain? })→ drain completed answers + sub-agent notifications",
+						"  explore_wait(id, timeoutMs?) → block on one specific answer (opt-in)",
+						"  research(question)           → searches the web; one-shot per call",
+						"Fire several explore_ask calls in a row when you have multiple questions, ",
+						"keep planning, then explore_check to fold the answers in. Use explore_wait ",
+						"only when you cannot proceed without that specific answer.",
 					].join("\n"),
 					details: { modeMarker: "plan" as const },
 					display: false,

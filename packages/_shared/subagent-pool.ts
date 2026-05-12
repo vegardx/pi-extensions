@@ -2,6 +2,8 @@ import * as fs from "node:fs";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { RpcClient } from "@mariozechner/pi-coding-agent";
 
+type RpcEventListener = (event: AgentEvent) => void;
+
 /**
  * Unified subagent pool — manages persistent and one-shot RPC agents.
  *
@@ -52,6 +54,11 @@ export interface AgentConfig {
 	/** Follow-up mode: "one-at-a-time" ensures each queued message
 	 *  triggers its own turn. Default: "one-at-a-time". */
 	followUpMode?: "all" | "one-at-a-time";
+	/** Extra CLI args appended after `--tools`/`--append-system-prompt`.
+	 *  Used by callers that need to load a custom extension into the
+	 *  sub-agent process (e.g. to register a notify tool the parent
+	 *  observes via the event stream). */
+	extraArgs?: readonly string[];
 	/** Optional progress callback invoked on tool calls and turn ends. */
 	onProgress?: (progress: AgentProgress) => void;
 }
@@ -141,6 +148,7 @@ export class PersistentAgent {
 	private _busy = false;
 	private _disposed = false;
 	private unsubscribe: (() => void) | undefined;
+	private externalListeners = new Set<RpcEventListener>();
 
 	constructor(id: string, client: RpcClient, config: AgentConfig) {
 		this.id = id;
@@ -162,6 +170,17 @@ export class PersistentAgent {
 
 	get disposed(): boolean {
 		return this._disposed;
+	}
+
+	/**
+	 * Subscribe to the raw RPC event stream. Returns an unsubscribe
+	 * function. Listeners run after the pool's internal bookkeeping.
+	 */
+	onEvent(listener: RpcEventListener): () => void {
+		this.externalListeners.add(listener);
+		return () => {
+			this.externalListeners.delete(listener);
+		};
 	}
 
 	/** Send a prompt. If the agent is idle, starts a new turn. */
@@ -233,6 +252,17 @@ export class PersistentAgent {
 			this.emitProgress();
 		}
 
+		// Fan out to external subscribers. Wrap each in try/catch so a
+		// throwing listener doesn't break sibling subscribers or the pool's
+		// own bookkeeping below.
+		for (const listener of this.externalListeners) {
+			try {
+				listener(event);
+			} catch {
+				/* best-effort */
+			}
+		}
+
 		if (event.type === "message_end") {
 			const msg = event.message as unknown as Record<string, unknown>;
 			if (msg.role === "assistant") {
@@ -288,6 +318,7 @@ export class SubagentPool {
 
 		const tools = (config.tools ?? DEFAULT_TOOLS).join(",");
 		const cliPath = getCliPath();
+		const extraArgs = config.extraArgs ?? [];
 
 		const client = new RpcClient({
 			...(cliPath ? { cliPath } : {}),
@@ -300,6 +331,7 @@ export class SubagentPool {
 				tools,
 				"--append-system-prompt",
 				config.systemPromptPath,
+				...extraArgs,
 			],
 		});
 
