@@ -17,11 +17,17 @@
  * fire several questions at once, keep planning, then drain answers
  * when ready.
  *
- * Correlation rule: relies on the RPC client's `one-at-a-time`
- * follow-up mode. Each queued prompt produces exactly one
- * `agent_start` … `agent_end` cycle. We track tasks in FIFO order;
- * `agent_start` advances the head to "running", `agent_end` resolves
- * it with the agent's last assistant text.
+ * Correlation rule: each task is dispatched via a fresh
+ * `agent.prompt(question)` once the agent is idle. Each prompt
+ * produces exactly one `agent_start` … `agent_end` cycle. We track
+ * tasks in FIFO order; `agent_start` advances the head to "running",
+ * `agent_end` resolves it with the agent's last assistant text and
+ * triggers dispatch of the next queued task. We deliberately do not
+ * use `agent.followUp()` for orchestrator-level FIFO: real pi only
+ * drains follow-ups inside an active run, so queued follow-ups on an
+ * idle agent are silently dropped, and multiple follow-ups within a
+ * single run share one `agent_start`/`agent_end` pair (which would
+ * break correlation).
  *
  * `notify()` channel: a tiny extension shipped via `--extension`
  * registers a `notify({ text, kind? })` tool inside the sub-agent
@@ -196,7 +202,11 @@ export class ExploreMailbox {
 
 	private nextTaskNum = 1;
 	private nextNotifyNum = 1;
-	private hasPrompted = false;
+	/**
+	 * True between calling `agent.prompt()` and observing the matching
+	 * `agent_end`. Prevents double-dispatch while a run is in flight.
+	 */
+	private dispatching = false;
 	/** Head of the queued FIFO that the next `agent_start` will activate. */
 	private runningTaskId: string | null = null;
 	private waiters = new Map<string, Waiter[]>();
@@ -234,22 +244,7 @@ export class ExploreMailbox {
 		this.taskById.set(id, task);
 		this.emit();
 
-		try {
-			const agent = await this.ensureAgent();
-			if (!this.hasPrompted) {
-				this.hasPrompted = true;
-				await agent.prompt(question);
-			} else {
-				await agent.followUp(question);
-			}
-		} catch (err) {
-			task.status = "error";
-			task.error = err instanceof Error ? err.message : String(err);
-			task.endedAt = Date.now();
-			this.resolveWaiters(task);
-			this.emit();
-		}
-
+		void this.dispatchNext();
 		return { id };
 	}
 
@@ -424,11 +419,14 @@ export class ExploreMailbox {
 				break;
 			}
 			case "agent_end": {
-				if (this.runningTaskId) {
-					const task = this.taskById.get(this.runningTaskId);
-					this.runningTaskId = null;
+				const runningId = this.runningTaskId;
+				this.runningTaskId = null;
+				this.dispatching = false;
+				if (runningId) {
+					const task = this.taskById.get(runningId);
 					if (task) void this.completeTask(task);
 				}
+				void this.dispatchNext();
 				break;
 			}
 			case "tool_execution_start": {
@@ -459,6 +457,47 @@ export class ExploreMailbox {
 			}
 			default:
 				break;
+		}
+	}
+
+	private async dispatchNext(): Promise<void> {
+		if (this.disposed) return;
+		if (this.dispatching) return;
+		if (this.runningTaskId !== null) return;
+
+		const next = this.tasks.find((t) => t.status === "queued");
+		if (!next) return;
+
+		this.dispatching = true;
+		let agent: PersistentAgent;
+		try {
+			agent = await this.ensureAgent();
+		} catch (err) {
+			next.status = "error";
+			next.error = err instanceof Error ? err.message : String(err);
+			next.endedAt = Date.now();
+			this.resolveWaiters(next);
+			this.dispatching = false;
+			this.emit();
+			void this.dispatchNext();
+			return;
+		}
+
+		if (this.disposed) {
+			this.dispatching = false;
+			return;
+		}
+
+		try {
+			await agent.prompt(next.question);
+		} catch (err) {
+			next.status = "error";
+			next.error = err instanceof Error ? err.message : String(err);
+			next.endedAt = Date.now();
+			this.resolveWaiters(next);
+			this.dispatching = false;
+			this.emit();
+			void this.dispatchNext();
 		}
 	}
 
