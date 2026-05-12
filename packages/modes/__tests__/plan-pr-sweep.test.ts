@@ -42,10 +42,9 @@ function shellErr(stderr: string, code = 1): ShellResult {
 }
 
 describe("parsePrJson", () => {
-	it("collapses merged=true to state=merged regardless of state field", () => {
+	it("maps state=MERGED to merged regardless of other fields", () => {
 		const r = parsePrJson("p1", 42, {
-			state: "OPEN",
-			merged: true,
+			state: "MERGED",
 			statusCheckRollup: [{ conclusion: "SUCCESS" }],
 			reviewDecision: null,
 			reviews: [],
@@ -57,7 +56,6 @@ describe("parsePrJson", () => {
 	it("classifies CI as red when any rollup row failed", () => {
 		const r = parsePrJson("p1", 1, {
 			state: "OPEN",
-			merged: false,
 			statusCheckRollup: [{ conclusion: "SUCCESS" }, { conclusion: "FAILURE" }],
 		});
 		expect(r.ci).toBe("red");
@@ -66,7 +64,6 @@ describe("parsePrJson", () => {
 	it("classifies CI as pending when nothing failed but something is in progress", () => {
 		const r = parsePrJson("p1", 1, {
 			state: "OPEN",
-			merged: false,
 			statusCheckRollup: [{ conclusion: "SUCCESS" }, { state: "IN_PROGRESS" }],
 		});
 		expect(r.ci).toBe("pending");
@@ -75,7 +72,6 @@ describe("parsePrJson", () => {
 	it("returns ci=none when there are no checks at all", () => {
 		const r = parsePrJson("p1", 1, {
 			state: "OPEN",
-			merged: false,
 			statusCheckRollup: [],
 		});
 		expect(r.ci).toBe("none");
@@ -84,7 +80,6 @@ describe("parsePrJson", () => {
 	it("counts COMMENTED and CHANGES_REQUESTED reviews as unresolved", () => {
 		const r = parsePrJson("p1", 1, {
 			state: "OPEN",
-			merged: false,
 			reviews: [
 				{ state: "APPROVED" },
 				{ state: "COMMENTED" },
@@ -230,8 +225,7 @@ describe("runEndOfPlanPrSweep", () => {
 			if (num === "100") {
 				return shellOk(
 					JSON.stringify({
-						state: "OPEN",
-						merged: true,
+						state: "MERGED",
 						statusCheckRollup: [{ conclusion: "SUCCESS" }],
 						reviewDecision: "APPROVED",
 						reviews: [],
@@ -241,7 +235,6 @@ describe("runEndOfPlanPrSweep", () => {
 			return shellOk(
 				JSON.stringify({
 					state: "OPEN",
-					merged: false,
 					statusCheckRollup: [{ conclusion: "FAILURE" }],
 					reviewDecision: "CHANGES_REQUESTED",
 					reviews: [{ state: "CHANGES_REQUESTED" }],
@@ -260,6 +253,13 @@ describe("runEndOfPlanPrSweep", () => {
 		expect(calls).toHaveLength(2);
 		expect(calls[0]).toContain("100");
 		expect(calls[1]).toContain("101");
+		// Pin the `--json` field list — `merged` is not a valid gh JSON
+		// field and reintroducing it aborts every per-phase call.
+		const jsonIdx = calls[0].indexOf("--json");
+		expect(jsonIdx).toBeGreaterThanOrEqual(0);
+		expect(calls[0][jsonIdx + 1]).toBe(
+			"state,statusCheckRollup,reviewDecision,reviews",
+		);
 	});
 
 	it("aborts the entire sweep when the first gh call hits command-not-found", async () => {
@@ -286,8 +286,7 @@ describe("runEndOfPlanPrSweep", () => {
 			if (n === 1) {
 				return shellOk(
 					JSON.stringify({
-						state: "OPEN",
-						merged: true,
+						state: "MERGED",
 						statusCheckRollup: [{ conclusion: "SUCCESS" }],
 					}),
 				);

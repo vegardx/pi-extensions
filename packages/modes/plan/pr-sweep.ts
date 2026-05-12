@@ -24,7 +24,7 @@ export type CiState = "green" | "pending" | "red" | "none" | "error";
 export interface PrSweepResult {
 	phaseId: string;
 	prNumber: number;
-	/** Raw `state` from gh, plus `merged: true` collapses to "merged". */
+	/** Mapped from gh's `state` field: MERGED → "merged", etc. */
 	state: PrState;
 	/** Aggregated from `statusCheckRollup` rows. */
 	ci: CiState;
@@ -38,7 +38,6 @@ export interface PrSweepResult {
 
 interface RawPrJson {
 	state?: string;
-	merged?: boolean;
 	statusCheckRollup?: Array<{
 		conclusion?: string | null;
 		state?: string | null;
@@ -61,13 +60,18 @@ export function parsePrJson(
 	raw: unknown,
 ): PrSweepResult {
 	const j = (raw ?? {}) as RawPrJson;
-	const state: PrState = j.merged
-		? "merged"
-		: j.state === "OPEN"
-			? "open"
-			: j.state === "CLOSED"
-				? "closed"
-				: "unknown";
+	// gh's `state` is the canonical merged-vs-open indicator (OPEN /
+	// CLOSED / MERGED). There is no `merged` boolean field on `gh pr
+	// view --json` — requesting one aborts the call with `Unknown JSON
+	// field: "merged"`, so we derive merged purely from state.
+	const state: PrState =
+		j.state === "MERGED"
+			? "merged"
+			: j.state === "OPEN"
+				? "open"
+				: j.state === "CLOSED"
+					? "closed"
+					: "unknown";
 
 	const checks = Array.isArray(j.statusCheckRollup) ? j.statusCheckRollup : [];
 	const ci: CiState = (() => {
@@ -231,7 +235,7 @@ export async function runEndOfPlanPrSweep(
 				"view",
 				String(phase.prNumber),
 				"--json",
-				"state,merged,statusCheckRollup,reviewDecision,reviews",
+				"state,statusCheckRollup,reviewDecision,reviews",
 			],
 			{ cwd: input.cwd },
 		);
