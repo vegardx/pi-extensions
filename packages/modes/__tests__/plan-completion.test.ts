@@ -2,6 +2,8 @@ import {
 	buildCompletionPrompt,
 	decideFromCompletionChoice,
 	isPlanComplete,
+	NEW_PLAN_STALE_MESSAGE,
+	newPlanSideEffect,
 } from "../plan/completion.js";
 import type { Phase, Plan } from "../plan/schema.js";
 
@@ -142,5 +144,24 @@ describe("decideFromCompletionChoice", () => {
 		expect(decideFromCompletionChoice("Stay in this session")).toEqual({
 			action: "stay",
 		});
+	});
+});
+
+describe("newPlanSideEffect", () => {
+	// The newPlan branch in `runCompletionPromptIfDone` needs `ctx.newSession`,
+	// which only exists on `ExtensionCommandContext`. The auto-loop's
+	// `agent_end` ctx is a plain `ExtensionContext` — we degrade to a notify
+	// instead of crashing the loop.
+	it("forks a fresh session when ctx supports session control", () => {
+		expect(newPlanSideEffect(true)).toEqual({ kind: "fork-session" });
+	});
+
+	it("falls back to a notify-stale message when ctx is non-command", () => {
+		const out = newPlanSideEffect(false);
+		expect(out.kind).toBe("notify-stale");
+		if (out.kind === "notify-stale") {
+			expect(out.message).toBe(NEW_PLAN_STALE_MESSAGE);
+			expect(out.message).toMatch(/start a new session/i);
+		}
 	});
 });

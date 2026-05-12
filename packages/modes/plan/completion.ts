@@ -87,3 +87,25 @@ export function decideFromCompletionChoice(
 	if (choice === OPT_ARCHIVE) return { action: "archive" };
 	return { action: "stay" };
 }
+
+/**
+ * Side effect to run for the `newPlan` choice. Forking a fresh session
+ * needs `ctx.newSession`, which only exists on `ExtensionCommandContext`
+ * — manual `/ship` has it, but the auto loop's `agent_end` ctx does not.
+ * On the non-command path we degrade to a notify telling the user to
+ * start the next session by hand.
+ */
+export type NewPlanSideEffect =
+	| { kind: "fork-session" }
+	| { kind: "notify-stale"; message: string };
+
+export const NEW_PLAN_STALE_MESSAGE =
+	"plan complete — start a new session (Ctrl-N or /new) to begin the next plan";
+
+export function newPlanSideEffect(
+	hasSessionControl: boolean,
+): NewPlanSideEffect {
+	return hasSessionControl
+		? { kind: "fork-session" }
+		: { kind: "notify-stale", message: NEW_PLAN_STALE_MESSAGE };
+}
