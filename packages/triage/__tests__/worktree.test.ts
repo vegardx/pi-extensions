@@ -61,7 +61,26 @@ describe("parseWorktreeList", () => {
 		expect(parseWorktreeList(out, "anything")).toBeNull();
 	});
 
-	it("tolerates locked and prunable annotations", () => {
+	it("skips records flagged prunable", () => {
+		// `git worktree list --porcelain` keeps reporting prunable records
+		// until `git worktree prune` runs. Treating their paths as live
+		// would make every downstream `git status` fail and surface as
+		// "uncommitted changes" — see PR #122 review feedback.
+		const out = [
+			"worktree /repos/main",
+			"HEAD abcdef0123456789",
+			"branch refs/heads/main",
+			"",
+			"worktree /repos/wt/feature",
+			"HEAD 1111111111111111",
+			"branch refs/heads/feature",
+			"prunable gitdir file points to non-existent location",
+			"",
+		].join("\n");
+		expect(parseWorktreeList(out, "feature")).toBeNull();
+	});
+
+	it("tolerates locked annotations on live records", () => {
 		const out = [
 			"worktree /repos/main",
 			"HEAD abcdef0123456789",
@@ -71,7 +90,6 @@ describe("parseWorktreeList", () => {
 			"HEAD 1111111111111111",
 			"branch refs/heads/feature",
 			"locked stale",
-			"prunable gitdir file points to non-existent location",
 			"",
 		].join("\n");
 		expect(parseWorktreeList(out, "feature")).toBe("/repos/wt/feature");

@@ -91,26 +91,55 @@ export function findWorktreeForBranch(
 /**
  * Pure parser for `git worktree list --porcelain` output.
  * Exported for tests; not part of the public API contract.
+ *
+ * Records flagged `prunable` are skipped — their on-disk path is gone
+ * (e.g. someone `rm -rf`'d the directory) and `git worktree prune`
+ * just hasn't run yet. Returning that path would make every
+ * follow-up `git status` fail and look like "uncommitted changes".
  */
 export function parseWorktreeList(
 	porcelain: string,
 	branch: string,
 ): string | null {
 	const target = `branch refs/heads/${branch}`;
-	let currentPath: string | null = null;
+	interface Record {
+		path: string | null;
+		branchLine: string | null;
+		prunable: boolean;
+	}
+	const records: Record[] = [];
+	let current: Record | null = null;
+	const finalize = () => {
+		if (current) records.push(current);
+		current = null;
+	};
 	for (const rawLine of porcelain.split("\n")) {
 		const line = rawLine.trimEnd();
 		if (line === "") {
-			currentPath = null;
+			finalize();
 			continue;
 		}
 		if (line.startsWith("worktree ")) {
-			currentPath = line.slice("worktree ".length);
+			finalize();
+			current = {
+				path: line.slice("worktree ".length),
+				branchLine: null,
+				prunable: false,
+			};
 			continue;
 		}
-		if (line === target && currentPath) {
-			return currentPath;
+		if (!current) continue;
+		if (line.startsWith("branch ")) {
+			current.branchLine = line;
+		} else if (line === "prunable" || line.startsWith("prunable ")) {
+			current.prunable = true;
 		}
+	}
+	finalize();
+
+	for (const r of records) {
+		if (r.prunable) continue;
+		if (r.path && r.branchLine === target) return r.path;
 	}
 	return null;
 }
@@ -161,12 +190,21 @@ export function createTriageWorktree(
 	// false-positive on a stale directory whose branch is no longer ours.
 	const existing = findWorktreeForBranch(repoRoot, pr.headRefName);
 	if (existing) {
-		if (!isWorktreeClean(existing)) {
-			throw new Error(
-				`Branch ${pr.headRefName} is checked out at ${existing} with uncommitted changes — stash or commit, then re-run`,
-			);
+		// Defence in depth against `git worktree list` racing with manual
+		// `rm -rf`. The parser already filters `prunable` records, but a
+		// directory deleted *between* `list` and our use here would still
+		// look live. Treat a missing path as "no existing worktree" — prune
+		// the stale entry so the next `worktree add` doesn't trip on it.
+		if (!existsSync(existing)) {
+			run("git", ["worktree", "prune"], repoRoot);
+		} else {
+			if (!isWorktreeClean(existing)) {
+				throw new Error(
+					`Branch ${pr.headRefName} is checked out at ${existing} with uncommitted changes — stash or commit, then re-run`,
+				);
+			}
+			return { path: existing, reused: true };
 		}
-		return { path: existing, reused: true };
 	}
 
 	const wtPath = triageWorktreePath(repoRoot, pr.headRefName);
