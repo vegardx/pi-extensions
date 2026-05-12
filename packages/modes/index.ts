@@ -3445,14 +3445,14 @@ export default function (pi: ExtensionAPI) {
 			"Ask the research agent to look up documentation, libraries, APIs, or " +
 			"prior art on the web. Returns a concise structured summary. Use this " +
 			"instead of web searching directly to keep this context lean. The agent " +
-			"is persistent — it remembers prior questions in this session.",
-		promptSnippet: "Ask a persistent sub-agent to research a topic on the web",
+			"is stateless — each question spawns a fresh process.",
+		promptSnippet: "Ask a research sub-agent to look up a topic on the web",
 		promptGuidelines: [
 			"Use research(question) when you need external information — library docs, " +
 				"API references, best practices, or prior art. The sub-agent searches the " +
 				"web and returns a focused summary without polluting this context.",
-			"The agent is persistent: it remembers earlier answers in this session. " +
-				"Ask follow-up questions naturally.",
+			"Each call is independent and stateless — fire multiple research() calls " +
+				"in parallel when you have several questions; they run concurrently.",
 			"Available in plan mode and auto/ask mode.",
 		],
 		parameters: Type.Object({

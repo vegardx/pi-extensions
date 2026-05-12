@@ -1,5 +1,8 @@
 /**
- * Tests for DelegateAgents — persistent explore + research sub-agents.
+ * Tests for DelegateAgents.
+ *
+ * - explore: persistent sub-agent via SubagentPool.
+ * - research: one-shot parallel spawns via runSubagent.
  */
 import { vi } from "vitest";
 
@@ -11,7 +14,12 @@ vi.mock("@vegardx/pi-extensions-shared/model-resolver.js", () => ({
 	resolveModel: vi.fn(),
 }));
 
+vi.mock("@vegardx/pi-extensions-shared/parallel-subagent.js", () => ({
+	runSubagent: vi.fn(),
+}));
+
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import { SubagentPool } from "@vegardx/pi-extensions-shared/subagent-pool.js";
 import { DelegateAgents } from "../plan/delegate-tools.js";
 
@@ -53,6 +61,7 @@ function makeMockPool(): MockPool {
 
 const MOCK_CTX = {
 	cwd: "/fake/repo",
+	hasUI: false,
 	model: { provider: "anthropic", id: "claude-haiku" },
 } as never;
 
@@ -76,6 +85,10 @@ describe("DelegateAgents", () => {
 			.mockReturnValueOnce(pool1 as never)
 			.mockReturnValue(pool2 as never);
 		vi.mocked(resolveModel).mockResolvedValue(RESOLVED_MODEL as never);
+		vi.mocked(runSubagent).mockResolvedValue({
+			tag: 0,
+			rawText: "mock answer",
+		});
 	});
 
 	describe("explore()", () => {
@@ -116,7 +129,7 @@ describe("DelegateAgents", () => {
 				"explore",
 				expect.objectContaining({ tools: ["read", "grep", "find", "ls"] }),
 			);
-			const spawnCall = vi.mocked(pool1.spawn).mock.calls[0]![1] as {
+			const spawnCall = vi.mocked(pool1.spawn).mock.calls[0]?.[1] as {
 				tools: string[];
 			};
 			expect(spawnCall.tools).not.toContain("bash");
@@ -124,49 +137,90 @@ describe("DelegateAgents", () => {
 	});
 
 	describe("research()", () => {
-		it("lazy spawn with websearch/webfetch tools", async () => {
+		it("spawns a one-shot subagent with websearch/webfetch tools", async () => {
 			const agents = new DelegateAgents(MOCK_CTX);
 			const result = await agents.research("how does zod v4 work?");
 
-			expect(pool1.spawn).toHaveBeenCalledOnce();
-			expect(pool1.spawn).toHaveBeenCalledWith(
-				"research",
+			expect(runSubagent).toHaveBeenCalledOnce();
+			expect(runSubagent).toHaveBeenCalledWith(
 				expect.objectContaining({
 					provider: "anthropic",
 					model: "claude-haiku",
 					tools: ["websearch", "webfetch"],
+					cwd: "/fake/repo",
 					systemPromptPath: expect.stringContaining("research-agent.md"),
+					task: "how does zod v4 work?",
 				}),
 			);
 			expect(result).toBe("mock answer");
+			// research never touches the SubagentPool
+			expect(pool1.spawn).not.toHaveBeenCalled();
 		});
 
-		it("second call reuses same agent", async () => {
+		it("each call spawns a fresh one-shot process — no reuse", async () => {
 			const agents = new DelegateAgents(MOCK_CTX);
 			await agents.research("q1");
 			await agents.research("q2");
 
-			expect(pool1.spawn).toHaveBeenCalledOnce();
+			expect(runSubagent).toHaveBeenCalledTimes(2);
+			expect(pool1.spawn).not.toHaveBeenCalled();
+		});
+
+		it("concurrent calls run in parallel", async () => {
+			// Stagger resolution to confirm both were in-flight simultaneously.
+			let resolveFirst!: () => void;
+			const firstStarted = new Promise<void>((r) => (resolveFirst = r));
+
+			vi.mocked(runSubagent)
+				.mockImplementationOnce(async (input) => {
+					resolveFirst();
+					await new Promise<void>((r) => setTimeout(r, 10));
+					return { tag: input.tag, rawText: "first" };
+				})
+				.mockImplementationOnce(async (input) => {
+					await firstStarted; // wait until first has started
+					return { tag: input.tag, rawText: "second" };
+				});
+
+			const agents = new DelegateAgents(MOCK_CTX);
+			const [r1, r2] = await Promise.all([
+				agents.research("q1"),
+				agents.research("q2"),
+			]);
+
+			expect(r1).toBe("first");
+			expect(r2).toBe("second");
+			expect(runSubagent).toHaveBeenCalledTimes(2);
+		});
+
+		it("returns error string when runSubagent reports an error", async () => {
+			vi.mocked(runSubagent).mockResolvedValueOnce({
+				tag: 0,
+				rawText: "",
+				error: "network timeout",
+			});
+			const agents = new DelegateAgents(MOCK_CTX);
+			const result = await agents.research("q");
+			expect(result).toBe("[research error: network timeout]");
 		});
 	});
 
 	describe("independent agents", () => {
-		it("explore and research spawn as separate named agents", async () => {
+		it("explore uses pool; research uses runSubagent", async () => {
 			const agents = new DelegateAgents(MOCK_CTX);
 			await agents.explore("codebase q");
 			await agents.research("web q");
 
-			expect(pool1.spawn).toHaveBeenCalledTimes(2);
+			expect(pool1.spawn).toHaveBeenCalledOnce();
 			expect(pool1.spawn).toHaveBeenCalledWith("explore", expect.anything());
-			expect(pool1.spawn).toHaveBeenCalledWith("research", expect.anything());
+			expect(runSubagent).toHaveBeenCalledOnce();
 		});
 
-		it("only research spawns when explore is never called", async () => {
+		it("research-only path never touches the pool", async () => {
 			const agents = new DelegateAgents(MOCK_CTX);
 			await agents.research("web only");
 
-			expect(pool1.spawn).toHaveBeenCalledTimes(1);
-			expect(pool1.spawn).toHaveBeenCalledWith("research", expect.anything());
+			expect(pool1.spawn).not.toHaveBeenCalled();
 			expect(pool1._agents.has("explore")).toBe(false);
 		});
 	});
@@ -180,9 +234,18 @@ describe("DelegateAgents", () => {
 			expect(result).toMatch(/\[explore:.*no fast-tier model/);
 			expect(pool1.spawn).not.toHaveBeenCalled();
 		});
+
+		it("research returns error string when no model configured", async () => {
+			vi.mocked(resolveModel).mockResolvedValue(null);
+			const agents = new DelegateAgents(MOCK_CTX);
+			const result = await agents.research("q");
+
+			expect(result).toMatch(/\[research:.*no fast-tier model/);
+			expect(runSubagent).not.toHaveBeenCalled();
+		});
 	});
 
-	describe("error recovery", () => {
+	describe("error recovery (explore)", () => {
 		it("returns error string when waitForIdle throws", async () => {
 			const agents = new DelegateAgents(MOCK_CTX);
 			await agents.explore("first");
@@ -218,15 +281,14 @@ describe("DelegateAgents", () => {
 			expect(pool1.dispose).toHaveBeenCalledOnce();
 		});
 
-		it("resets to a fresh pool — subsequent calls use pool2", async () => {
+		it("research still works after dispose — each call is already fresh", async () => {
 			const agents = new DelegateAgents(MOCK_CTX);
 			await agents.research("first");
-			await agents.dispose(); // pool1 disposed, pool2 becomes active
+			await agents.dispose();
 
 			const result = await agents.research("after dispose");
-
-			expect(pool2.spawn).toHaveBeenCalledWith("research", expect.anything());
 			expect(result).toBe("mock answer");
+			expect(runSubagent).toHaveBeenCalledTimes(2);
 		});
 	});
 });
