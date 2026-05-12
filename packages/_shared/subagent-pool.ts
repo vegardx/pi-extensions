@@ -252,17 +252,6 @@ export class PersistentAgent {
 			this.emitProgress();
 		}
 
-		// Fan out to external subscribers. Wrap each in try/catch so a
-		// throwing listener doesn't break sibling subscribers or the pool's
-		// own bookkeeping below.
-		for (const listener of this.externalListeners) {
-			try {
-				listener(event);
-			} catch {
-				/* best-effort */
-			}
-		}
-
 		if (event.type === "message_end") {
 			const msg = event.message as unknown as Record<string, unknown>;
 			if (msg.role === "assistant") {
@@ -290,6 +279,17 @@ export class PersistentAgent {
 				busy: true,
 				usage: { ...this._usage },
 			});
+		}
+
+		// Fan out to external subscribers AFTER the pool's internal
+		// bookkeeping (per `onEvent` docstring). Wrap each in try/catch so a
+		// throwing listener doesn't break sibling subscribers.
+		for (const listener of this.externalListeners) {
+			try {
+				listener(event);
+			} catch {
+				/* best-effort */
+			}
 		}
 	}
 

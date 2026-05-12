@@ -422,11 +422,18 @@ export class ExploreMailbox {
 				const runningId = this.runningTaskId;
 				this.runningTaskId = null;
 				this.dispatching = false;
-				if (runningId) {
-					const task = this.taskById.get(runningId);
-					if (task) void this.completeTask(task);
+				const task = runningId ? this.taskById.get(runningId) : undefined;
+				if (task) {
+					// `completeTask()` reads `agent.getLastText()` (RPC). Starting
+					// the next prompt before that read resolves can race — the
+					// new turn's first assistant message could become the "last
+					// text" attributed to the just-finished task. Sequence them.
+					void this.completeTask(task).then(() => {
+						void this.dispatchNext();
+					});
+				} else {
+					void this.dispatchNext();
 				}
-				void this.dispatchNext();
 				break;
 			}
 			case "tool_execution_start": {

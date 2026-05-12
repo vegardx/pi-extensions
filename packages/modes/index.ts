@@ -347,7 +347,7 @@ export default function (pi: ExtensionAPI) {
 		return exploreMailbox;
 	}
 
-	function disposeDelegateAgents(): void {
+	function disposeDelegateAgents(ctx?: ExtensionContext): void {
 		if (delegateAgents) {
 			void delegateAgents.dispose().catch(() => {});
 			delegateAgents = null;
@@ -357,6 +357,7 @@ export default function (pi: ExtensionAPI) {
 			exploreMailbox = null;
 			void m.dispose().catch(() => {});
 		}
+		if (ctx?.hasUI) ctx.ui.setWidget("delegate-explore", undefined);
 	}
 
 	function renderExploreWidget(
@@ -1311,7 +1312,7 @@ export default function (pi: ExtensionAPI) {
 		if (modeState.mode === "plan" && mode !== "plan") {
 			// Leaving plan mode — snapshot and delegate agents are stale.
 			clearPlanTurnSnapshot();
-			disposeDelegateAgents();
+			disposeDelegateAgents(ctx);
 		}
 		modeState.mode = mode;
 		persist();
@@ -3815,7 +3816,7 @@ export default function (pi: ExtensionAPI) {
 		// session switches (/new, /resume, /fork).
 		if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 		footerTui = null;
-		disposeDelegateAgents();
+		disposeDelegateAgents(ctx);
 	});
 
 	// ---- session_before_compact: modes-flavoured mid-phase compaction ----

@@ -39,11 +39,14 @@ const notifyTool = defineTool({
 	}),
 
 	async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+		// Short ack only — the parent already lifts the full text from
+		// `tool_execution_start` args. Echoing it here would just bloat the
+		// sub-agent's own context with each notify.
 		return {
 			content: [
 				{
 					type: "text",
-					text: `notified: ${params.text}`,
+					text: "notified",
 				},
 			],
 			details: { text: params.text, kind: params.kind },
