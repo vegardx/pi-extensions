@@ -85,7 +85,7 @@ function serialisePlan(plan: Plan): string {
 			done: task.done,
 		})),
 	}));
-	return JSON.stringify(phases, null, 2);
+	return JSON.stringify(phases);
 }
 
 function isValidFinding(item: unknown): item is ScrutinyFinding {
@@ -166,7 +166,17 @@ export async function scrutinizePlan(
 		}
 		if (!Array.isArray(parsed)) continue;
 
-		const findings = (parsed as unknown[]).filter(isValidFinding);
+		const all = parsed as unknown[];
+		const findings = all.filter(isValidFinding);
+		const dropped = all.length - findings.length;
+		if (dropped > 0) {
+			return {
+				findings,
+				error: `scrutinizer returned ${dropped} malformed entr${
+					dropped === 1 ? "y" : "ies"
+				} (kept ${findings.length} valid)`,
+			};
+		}
 		return { findings };
 	}
 
