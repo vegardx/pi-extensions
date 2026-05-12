@@ -13,6 +13,7 @@ directly as an argument.
 | Argument | What it does |
 |----------|------|
 | `prs` | Go through PRs with automated review comments (Copilot, bots). Validate each claim, fix valid ones, push, optionally merge. |
+| `copilot <N>` | Wait for Copilot's review to appear on PR #N, then validate findings, fix valid ones, resolve threads, and auto-merge. Pre-checks whether a review is expected before polling. |
 | `issues` | List open issues — assigned to you first, then the rest. Summarize, prioritize, act. |
 | `actions` | Go through failing GitHub Actions runs. Fetch logs, analyze root cause, suggest or apply fixes. |
 | `stale` | Find stuck PRs — failing CI, needs rebase, idle review. Offer to fix up, nudge, or close. |
@@ -21,16 +22,24 @@ directly as an argument.
 
 - `/skill:triage` — ask what to triage
 - `/skill:triage prs` — jump straight to PR review triage
+- `/skill:triage copilot` — pick a PR and watch for Copilot's review
+- `/skill:triage copilot <N>` — watch PR #N directly
 - `/skill:triage issues` — jump straight to issue triage
 - `/skill:triage actions` — jump straight to failing CI triage
 - `/skill:triage stale` — jump straight to stale PR triage
+
+> **`prs` and `copilot` modes** are handled by the TypeScript extension
+> (`/triage` command). They spawn dedicated `primary.normal` sub-agents
+> in per-PR git worktrees for autonomous fix+push+resolve workflows.
+> `issues`, `actions`, and `stale` remain skill-driven.
 
 ## Dispatch
 
 If `$ARGUMENTS` matches one of the modes above, load the corresponding
 reference document and follow its workflow:
 
-- `prs` → read [reference/pr-reviews.md](reference/pr-reviews.md)
+- `prs` → handled by `/triage prs` (TypeScript extension)
+- `copilot` / `copilot <N>` → handled by `/triage copilot` (TypeScript extension)
 - `issues` → read [reference/issues.md](reference/issues.md)
 - `actions` → read [reference/actions.md](reference/actions.md)
 - `stale` → read [reference/stale-prs.md](reference/stale-prs.md)

@@ -10,7 +10,6 @@
  * PR selection and post-fix merge decisions.
  */
 
-import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
@@ -19,6 +18,15 @@ import {
 	runSubagentsParallel,
 	type SubagentTask,
 } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
+import {
+	type BotReview,
+	fetchBotReviews,
+	fetchReviewComments,
+	getOwnerRepo,
+	ghJson,
+	type ReviewComment,
+	sh,
+} from "./gh.js";
 import {
 	createTriageWorktree,
 	getRepoRoot,
@@ -37,58 +45,16 @@ const AGENT_PROMPT = join(
 );
 
 /** 10 minutes — agents fix code, run git ops, make network calls. */
-const AGENT_TIMEOUT_MS = 600_000;
+export const AGENT_TIMEOUT_MS = 600_000;
 
-const TRIAGE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit"] as const;
-
-// ---- Shell helper ----------------------------------------------------
-
-interface ShellResult {
-	ok: boolean;
-	stdout: string;
-	stderr: string;
-}
-
-function sh(cmd: string, args: string[], cwd: string): ShellResult {
-	const r = spawnSync(cmd, args, {
-		cwd,
-		encoding: "utf8",
-		shell: false,
-		env: process.env,
-	});
-	return {
-		ok: (r.status ?? -1) === 0,
-		stdout: (r.stdout ?? "").toString().trim(),
-		stderr: (r.stderr ?? "").toString().trim(),
-	};
-}
-
-/** Run a `gh` command, return parsed JSON, or null on failure. */
-function ghJson<T>(args: string[], cwd: string): T | null {
-	const r = sh("gh", args, cwd);
-	if (!r.ok || !r.stdout) return null;
-	try {
-		return JSON.parse(r.stdout) as T;
-	} catch {
-		return null;
-	}
-}
-
-// ---- Types -----------------------------------------------------------
-
-interface BotReview {
-	id: number;
-	login: string;
-	state: string;
-	body: string;
-}
-
-interface ReviewComment {
-	path: string;
-	line: number | null;
-	body: string;
-	side: string;
-}
+export const TRIAGE_TOOLS = [
+	"read",
+	"grep",
+	"find",
+	"ls",
+	"bash",
+	"edit",
+] as const;
 
 interface PrWithReviews {
 	pr: PrInfo;
@@ -101,79 +67,11 @@ interface TriageResult {
 	error?: string;
 }
 
-// ---- GitHub helpers --------------------------------------------------
-
-function getOwnerRepo(cwd: string): string | null {
-	const r = sh("git", ["remote", "get-url", "origin"], cwd);
-	if (!r.ok) return null;
-	const url = r.stdout;
-	// https://github.com/owner/repo(.git)
-	let m = url.match(/https?:\/\/[^/]+\/([^/]+)\/([^/.]+?)(?:\.git)?$/);
-	if (m) return `${m[1]}/${m[2]}`;
-	// git@github.com:owner/repo(.git)
-	m = url.match(/git@[^:]+:([^/]+)\/([^/.]+?)(?:\.git)?$/);
-	if (m) return `${m[1]}/${m[2]}`;
-	return null;
-}
-
 function listOpenPrs(cwd: string): PrInfo[] {
 	const data = ghJson<
 		Array<{ number: number; title: string; headRefName: string }>
 	>(["pr", "list", "--json", "number,title,headRefName"], cwd);
 	return data ?? [];
-}
-
-function fetchBotReviews(
-	ownerRepo: string,
-	prNumber: number,
-	cwd: string,
-): BotReview[] {
-	type RawReview = {
-		id: number;
-		user: { login: string };
-		state: string;
-		body: string;
-	};
-	const data = ghJson<RawReview[]>(
-		["api", `repos/${ownerRepo}/pulls/${prNumber}/reviews`],
-		cwd,
-	);
-	if (!data) return [];
-	return data
-		.filter((r) => r.user.login.endsWith("[bot]"))
-		.map((r) => ({
-			id: r.id,
-			login: r.user.login,
-			state: r.state,
-			body: r.body ?? "",
-		}));
-}
-
-function fetchReviewComments(
-	ownerRepo: string,
-	prNumber: number,
-	reviewId: number,
-	cwd: string,
-): ReviewComment[] {
-	type RawComment = {
-		path: string;
-		line: number | null;
-		body: string;
-		side: string;
-	};
-	const data = ghJson<RawComment[]>(
-		[
-			"api",
-			`repos/${ownerRepo}/pulls/${prNumber}/reviews/${reviewId}/comments`,
-		],
-		cwd,
-	);
-	return (data ?? []).map((c) => ({
-		path: c.path,
-		line: c.line ?? null,
-		body: c.body,
-		side: c.side,
-	}));
 }
 
 // ---- Task builder ----------------------------------------------------
@@ -220,7 +118,7 @@ function buildSubagentTask(
 
 // ---- Merge decision --------------------------------------------------
 
-async function handleMergeDecision(
+export async function handleMergeDecision(
 	pr: PrInfo,
 	cwd: string,
 	ctx: ExtensionContext,
