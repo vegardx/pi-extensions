@@ -3427,8 +3427,14 @@ export default function (pi: ExtensionAPI) {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await ensureDelegateAgents(ctx).explore(params.question);
-			return { content: [{ type: "text", text: result }], details: {} };
+			if (ctx.hasUI)
+				ctx.ui.setWidget("delegate-explore", ["🔍 Exploring codebase..."]);
+			try {
+				const result = await ensureDelegateAgents(ctx).explore(params.question);
+				return { content: [{ type: "text", text: result }], details: {} };
+			} finally {
+				if (ctx.hasUI) ctx.ui.setWidget("delegate-explore", undefined);
+			}
 		},
 	});
 
