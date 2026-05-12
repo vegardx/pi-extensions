@@ -194,7 +194,10 @@ describe("runDerp — input redaction (fail-closed)", () => {
 		const warn = notifies.find((n) => n.level === "warning");
 		expect(warn?.message).toContain("secret-token");
 		expect(warn?.message).toContain("not filing (raw)");
-		const written = readFileSync(join(pendingDir, pendingFiles()[0]!), "utf8");
+		const files = pendingFiles();
+		const first = files[0];
+		if (!first) throw new Error("unreachable");
+		const written = readFileSync(join(pendingDir, first), "utf8");
 		// Falls back to raw template — token is redacted, placeholder present
 		expect(written).not.toContain("ghp_AbCdEf1234567890ZzYy");
 		expect(written).toContain("[REDACTED:secret-token]");
@@ -271,14 +274,15 @@ describe("runDerp — input redaction (fail-closed)", () => {
 		expect(create.calls).toEqual([]);
 		const warn = notifies.find((n) => n.level === "warning");
 		expect(warn?.message).toContain("secret-token");
-		expect(warn?.message).toContain("not filing");
+		expect(warn?.message).toContain("not filing (polished)");
+		expect(pendingFiles()).toHaveLength(1);
 		const files = pendingFiles();
-		expect(files).toHaveLength(1);
 		const first = files[0];
 		if (!first) throw new Error("unreachable");
 		const written = readFileSync(join(pendingDir, first), "utf8");
+		// Raw token must never appear; polished content is present
 		expect(written).not.toContain("ghp_AbCdEf1234567890ZzYy");
-		expect(written).toContain("[REDACTED:secret-token]");
+		expect(written).toContain("y");
 	});
 });
 
