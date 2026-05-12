@@ -1,16 +1,16 @@
 /**
  * Session-scoped delegate agents for plan and auto modes.
  *
- * Two persistent sub-agents reduce main-context bloat:
+ * Two agents reduce main-context bloat:
  *
- *   - explore  — answers codebase questions via read/grep/find/ls.
+ *   - explore  — persistent sub-agent for codebase questions via
+ *                read/grep/find/ls. Accumulates context across turns.
  *                Available in plan mode only.
- *   - research — answers web/doc questions via websearch/webfetch.
- *                Available in plan mode and auto/ask mode.
  *
- * Both agents are spawned lazily on first use and accumulate context
- * across questions for the lifetime of the planning session. On crash,
- * the pool is reset so the next call gets a fresh start.
+ *   - research — one-shot per call, fully parallel. Each question
+ *                spawns a fresh process with websearch/webfetch.
+ *                Multiple concurrent calls run simultaneously.
+ *                Available in plan mode and auto/ask mode.
  *
  * Callers receive the agent's summary as a plain string. Errors are
  * returned as bracketed messages — never thrown — so the main agent
@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import { SubagentPool } from "@vegardx/pi-extensions-shared/subagent-pool.js";
 
 const PROMPTS_DIR = join(
@@ -38,6 +39,8 @@ const RESEARCH_TIMEOUT_MS = 90_000;
 export class DelegateAgents {
 	private pool: SubagentPool;
 	private readonly ctx: ExtensionContext;
+	private readonly activeResearch = new Map<number, string>();
+	private nextResearchId = 0;
 
 	constructor(ctx: ExtensionContext) {
 		this.ctx = ctx;
@@ -59,17 +62,50 @@ export class DelegateAgents {
 	}
 
 	/**
-	 * Ask the research agent a question. Spawns on first call; subsequent
-	 * calls reuse the same agent and its accumulated context.
+	 * Ask the research agent a question. Each call spawns a fresh one-shot
+	 * process so multiple concurrent questions run fully in parallel.
 	 */
 	async research(question: string): Promise<string> {
-		return this.ask(
-			"research",
-			join(PROMPTS_DIR, "research-agent.md"),
-			RESEARCH_TOOLS,
-			RESEARCH_TIMEOUT_MS,
-			question,
+		const id = this.nextResearchId++;
+		const topic = question.length > 60 ? `${question.slice(0, 57)}…` : question;
+		this.activeResearch.set(id, topic);
+		this.updateResearchWidget();
+		try {
+			const resolved = await resolveModel(this.ctx, {
+				name: "modes",
+				tier: "fast",
+			});
+			if (!resolved) {
+				return "[research: no fast-tier model configured — add backgroundModels.primary.fast to settings.json]";
+			}
+			const outcome = await runSubagent({
+				tag: id,
+				task: question,
+				systemPromptPath: join(PROMPTS_DIR, "research-agent.md"),
+				tools: RESEARCH_TOOLS,
+				provider: resolved.model.provider,
+				model: resolved.model.id,
+				cwd: this.ctx.cwd,
+				timeoutMs: RESEARCH_TIMEOUT_MS,
+			});
+			if (outcome.error) return `[research error: ${outcome.error}]`;
+			return outcome.rawText || "[research: no response]";
+		} finally {
+			this.activeResearch.delete(id);
+			this.updateResearchWidget();
+		}
+	}
+
+	private updateResearchWidget(): void {
+		if (!this.ctx.hasUI) return;
+		if (this.activeResearch.size === 0) {
+			this.ctx.ui.setWidget("delegate-research", undefined);
+			return;
+		}
+		const rows = Array.from(this.activeResearch.values()).map(
+			(t) => `  ⏳ ${t}`,
 		);
+		this.ctx.ui.setWidget("delegate-research", ["🌐 Research", ...rows]);
 	}
 
 	/** Tear down all agents. Best-effort — does not throw. */
