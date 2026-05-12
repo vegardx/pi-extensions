@@ -68,20 +68,108 @@ export function triageWorktreePath(repoRoot: string, prBranch: string): string {
 	return join(parent, "worktrees", repoName, "triage", safe);
 }
 
-// ---- Lifecycle -------------------------------------------------------
+// ---- Branch → worktree lookup ---------------------------------------
 
 /**
- * Create a worktree for `pr.headRefName` at the canonical triage path.
- * The branch must already exist remotely (PR branches always do).
+ * Find the worktree path that currently has `branch` checked out, or
+ * `null` if the branch is not checked out in any worktree of `repoRoot`.
  *
- * Returns the worktree path on success. Throws on failure.
+ * Parses `git worktree list --porcelain`. Records are separated by
+ * blank lines; each record starts with a `worktree <path>` line. A
+ * record may then contain `HEAD <sha>`, `bare`, `branch <ref>`,
+ * `detached`, `locked [<reason>]`, or `prunable [<reason>]`. We only
+ * care about records whose `branch` line matches the requested branch.
  */
-export function createTriageWorktree(pr: PrInfo, repoRoot: string): string {
+export function findWorktreeForBranch(
+	repoRoot: string,
+	branch: string,
+): string | null {
+	const out = run("git", ["worktree", "list", "--porcelain"], repoRoot).stdout;
+	return parseWorktreeList(out, branch);
+}
+
+/**
+ * Pure parser for `git worktree list --porcelain` output.
+ * Exported for tests; not part of the public API contract.
+ */
+export function parseWorktreeList(
+	porcelain: string,
+	branch: string,
+): string | null {
+	const target = `branch refs/heads/${branch}`;
+	let currentPath: string | null = null;
+	for (const rawLine of porcelain.split("\n")) {
+		const line = rawLine.trimEnd();
+		if (line === "") {
+			currentPath = null;
+			continue;
+		}
+		if (line.startsWith("worktree ")) {
+			currentPath = line.slice("worktree ".length);
+			continue;
+		}
+		if (line === target && currentPath) {
+			return currentPath;
+		}
+	}
+	return null;
+}
+
+/**
+ * `true` when the working tree at `wtPath` has no staged, unstaged, or
+ * untracked changes. Uses `git status --porcelain` so the check is
+ * locale-independent.
+ */
+function isWorktreeClean(wtPath: string): boolean {
+	const r = run("git", ["status", "--porcelain"], wtPath);
+	return r.ok && r.stdout === "";
+}
+
+// ---- Lifecycle -------------------------------------------------------
+
+export interface TriageWorktree {
+	/** Absolute path to the worktree the sub-agent should use. */
+	path: string;
+	/**
+	 * `true` when we adopted a pre-existing worktree (do NOT remove it
+	 * during cleanup); `false` when we created it ourselves.
+	 */
+	reused: boolean;
+}
+
+/**
+ * Resolve a worktree to use for `pr.headRefName`.
+ *
+ * Policy: if the branch is already checked out somewhere — main
+ * checkout, leftover triage worktree, /develop park-path, ad-hoc — we
+ * adopt that worktree iff it has no uncommitted changes. A dirty
+ * pre-existing worktree throws so the caller can skip the PR with a
+ * clear message instead of risking the agent committing the user's WIP.
+ *
+ * Otherwise we fetch the branch (if needed) and create a fresh
+ * worktree at the canonical triage path.
+ *
+ * The branch must already exist remotely (PR branches always do).
+ */
+export function createTriageWorktree(
+	pr: PrInfo,
+	repoRoot: string,
+): TriageWorktree {
+	// Adopt an existing worktree if one already holds this branch. This
+	// is the single source of truth — `existsSync(canonical)` would miss
+	// branches checked out elsewhere (main, /develop, ad-hoc) and would
+	// false-positive on a stale directory whose branch is no longer ours.
+	const existing = findWorktreeForBranch(repoRoot, pr.headRefName);
+	if (existing) {
+		if (!isWorktreeClean(existing)) {
+			throw new Error(
+				`Branch ${pr.headRefName} is checked out at ${existing} with uncommitted changes — stash or commit, then re-run`,
+			);
+		}
+		return { path: existing, reused: true };
+	}
+
 	const wtPath = triageWorktreePath(repoRoot, pr.headRefName);
-
-	if (existsSync(wtPath)) return wtPath;
-
-	// Ensure the parent directory exists.
 	mkdirSync(dirname(wtPath), { recursive: true });
 
 	// Fetch the branch locally if it isn't present yet.
@@ -103,26 +191,6 @@ export function createTriageWorktree(pr: PrInfo, repoRoot: string): string {
 		);
 	}
 
-	// Fail-fast if the branch is already checked out somewhere (the main
-	// worktree or an existing triage worktree). `git worktree add` would
-	// fail with a cryptic error; surface a clear message instead.
-	const listOut = run(
-		"git",
-		["worktree", "list", "--porcelain"],
-		repoRoot,
-	).stdout;
-	const alreadyCheckedOut = listOut
-		.split("\n")
-		.some((line) => line === `branch refs/heads/${pr.headRefName}`);
-	if (alreadyCheckedOut) {
-		// Return the existing worktree path for this branch if it's ours,
-		// otherwise throw so the caller knows the branch is occupied.
-		if (existsSync(wtPath)) return wtPath;
-		throw new Error(
-			`Branch ${pr.headRefName} is already checked out in another worktree`,
-		);
-	}
-
 	const r = run(
 		"git",
 		// `--` prevents branch names starting with `-` from being
@@ -137,7 +205,7 @@ export function createTriageWorktree(pr: PrInfo, repoRoot: string): string {
 		);
 	}
 
-	return wtPath;
+	return { path: wtPath, reused: false };
 }
 
 /**
