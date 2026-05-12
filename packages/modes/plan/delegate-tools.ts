@@ -67,7 +67,8 @@ export class DelegateAgents {
 	 */
 	async research(question: string): Promise<string> {
 		const id = this.nextResearchId++;
-		const topic = question.length > 60 ? `${question.slice(0, 57)}…` : question;
+		const flat = question.replace(/\s+/g, " ").trim();
+		const topic = flat.length > 60 ? `${flat.slice(0, 57)}…` : flat;
 		this.activeResearch.set(id, topic);
 		this.updateResearchWidget();
 		try {

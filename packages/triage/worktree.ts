@@ -92,11 +92,44 @@ export function createTriageWorktree(pr: PrInfo, repoRoot: string): string {
 	).ok;
 
 	if (!hasBranch) {
-		// Fetch from origin so we can check the branch out.
-		run("git", ["fetch", "origin", pr.headRefName], repoRoot);
+		// Use <remote>:<local> refspec so the fetch also creates the local
+		// tracking branch. Plain `fetch origin <branch>` only updates
+		// FETCH_HEAD; `git worktree add <path> <branch>` then fails because
+		// the local branch doesn't exist yet.
+		run(
+			"git",
+			["fetch", "origin", `${pr.headRefName}:${pr.headRefName}`],
+			repoRoot,
+		);
 	}
 
-	const r = run("git", ["worktree", "add", wtPath, pr.headRefName], repoRoot);
+	// Fail-fast if the branch is already checked out somewhere (the main
+	// worktree or an existing triage worktree). `git worktree add` would
+	// fail with a cryptic error; surface a clear message instead.
+	const listOut = run(
+		"git",
+		["worktree", "list", "--porcelain"],
+		repoRoot,
+	).stdout;
+	const alreadyCheckedOut = listOut
+		.split("\n")
+		.some((line) => line === `branch refs/heads/${pr.headRefName}`);
+	if (alreadyCheckedOut) {
+		// Return the existing worktree path for this branch if it's ours,
+		// otherwise throw so the caller knows the branch is occupied.
+		if (existsSync(wtPath)) return wtPath;
+		throw new Error(
+			`Branch ${pr.headRefName} is already checked out in another worktree`,
+		);
+	}
+
+	const r = run(
+		"git",
+		// `--` prevents branch names starting with `-` from being
+		// misinterpreted as flags.
+		["worktree", "add", wtPath, "--", pr.headRefName],
+		repoRoot,
+	);
 
 	if (!r.ok) {
 		throw new Error(
