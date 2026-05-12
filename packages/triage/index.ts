@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { runCopilotTriage } from "./copilot-watcher.js";
 import { runPrsTriage } from "./pr-agent.js";
 
 const EXT_ID = "triage";
@@ -27,15 +28,13 @@ export default function (pi: ExtensionAPI) {
 				return runPrsTriage(ctx);
 			}
 
-			// copilot mode implemented in phase 2 (copilot-watcher.ts)
 			if (mode === "copilot") {
-				if (ctx.hasUI) {
-					ctx.ui.notify(
-						"triage: copilot mode coming soon — use /skill:triage copilot for now",
-						"info",
-					);
-				}
-				return;
+				const prArg = parts[1];
+				const prNumber = prArg ? parseInt(prArg, 10) : undefined;
+				return runCopilotTriage(
+					ctx,
+					prNumber != null && !Number.isNaN(prNumber) ? prNumber : undefined,
+				);
 			}
 
 			// issues / actions / stale remain skill-driven

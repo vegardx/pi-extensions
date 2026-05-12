@@ -10,7 +10,9 @@
   "exports": {
     ".": "./index.ts",
     "./pr-agent": "./pr-agent.ts",
-    "./worktree": "./worktree.ts"
+    "./copilot-watcher": "./copilot-watcher.ts",
+    "./worktree": "./worktree.ts",
+    "./gh": "./gh.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
