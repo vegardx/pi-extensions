@@ -89,6 +89,8 @@ describe("ExploreMailbox", () => {
 		const { id } = await mailbox.ask("how does X work?");
 		expect(id).toBe("q1");
 
+		await flush();
+
 		// Spawned, prompted, but no answer yet.
 		expect(agent.prompt).toHaveBeenCalledOnce();
 		expect(agent.prompt).toHaveBeenCalledWith("how does X work?");
@@ -97,7 +99,7 @@ describe("ExploreMailbox", () => {
 		expect(state.tasks[0]?.status).toBe("queued");
 	});
 
-	it("uses prompt() for the first call and followUp() for the rest", async () => {
+	it("dispatches via prompt() one task at a time, never followUp()", async () => {
 		const agent = makeMockAgent();
 		const { deps } = makeDeps(agent);
 		const mailbox = new ExploreMailbox(CTX, deps);
@@ -106,11 +108,49 @@ describe("ExploreMailbox", () => {
 		await mailbox.ask("q2");
 		await mailbox.ask("q3");
 
+		// Only the head task is dispatched while the agent is busy.
 		expect(agent.prompt).toHaveBeenCalledOnce();
 		expect(agent.prompt).toHaveBeenCalledWith("q1");
-		expect(agent.followUp).toHaveBeenCalledTimes(2);
-		expect(agent.followUp.mock.calls[0]?.[0]).toBe("q2");
-		expect(agent.followUp.mock.calls[1]?.[0]).toBe("q3");
+		expect(agent.followUp).not.toHaveBeenCalled();
+
+		completeTurn(agent, "a1");
+		await flush();
+		expect(agent.prompt).toHaveBeenCalledTimes(2);
+		expect(agent.prompt.mock.calls[1]?.[0]).toBe("q2");
+
+		completeTurn(agent, "a2");
+		await flush();
+		expect(agent.prompt).toHaveBeenCalledTimes(3);
+		expect(agent.prompt.mock.calls[2]?.[0]).toBe("q3");
+
+		expect(agent.followUp).not.toHaveBeenCalled();
+	});
+
+	it("keeps dispatching after the agent goes idle (regression: dropped follow-ups)", async () => {
+		// Real pi only drains agent.followUp() mid-cycle; on an idle agent
+		// queued follow-ups never get processed. The mailbox must dispatch
+		// each task via a fresh prompt() so every ask gets its own
+		// agent_start/agent_end cycle.
+		const agent = makeMockAgent();
+		const { deps } = makeDeps(agent);
+		const mailbox = new ExploreMailbox(CTX, deps);
+
+		const { id: id1 } = await mailbox.ask("first");
+		completeTurn(agent, "answer1");
+		await flush();
+		expect(mailbox.check({ id: id1 }).tasks[0]?.status).toBe("done");
+
+		// Agent has gone idle. Asking again must dispatch via prompt(),
+		// not enqueue via followUp() (which would be silently dropped).
+		const { id: id2 } = await mailbox.ask("second");
+		expect(agent.prompt).toHaveBeenCalledTimes(2);
+		expect(agent.prompt.mock.calls[1]?.[0]).toBe("second");
+		expect(agent.followUp).not.toHaveBeenCalled();
+
+		completeTurn(agent, "answer2");
+		await flush();
+		expect(mailbox.check({ id: id2 }).tasks[0]?.status).toBe("done");
+		expect(mailbox.check({ id: id2 }).tasks[0]?.text).toBe("answer2");
 	});
 
 	it("agent_start advances the FIFO head to running", async () => {
@@ -337,6 +377,7 @@ describe("ExploreMailbox", () => {
 		};
 		const mailbox = new ExploreMailbox(CTX, failingDeps);
 		const { id } = await mailbox.ask("q");
+		await flush();
 		const result = mailbox.check({ id });
 		expect(result.tasks[0]?.status).toBe("error");
 		expect(result.tasks[0]?.error).toBe("no model");
