@@ -128,6 +128,7 @@ const PLAN_ONLY_TOOLS = [
 	"ls",
 	"websearch",
 	"webfetch",
+	"ask",
 ] as const;
 
 /** Glyphs shown next to a phase in the widget for each status. */
