@@ -91,6 +91,10 @@ export class DelegateAgents {
 		timeoutMs: number,
 		question: string,
 	): Promise<string> {
+		// Tracks whether we passed the spawn phase. Errors before this flag
+		// is set may be concurrent-spawn races; errors after are execution
+		// failures that should always reset the pool.
+		let pastSpawn = false;
 		try {
 			if (!this.pool.has(id)) {
 				const resolved = await resolveModel(this.ctx, {
@@ -114,16 +118,31 @@ export class DelegateAgents {
 				return `[${id}: agent failed to start]`;
 			}
 
+			pastSpawn = true;
 			await agent.prompt(question);
 			await agent.waitForIdle(timeoutMs);
 			return (await agent.getLastText()) ?? `[${id}: no response]`;
 		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			// Race guard: if we failed before running the agent and another
+			// concurrent spawn already put the agent in the pool, reuse it.
+			if (!pastSpawn && this.pool.has(id)) {
+				const existing = this.pool.get(id);
+				if (existing) {
+					try {
+						await existing.prompt(question);
+						await existing.waitForIdle(timeoutMs);
+						return (await existing.getLastText()) ?? `[${id}: no response]`;
+					} catch {
+						// Genuine failure — fall through to pool reset.
+					}
+				}
+			}
 			// Reset the pool so the next call gets a clean slate. Both
 			// agents are lost, but crashes are rare and a fresh start is
 			// safer than leaving a half-dead process in the pool.
 			void this.pool.dispose().catch(() => {});
 			this.pool = new SubagentPool();
-			const msg = err instanceof Error ? err.message : String(err);
 			return `[${id} error: ${msg}]`;
 		}
 	}
