@@ -135,7 +135,7 @@ export function fetchReviewComments(
 // ---- Copilot detection ----------------------------------------------
 
 /** Canonical bot login prefix — handles both cloud and enterprise variants. */
-const COPILOT_LOGIN_PREFIX = "copilot";
+export const COPILOT_LOGIN_PREFIX = "copilot";
 
 export type CopilotReviewExpectation =
 	/** Review already posted — no need to poll. */

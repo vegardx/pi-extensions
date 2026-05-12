@@ -14,6 +14,7 @@ import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import {
 	type BotReview,
+	COPILOT_LOGIN_PREFIX,
 	checkCopilotExpectation,
 	fetchBotReviews,
 	fetchReviewComments,
@@ -43,8 +44,6 @@ const COPILOT_PROMPT = join(
 	"reference",
 	"copilot-review-agent.md",
 );
-
-const COPILOT_LOGIN_PREFIX = "copilot";
 
 // ---- Helpers ---------------------------------------------------------
 
@@ -277,7 +276,7 @@ export async function runCopilotTriage(
 
 	// 6. Resolve the background model.
 	const resolved = await resolveModel(ctx, {
-		name: "triage-copilot",
+		name: "triage",
 		tier: "normal",
 		set: "primary",
 	});

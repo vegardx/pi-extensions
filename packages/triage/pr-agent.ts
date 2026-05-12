@@ -125,6 +125,12 @@ export async function handleMergeDecision(
 ): Promise<void> {
 	if (!ctx.hasUI) return;
 
+	const ownerRepo = getOwnerRepo(cwd);
+	if (!ownerRepo) {
+		ctx.ui.notify(`triage: could not resolve owner/repo for ${cwd}`, "error");
+		return;
+	}
+
 	// Quick CI status check.
 	const checks = sh("gh", ["pr", "checks", String(pr.number)], cwd);
 	const checkSummary = checks.ok
@@ -172,7 +178,7 @@ export async function handleMergeDecision(
 				"gh",
 				[
 					"api",
-					`repos/${getOwnerRepo(cwd)}`,
+					`repos/${ownerRepo}`,
 					"-X",
 					"PATCH",
 					"-f",
@@ -283,7 +289,7 @@ export async function runPrsTriage(ctx: ExtensionContext): Promise<void> {
 
 	// 6. Resolve the background model.
 	const resolved = await resolveModel(ctx, {
-		name: "triage-pr",
+		name: "triage",
 		tier: "normal",
 		set: "primary",
 	});

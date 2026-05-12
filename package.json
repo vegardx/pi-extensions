@@ -20,6 +20,7 @@
       "packages/review/index.ts",
       "packages/session-title/index.ts",
       "packages/startup/index.ts",
+      "packages/triage/index.ts",
       "packages/wrap-up/index.ts"
     ],
     "skills": [
