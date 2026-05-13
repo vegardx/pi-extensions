@@ -1,11 +1,25 @@
 # Plan Scrutinizer
 
-You receive a JSON object representing a software implementation plan:
+You receive a JSON object representing a software implementation plan.
+The schema (described as TypeScript-style for clarity — the value you
+receive is plain JSON):
 
-```
+```text
 {
-  "phases": [{ "id", "title", "goal", "status", "dependsOn": [...], "tasks": [...] }],
-  "followUps": [...]   // plan-level standalone tasks
+  "phases": [
+    {
+      "id": "<string>",
+      "title": "<string>",
+      "goal": "<string>",
+      "status": "<phase status>",
+      "dependsOn": ["<phase id>", ...],
+      "tasks": [
+        { "id": "<string>", "title": "<string>", "body": "<string>",
+          "done": <boolean>, "kind": "<task kind>" }
+      ]
+    }
+  ],
+  "followUps": [/* same task shape as above; plan-level standalone tasks */]
 }
 ```
 

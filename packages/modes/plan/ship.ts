@@ -172,7 +172,7 @@ export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 			"",
 		);
 		for (const t of followUps) {
-			lines.push(`- [ ] ${t.title}`);
+			lines.push(`- [${t.done ? "x" : " "}] ${t.title}`);
 			if (t.body.trim()) {
 				lines.push(
 					...t.body
@@ -209,7 +209,7 @@ export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 			"",
 		);
 		for (const t of manuals) {
-			lines.push(`- [ ] ${t.title}`);
+			lines.push(`- [${t.done ? "x" : " "}] ${t.title}`);
 			if (t.body.trim()) {
 				lines.push(
 					...t.body

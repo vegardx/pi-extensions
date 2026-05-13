@@ -200,6 +200,36 @@ describe("renderPrBody", () => {
 		expect(body).not.toContain("## Open questions");
 		expect(body).not.toContain("## Manual verification");
 	});
+
+	it("renders done state for follow-ups and manuals (consistent with /park)", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tasks: [
+					{
+						id: "f1",
+						title: "already filed as #99",
+						body: "",
+						done: true,
+						kind: "followUp",
+						createdAt: now,
+						updatedAt: now,
+					},
+					{
+						id: "m1",
+						title: "reviewer ran the smoke test",
+						body: "",
+						done: true,
+						kind: "manual",
+						createdAt: now,
+						updatedAt: now,
+					},
+				],
+			}),
+		);
+		expect(body).toContain("- [x] already filed as #99");
+		expect(body).toContain("- [x] reviewer ran the smoke test");
+	});
 });
 
 describe("shipPhase", () => {
