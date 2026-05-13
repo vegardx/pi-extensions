@@ -276,9 +276,10 @@ export function registerPlanTools(
 			"A phase has a short title, a one-line goal, and a list of tasks. " +
 				"Use plan_task to add tasks to a phase.",
 			"Phases form a chain via `dependsOn` (at most one parent per phase). " +
-				"`phases[]` order is cosmetic; set `dependsOn: ['<previousPhaseId>']` " +
-				"on add to encode the dependency. Independent chains can ship in " +
-				"parallel.",
+				"`phases[]` order is cosmetic. On `add`, `dependsOn` defaults to " +
+				"the last phase in the plan (linear chain). Pass `dependsOn` " +
+				"explicitly to fork (`['<earlierPhaseId>']`) or to declare a new " +
+				"root (`[]`). Independent chains can ship in parallel.",
 			"Status transitions are gated by the state machine. The agent should " +
 				"normally not set status directly \u2014 modes' /implement, /ship, and " +
 				"/sync handle transitions automatically.",
@@ -373,7 +374,18 @@ export function registerPlanTools(
 							details: { error: "duplicate phase id" },
 						};
 					}
-					const dependsOn = canonicaliseDependsOn(plan, params.dependsOn ?? []);
+					const dependsOn = canonicaliseDependsOn(
+						plan,
+						// Ergonomic default: chain new phases off the last existing
+						// phase. Plans are linear by default; if the user wants a
+						// fork, they pass `dependsOn` explicitly. Empty plans get
+						// `[]` (root). An explicit `dependsOn: []` overrides the
+						// default (allows declaring a sibling root in a forest).
+						params.dependsOn ??
+							(plan.phases.length > 0
+								? [plan.phases[plan.phases.length - 1].id]
+								: []),
+					);
 					const depErr = validateDependsOn(plan, id, dependsOn);
 					if (depErr) {
 						return {
