@@ -212,8 +212,9 @@ export interface Phase {
 	 * explicitly takes over.
 	 *
 	 * Liveness is decided by the recorded session's file mtime
-	 * (see `isDriverLive` in storage). A missing session file is
-	 * treated as stale, so crashed sessions don't block forever.
+	 * (see `evaluateClaim` in `./driver-claim.ts`). A missing session
+	 * file is treated as stale, so crashed sessions don't block
+	 * forever.
 	 *
 	 * Optional: phases that have never been activated have no
 	 * driver, and v1 plans carry no driver field at all.

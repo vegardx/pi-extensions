@@ -4801,7 +4801,7 @@ export default function (pi: ExtensionAPI) {
 			const raw = args ?? "";
 			const takeover = /(?:^|\s)--takeover(?:\s|$)/.test(raw);
 			const description =
-				raw.replace(/(?:^|\s)--takeover(?=\s|$)/, "").trim() || null;
+				raw.replace(/(?:^|\s)--takeover(?=\s|$)/g, "").trim() || null;
 
 			if (!isGitRepo(ctx.cwd)) {
 				const { mode: implementMode, valid: implementValid } =

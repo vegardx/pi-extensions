@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1287,6 +1293,16 @@ describe("withPlanLock", () => {
 		await expect(
 			withPlanLock("does-not-exist", () => "noop"),
 		).rejects.toBeInstanceOf(PlanNotFoundError);
+	});
+
+	it("does not leak an empty placeholder file when load fails", async () => {
+		// withPlanLock touches an empty plan.json so proper-lockfile has
+		// something to lock; on the failure path that placeholder must be
+		// cleaned up so plansRoot doesn't fill with empty plan dirs.
+		await expect(
+			withPlanLock("missing-plan", () => "noop"),
+		).rejects.toBeInstanceOf(PlanNotFoundError);
+		expect(existsSync(join(tmp, "missing-plan", "plan.json"))).toBe(false);
 	});
 
 	it("releases the lock when the mutator throws", async () => {

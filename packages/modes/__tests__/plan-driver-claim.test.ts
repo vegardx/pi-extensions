@@ -116,6 +116,20 @@ describe("evaluateClaim", () => {
 		});
 	});
 
+	it("clamps ageMs to 0 when the session file's mtime is in the future (clock skew)", () => {
+		// touchSessionFile with a negative ageMs writes a future mtime.
+		const sessionFile = touchSessionFile("future.jsonl", -10_000);
+		const phase = makePhase({
+			driverSessionId: "other",
+			driverSessionFile: sessionFile,
+		});
+		const decision = evaluateClaim(phase, "self-1");
+		expect(decision.kind).toBe("occupied");
+		if (decision.kind === "occupied") {
+			expect(decision.ageMs).toBeGreaterThanOrEqual(0);
+		}
+	});
+
 	it("treats missing self id as 'never matches' — claim is occupied/stale by other id", () => {
 		const sessionFile = touchSessionFile("live.jsonl", 5_000);
 		const phase = makePhase({

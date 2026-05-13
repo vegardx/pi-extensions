@@ -77,7 +77,11 @@ export function evaluateClaim(
 	let ageMs: number;
 	try {
 		const stat = statSync(sessionFile);
-		ageMs = now - stat.mtimeMs;
+		// Clamp to 0: a session file's mtime can be slightly in the future
+		// due to clock skew or FS timestamp granularity. A negative age
+		// otherwise propagates into user-facing strings like "active -1m
+		// ago".
+		ageMs = Math.max(0, now - stat.mtimeMs);
 	} catch {
 		return {
 			kind: "stale",

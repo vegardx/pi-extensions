@@ -19,6 +19,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -218,6 +219,19 @@ const LOCK_STALE_MS = 30_000;
  * spin briefly with `Atomics.wait` for cross-process contention.
  * Same parameters as `LOCK_RETRIES`.
  */
+/**
+ * proper-lockfile signals contention with `code: "ELOCKED"`. Other
+ * errors (permission denied, ENOENT, …) shouldn't be retried — they
+ * mean the call won't succeed under any timeout.
+ */
+function isContentionError(err: unknown): boolean {
+	return (
+		typeof err === "object" &&
+		err !== null &&
+		(err as { code?: unknown }).code === "ELOCKED"
+	);
+}
+
 function lockSyncWithRetry(path: string): () => void {
 	const { retries, minTimeout, maxTimeout } = LOCK_RETRIES;
 	let lastErr: unknown;
@@ -226,6 +240,7 @@ function lockSyncWithRetry(path: string): () => void {
 			return lockSync(path, { stale: LOCK_STALE_MS });
 		} catch (err) {
 			lastErr = err;
+			if (!isContentionError(err)) throw err;
 			if (attempt === retries) break;
 			const backoff = Math.min(maxTimeout, minTimeout * 2 ** attempt);
 			const sab = new SharedArrayBuffer(4);
@@ -249,8 +264,13 @@ function ensurePlanDir(slug: string): void {
 /**
  * Thrown by `withPlanLock` when the requested plan slug doesn't
  * resolve to a loadable plan on disk. Distinct from a generic Error
- * so callers can branch on missing-vs-corrupt without parsing
- * messages.
+ * so callers can branch on "plan unusable" without parsing messages.
+ *
+ * Note: `loadPlan` returns `null` for both missing files and files
+ * that fail to parse as v1/v2 plan JSON. This error therefore covers
+ * both cases ("missing or unloadable"). If a caller needs to
+ * distinguish, check `existsSync(planFile(slug))` separately before
+ * entering `withPlanLock`.
  */
 export class PlanNotFoundError extends Error {
 	constructor(public readonly slug: string) {
@@ -284,8 +304,8 @@ export class PlanStaleError extends Error {
 /**
  * Run `mutator` with exclusive access to the plan file. Loads the
  * plan inside the lock (post-migration), passes it to the mutator,
- * persists whatever the mutator returns or the in-place mutated
- * plan, releases the lock — even on throw.
+ * persists the in-place mutated plan, releases the lock — even on
+ * throw.
  *
  * Mutator contract:
  *   - Receives the loaded plan. Free to mutate in place.
@@ -293,8 +313,13 @@ export class PlanStaleError extends Error {
  *     meaningful; this helper does NOT auto-bump (callers may want
  *     to skip a bump for read-only paths or compute their own
  *     timestamp).
- *   - Returns whatever value should be returned to the caller.
+ *   - Returns the value to be returned to the caller. Returning a
+ *     replacement plan object is NOT supported — the helper writes
+ *     back the loaded `plan` reference. Mutate in place.
  *   - May be async.
+ *   - When `mutator` returns explicitly with `save: false`, the lock
+ *     is released without writing. Useful for branches that decide
+ *     mid-mutation that no save is needed.
  *   - When `mutator` returns explicitly with `save: false`, the lock
  *     is released without writing. Useful for branches that decide
  *     mid-mutation that no save is needed.
@@ -316,18 +341,37 @@ export async function withPlanLock<T>(
 	assertValidSlug(slug);
 	ensurePlanDir(slug);
 	const path = planFile(slug);
-	if (!existsSync(path)) {
-		// Touch an empty placeholder so proper-lockfile can lock it.
-		// Deleted again on the failure path below if loadPlan rejects.
+	// Track whether we created the placeholder so we can clean it up if
+	// loadPlan fails below — leaving an empty file would make planExists()
+	// report true while loadPlan() keeps returning null.
+	const createdPlaceholder = !existsSync(path);
+	if (createdPlaceholder) {
+		// Touch an empty placeholder so proper-lockfile has something to
+		// lock. Deleted on the failure path if the load doesn't succeed.
 		writeFileSync(path, "", "utf8");
 	}
-	const release = await lockAsync(path, {
-		retries: LOCK_RETRIES,
-		stale: LOCK_STALE_MS,
-	});
+	let release: () => Promise<void>;
+	try {
+		release = await lockAsync(path, {
+			retries: LOCK_RETRIES,
+			stale: LOCK_STALE_MS,
+		});
+	} catch (err) {
+		if (createdPlaceholder && existsSync(path)) {
+			try {
+				unlinkSync(path);
+			} catch {
+				// Best effort — if we can't unlink, leak the empty file rather
+				// than mask the original lock-acquisition error.
+			}
+		}
+		throw err;
+	}
+	let loadedOk = false;
 	try {
 		const plan = loadPlan(slug);
 		if (!plan) throw new PlanNotFoundError(slug);
+		loadedOk = true;
 		const out = await mutator(plan);
 		if (
 			out &&
@@ -342,6 +386,13 @@ export async function withPlanLock<T>(
 		return out as T;
 	} finally {
 		await release();
+		if (!loadedOk && createdPlaceholder && existsSync(path)) {
+			try {
+				unlinkSync(path);
+			} catch {
+				// Best effort.
+			}
+		}
 	}
 }
 
