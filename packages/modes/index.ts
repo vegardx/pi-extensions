@@ -88,6 +88,7 @@ import {
 } from "./plan/park-bodies.js";
 import {
 	classifyImplementContext,
+	type ImplementContext,
 	planPickerView,
 	shouldFirePicker,
 	shouldOfferShiftTabPicker,
@@ -110,6 +111,7 @@ import {
 	type Plan,
 	type Phase as PlanPhase,
 	planImplementBranch,
+	readyPhases,
 	repoNameFromPath,
 	slugify,
 	type Task,
@@ -1063,9 +1065,20 @@ export default function (pi: ExtensionAPI) {
 
 		const MAX_LINE = 60;
 		const lines: string[] = [];
+		// Self vs peer driver detection: a phase claimed by another live
+		// session is annotated so the user understands why the local
+		// auto-loop won't pick it up.
+		const selfSessionId = ctx.sessionManager.getSessionId();
 		for (const phase of plan.phases) {
 			const statusGlyph = STATUS_GLYPH[phase.status] ?? "○";
-			const title = truncateToWidth(phase.title, MAX_LINE - 6);
+			const peerSuffix =
+				phase.driverSessionId && phase.driverSessionId !== selfSessionId
+					? ` [peer]`
+					: "";
+			const title = truncateToWidth(
+				`${phase.title}${peerSuffix}`,
+				MAX_LINE - 6,
+			);
 			lines.push(`${statusGlyph} ${title}`);
 			// Show tasks only for phases with a worktree (active or needs-attention)
 			if (WORKTREE_STATUSES.includes(phase.status)) {
@@ -1625,25 +1638,69 @@ export default function (pi: ExtensionAPI) {
 
 		// `doShip` mutates the plan in place; re-read so we see the new
 		// status of the just-shipped phase before deciding whether to
-		// advance. Single-driver auto loop only walks ITS chain: chainHead
-		// returns the next non-shipped descendant of the just-shipped
-		// phase. Independent chains belong to other drivers (Phase 5).
+		// advance.
+		//
+		// Multi-driver auto: a driver owns its chain. After shipping,
+		// walk to chainHead first — staying on the same chain is the
+		// natural continuation and a peer driver wouldn't be working it
+		// (their own chain is independent). If the chain is exhausted,
+		// scan for ANY unclaimed-and-ready chain head elsewhere in the
+		// plan and adopt it. If only blocked or peer-owned phases
+		// remain, exit quietly with a reason — the user (or another
+		// driver) takes it from here.
 		const refreshed = currentPlan();
 		if (!refreshed || !completedPhase) return;
 		const next = chainHead(refreshed, completedPhase);
-		if (!next) return;
-		if (!isPhaseReady(refreshed, next)) {
-			// Chain head exists but isn't ready — parent is abandoned/missing
-			// or the user reshuffled dependsOn. End the auto loop quietly
-			// with a reason; do not force-activate.
-			const reason =
-				blockedReason(refreshed, next) ?? `\`${next.id}\` not ready`;
-			notify(ctx, `auto: ${reason} — stopping here.`, "info");
+		const selfSessionId = ctx.sessionManager.getSessionId();
+		if (next) {
+			if (!isPhaseReady(refreshed, next)) {
+				// Chain head exists but isn't ready — parent is
+				// abandoned/missing or the user reshuffled dependsOn. End
+				// the auto loop quietly with a reason; do not force-activate.
+				const reason =
+					blockedReason(refreshed, next) ?? `\`${next.id}\` not ready`;
+				notify(ctx, `auto: ${reason} — stopping here.`, "info");
+				return;
+			}
+			const decision = evaluateClaim(next, selfSessionId);
+			if (decision.kind === "occupied") {
+				notify(
+					ctx,
+					`auto: next phase \`${next.id}\` is being driven by session ${decision.sessionId} — stopping here.`,
+					"info",
+				);
+				return;
+			}
+			notify(ctx, `auto: advancing to Phase \`${next.id}\`…`, "info");
+			// Pass targetPhaseId so this branch deterministically advances
+			// to the chain successor; without it, classifyImplementContext
+			// could pick a different ready phase across parallel chains.
+			await doImplement(ctx, null, "auto", false, next.id);
 			return;
 		}
 
-		notify(ctx, `auto: advancing to Phase \`${next.id}\`…`, "info");
-		await doImplement(ctx, null, "auto");
+		// Chain exhausted. Try to adopt another chain whose head is ready
+		// and not actively driven by a peer. Stale claims (TTL-expired) and
+		// own-claims are eligible — only live peer claims block adoption.
+		const candidates = readyPhases(refreshed).filter((p) => {
+			const d = evaluateClaim(p, selfSessionId);
+			return d.kind !== "occupied";
+		});
+		const adopt = candidates[0];
+		if (!adopt) {
+			notify(
+				ctx,
+				"auto: chain complete — no ready chain heads available to adopt.",
+				"info",
+			);
+			return;
+		}
+		notify(
+			ctx,
+			`auto: chain complete — adopting Phase \`${adopt.id}\`…`,
+			"info",
+		);
+		await doImplement(ctx, null, "auto", false, adopt.id);
 	}
 
 	async function runPostExecPicker(ctx: ExtensionContext): Promise<void> {
@@ -2385,6 +2442,7 @@ export default function (pi: ExtensionAPI) {
 		descriptionArg: string | null,
 		implementMode: ImplementMode = "auto",
 		takeover = false,
+		targetPhaseId: string | null = null,
 	): Promise<void> {
 		if (!modeState) return;
 
@@ -2418,7 +2476,59 @@ export default function (pi: ExtensionAPI) {
 		// flip it to `active`. The branch comes from the phase, not from
 		// the description — so /ship has a clear per-phase boundary.
 		const plan = currentPlan();
-		const classified = classifyImplementContext(plan);
+		// `/implement <phaseId>` routes to a specific phase, bypassing the
+		// auto-picker. Validates the id, that the phase isn't terminal, and
+		// that the dependsOn chain isn't blocked. Adoption guard still fires
+		// downstream so a peer's claim is respected unless --takeover is set.
+		let classified: ImplementContext;
+		if (targetPhaseId) {
+			if (!plan) {
+				notify(
+					ctx,
+					`/implement \`${targetPhaseId}\`: no active plan in this session. Run \`/plan\` first.`,
+					"warning",
+				);
+				return;
+			}
+			const target = plan.phases.find((p) => p.id === targetPhaseId);
+			if (!target) {
+				notify(
+					ctx,
+					`/implement \`${targetPhaseId}\`: no such phase in plan \`${plan.slug}\`.`,
+					"warning",
+				);
+				return;
+			}
+			if (TERMINAL_STATUSES.includes(target.status)) {
+				notify(
+					ctx,
+					`phase \`${targetPhaseId}\` is ${target.status} — nothing more to implement here.`,
+					"warning",
+				);
+				return;
+			}
+			// In-flight (active / needs-attention / in-review / ready-to-ship)
+			// or planned-but-blocked phases are still legal targets when the
+			// caller passed an explicit id — the user / orchestrator is
+			// asserting they know what they're doing. The adoption guard
+			// downstream handles peer claims; isPhaseReady-type policy applies
+			// only to the auto-picker.
+			if (target.status === "planned") {
+				const reason = blockedReason(plan, target);
+				if (reason) {
+					notify(
+						ctx,
+						`phase \`${targetPhaseId}\` is not ready: ${reason}. ` +
+							`Edit dependsOn (plan_phase update) to unblock, or wait for the predecessor to ship.`,
+						"warning",
+					);
+					return;
+				}
+			}
+			classified = { kind: "use-phase", phase: target };
+		} else {
+			classified = classifyImplementContext(plan);
+		}
 		let branch: string | null;
 		let phase: PlanPhase | null = null;
 		let branchPlan: ImplementBranchPlan | null = null;
@@ -4784,6 +4894,8 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Sync to the default branch, create a feature branch, and switch to auto mode. " +
 			"Optionally provide a description; otherwise uses the current plan. " +
+			"Pass an exact phase id (or `--phase <id>`) to target a specific phase — " +
+			"useful when running multiple drivers across independent chains. " +
 			"Pass `--takeover` to override another session's claim on the active phase.",
 		handler: async (args, ctx) => {
 			if (modeState?.mode === "hack") {
@@ -4794,14 +4906,46 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			// Strip optional `--takeover` flag (anywhere in the args) before
-			// using the rest as the free-form description. Accepted positions:
-			// `/implement --takeover`, `/implement --takeover do the thing`,
-			// `/implement do the thing --takeover`.
+			// Strip optional `--takeover` flag (anywhere in the args), then
+			// resolve a phase target. Accepts:
+			//   `/implement <phaseId>` — first token must exactly match a phase
+			//      id in the active plan.
+			//   `/implement --phase <phaseId>` — explicit form, never
+			//      ambiguous with description text.
+			// The leftover after stripping the flag and id is treated as the
+			// free-form description (existing behaviour).
 			const raw = args ?? "";
 			const takeover = /(?:^|\s)--takeover(?:\s|$)/.test(raw);
-			const description =
-				raw.replace(/(?:^|\s)--takeover(?=\s|$)/g, "").trim() || null;
+			let stripped = raw.replace(/(?:^|\s)--takeover(?=\s|$)/g, " ").trim();
+			let targetPhaseId: string | null = null;
+			const phaseFlag = stripped.match(/(?:^|\s)--phase\s+(\S+)/);
+			if (phaseFlag) {
+				const captured = phaseFlag[1] ?? "";
+				// Reject when --phase consumed another flag (e.g.
+				// `/implement --phase --takeover`). Treat the whole input as
+				// description in that case so the user gets a normal error
+				// rather than a baffling "no such phase \`--takeover\`".
+				if (captured.length > 0 && !captured.startsWith("--")) {
+					targetPhaseId = captured;
+					stripped = stripped.replace(/(?:^|\s)--phase\s+\S+/, " ").trim();
+				}
+			} else if (stripped.length > 0) {
+				// Bare-id form: only adopt as a target if the first token
+				// exactly matches a phase id in the current plan. Otherwise
+				// keep treating the whole string as a description so legacy
+				// `/implement <free text>` invocations still work.
+				const firstToken = stripped.split(/\s+/)[0] ?? "";
+				const plan = currentPlan();
+				if (
+					plan &&
+					firstToken &&
+					plan.phases.some((p) => p.id === firstToken)
+				) {
+					targetPhaseId = firstToken;
+					stripped = stripped.slice(firstToken.length).trim();
+				}
+			}
+			const description = stripped.length > 0 ? stripped : null;
 
 			if (!isGitRepo(ctx.cwd)) {
 				const { mode: implementMode, valid: implementValid } =
@@ -4868,7 +5012,13 @@ export default function (pi: ExtensionAPI) {
 					"warning",
 				);
 			}
-			await doImplement(ctx, description, implementMode, takeover);
+			await doImplement(
+				ctx,
+				description,
+				implementMode,
+				takeover,
+				targetPhaseId,
+			);
 		},
 	});
 

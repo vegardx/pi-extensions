@@ -528,4 +528,18 @@ describe("plan_view markdown rendering", () => {
 		expect(text).toContain("## Follow-ups");
 		expect(text).toContain("[~] **Tell support**");
 	});
+
+	it("shows driver-session prefix on phases that carry a claim", async () => {
+		await call("plan_phase", { action: "add", title: "Owned" });
+		// Inject a driver claim by reaching into the saved plan; the
+		// claim normally arrives via doImplement, which isn't exercised
+		// in the tools test.
+		const plan = loadPlan("tools-test");
+		if (!plan) throw new Error("plan missing");
+		plan.phases[0]!.driverSessionId = "abcdef0123456789";
+		savePlan(plan);
+		const r = await call("plan_view", {});
+		const text = (r.content[0] as any).text as string;
+		expect(text).toContain("driver: `abcdef01`");
+	});
 });

@@ -95,8 +95,11 @@ function planSummaryMarkdown(plan: Plan): string {
 	} else {
 		for (const phase of plan.phases) {
 			const issueRef = phase.issueNumber ? ` \u2014 #${phase.issueNumber}` : "";
+			const driverRef = phase.driverSessionId
+				? ` \u2014 driver: \`${phase.driverSessionId.slice(0, 8)}\``
+				: "";
 			lines.push(
-				`## ${phase.title} \`${phase.id}\` [${phase.status}]${issueRef}`,
+				`## ${phase.title} \`${phase.id}\` [${phase.status}]${issueRef}${driverRef}`,
 			);
 			if (phase.dependsOn && phase.dependsOn.length > 0) {
 				lines.push("");
