@@ -152,17 +152,18 @@ function normaliseV2(plan: Plan): Plan {
 	const phases = plan.phases.map((phase) => {
 		let phaseMutated = false;
 		let tasks = phase.tasks;
+		let dependsOn = phase.dependsOn;
 		if (phase.tasks.some((t) => t.kind === undefined)) {
 			tasks = phase.tasks.map(normaliseTask);
 			phaseMutated = true;
 		}
-		if (phase.dependsOn === undefined) {
+		if (dependsOn === undefined) {
+			dependsOn = [];
 			phaseMutated = true;
-			return { ...phase, tasks, dependsOn: [] };
 		}
 		if (phaseMutated) {
 			mutated = true;
-			return { ...phase, tasks };
+			return { ...phase, tasks, dependsOn };
 		}
 		return phase;
 	});
