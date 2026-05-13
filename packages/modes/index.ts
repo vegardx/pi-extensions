@@ -73,6 +73,11 @@ import {
 } from "./plan/completion.js";
 import { DelegateAgents } from "./plan/delegate-tools.js";
 import {
+	claimPhase,
+	evaluateClaim,
+	releasePhase,
+} from "./plan/driver-claim.js";
+import {
 	ExploreMailbox,
 	type ExploreNotification,
 	type ExploreTask,
@@ -2379,6 +2384,7 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		descriptionArg: string | null,
 		implementMode: ImplementMode = "auto",
+		takeover = false,
 	): Promise<void> {
 		if (!modeState) return;
 
@@ -2451,6 +2457,41 @@ export default function (pi: ExtensionAPI) {
 			phase = classified.phase;
 			branch = phase.branch;
 
+			// Driver-claim adoption guard. Refuse to adopt a phase already
+			// being driven by another live session unless the user passed
+			// `--takeover`. A stale claim (missing session file or session
+			// quiet for >TTL) is silently broken — lets a crashed peer's
+			// in-flight phase be picked up without manual intervention.
+			const selfSessionId = ctx.sessionManager.getSessionId();
+			const decision = evaluateClaim(phase, selfSessionId);
+			if (decision.kind === "occupied" && !takeover) {
+				const ageMin = Math.round(decision.ageMs / 60_000);
+				notify(
+					ctx,
+					`phase \`${phase.id}\` is being driven by session ${decision.sessionId} ` +
+						`(active ${ageMin}m ago). Re-run with \`/implement --takeover\` to adopt it anyway, ` +
+						`or pick a different phase with \`/implement <phaseId>\`.`,
+					"warning",
+				);
+				modeState.stage = "planning";
+				persist();
+				return;
+			}
+			if (decision.kind === "stale") {
+				notify(
+					ctx,
+					`adopting phase \`${phase.id}\` from stale driver ${decision.sessionId} (${decision.reason}).`,
+					"info",
+				);
+			}
+			if (decision.kind === "occupied" && takeover) {
+				notify(
+					ctx,
+					`taking over phase \`${phase.id}\` from session ${decision.sessionId} (--takeover).`,
+					"warning",
+				);
+			}
+
 			// `git checkout -B <branch>` is destructive: if <branch> already
 			// exists, it resets it to HEAD (the default branch after
 			// syncToDefault). Re-running /implement on an in-flight phase
@@ -2519,6 +2560,12 @@ export default function (pi: ExtensionAPI) {
 				phase.status = "active";
 				phase.worktreePath = ctx.cwd;
 				phase.updatedAt = new Date().toISOString();
+				claimPhase(
+					phase,
+					ctx.sessionManager.getSessionId(),
+					ctx.sessionManager.getSessionFile() ?? undefined,
+					phase.updatedAt,
+				);
 				plan.updatedAt = phase.updatedAt;
 				savePlan(plan);
 				if (reconcileWorktrees(plan, ctx)) savePlan(plan);
@@ -2544,6 +2591,20 @@ export default function (pi: ExtensionAPI) {
 					`resumed phase ${phase.id} on ${branch} (${phase.status})`,
 					"info",
 				);
+				// Re-claim on resume: this session is now the live driver,
+				// regardless of whether the prior driver was self, stale, or
+				// just took over. Persisted on the next savePlan that already
+				// fires further down the lifecycle.
+				const now = new Date().toISOString();
+				claimPhase(
+					phase,
+					ctx.sessionManager.getSessionId(),
+					ctx.sessionManager.getSessionFile() ?? undefined,
+					now,
+				);
+				phase.updatedAt = now;
+				plan.updatedAt = now;
+				savePlan(plan);
 			}
 		} else {
 			// No plan at all — legacy description-derived branch. /implement
@@ -3231,8 +3292,10 @@ export default function (pi: ExtensionAPI) {
 				};
 				if (data.merged) {
 					phase.status = "shipped";
+					releasePhase(phase);
 				} else if (data.state === "CLOSED") {
 					phase.status = "abandoned";
+					releasePhase(phase);
 				}
 			} catch {
 				failed++;
@@ -4720,7 +4783,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("implement", {
 		description:
 			"Sync to the default branch, create a feature branch, and switch to auto mode. " +
-			"Optionally provide a description; otherwise uses the current plan.",
+			"Optionally provide a description; otherwise uses the current plan. " +
+			"Pass `--takeover` to override another session's claim on the active phase.",
 		handler: async (args, ctx) => {
 			if (modeState?.mode === "hack") {
 				notify(
@@ -4730,7 +4794,14 @@ export default function (pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const description = args?.trim() || null;
+			// Strip optional `--takeover` flag (anywhere in the args) before
+			// using the rest as the free-form description. Accepted positions:
+			// `/implement --takeover`, `/implement --takeover do the thing`,
+			// `/implement do the thing --takeover`.
+			const raw = args ?? "";
+			const takeover = /(?:^|\s)--takeover(?:\s|$)/.test(raw);
+			const description =
+				raw.replace(/(?:^|\s)--takeover(?=\s|$)/, "").trim() || null;
 
 			if (!isGitRepo(ctx.cwd)) {
 				const { mode: implementMode, valid: implementValid } =
@@ -4797,7 +4868,7 @@ export default function (pi: ExtensionAPI) {
 					"warning",
 				);
 			}
-			await doImplement(ctx, description, implementMode);
+			await doImplement(ctx, description, implementMode, takeover);
 		},
 	});
 
