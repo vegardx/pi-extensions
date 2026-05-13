@@ -2609,9 +2609,23 @@ export default function (pi: ExtensionAPI) {
 		if (!modeState) return;
 		modeState.branch = branch;
 		modeState.stage = "executing";
-		pi.setSessionName(branch);
-		setMode(implementMode, ctx);
-		persist();
+		// launchExecution may run inside `withSession` after `ctx.newSession()`
+		// or `ctx.switchSession()`, where the captured `pi` handle is
+		// invalidated. Route session-bound writes through `ctx` (the
+		// ReplacedSessionContext) instead. For non-replacement callers the
+		// same calls hit the live session manager, so this path is uniform.
+		// `appendSessionInfo` / `appendCustomEntry` exist on the full
+		// SessionManager but not on the public ReadonlySessionManager type
+		// `ctx.sessionManager` exposes — cast to the full type, matching the
+		// pattern used elsewhere in this file.
+		const sm = ctx.sessionManager as unknown as SessionManager;
+		sm.appendSessionInfo(branch);
+		if (modeState.mode === "plan") {
+			clearPlanTurnSnapshot();
+			disposeDelegateAgents(ctx);
+		}
+		modeState.mode = implementMode;
+		sm.appendCustomEntry(STATE_ENTRY, modeState satisfies ModeState);
 		updateWidget(ctx);
 
 		const tasks = activeTasks(plan);
@@ -2631,7 +2645,16 @@ export default function (pi: ExtensionAPI) {
 						: "Edit files, run tests, and stop when the change is clean."
 				}`;
 
-		pi.sendMessage(
+		// `ctx.sendMessage` is exposed by `ReplacedSessionContext`; fall back
+		// to the captured `pi` for non-withSession callers (no plan / no
+		// session control), where the captured handle is still active.
+		const sendMessage =
+			(
+				ctx as ExtensionContext & {
+					sendMessage?: typeof pi.sendMessage;
+				}
+			).sendMessage ?? pi.sendMessage;
+		sendMessage(
 			{
 				customType: EXT_ID,
 				content,
