@@ -1780,6 +1780,11 @@ export default function (pi: ExtensionAPI) {
 					break;
 				}
 				case "phase-blocked":
+					// Reserved for future worker-side emission. Today's
+					// `diffWorkerEvents` derives only started/shipped/complete
+					// from plan-status diffs; this branch is dormant until a
+					// worker can emit blocks (e.g. via the notify-tool path
+					// scaffolded in `worker-protocol.ts`).
 					notify(
 						ctx,
 						`fleet[${chainId.slice(0, 8)}] blocked on \`${notification.phaseId}\`: ${notification.reason}`,
@@ -1787,6 +1792,10 @@ export default function (pi: ExtensionAPI) {
 					);
 					break;
 				case "phase-error":
+					// Reachable: `FleetManager` synthesises this on worker
+					// spawn failure (no model configured, RPC startup error,
+					// etc.). Mid-run worker errors currently surface via the
+					// worker exiting without advancing the chain.
 					notify(
 						ctx,
 						`fleet[${chainId.slice(0, 8)}] error on \`${notification.phaseId}\`: ${notification.error}`,
