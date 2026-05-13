@@ -11,7 +11,11 @@ import {
 	workingTreeClean as defaultWorkingTreeClean,
 	type ShellResult,
 } from "../git.js";
-import type { Plan, Phase as PlanPhase } from "./schema.js";
+import {
+	effectiveTaskKind,
+	type Plan,
+	type Phase as PlanPhase,
+} from "./schema.js";
 import { effectiveWorktreePath } from "./worktree.js";
 
 export interface ShipOptions {
@@ -135,13 +139,89 @@ export function parsePrCreateOutput(
 export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 	const lines: string[] = [];
 	lines.push("## Goal", "", phase.goal || "_(no goal set)_", "");
-	if (phase.tasks.length > 0) {
-		lines.push("## Tasks", "");
-		for (const t of phase.tasks) {
+
+	// Split phase tasks by kind. Deliverables are the unit of work the PR
+	// is shipping; question / followUp / manual tasks are notes for the
+	// reviewer (open questions, follow-up work to schedule, manual smoke
+	// steps to run before merge). They live in their own sections so
+	// reviewers can scan without parsing intent from prose.
+	const deliverables = phase.tasks.filter(
+		(t) => effectiveTaskKind(t) === "deliverable",
+	);
+	const followUps = phase.tasks.filter(
+		(t) => effectiveTaskKind(t) === "followUp",
+	);
+	const questions = phase.tasks.filter(
+		(t) => effectiveTaskKind(t) === "question",
+	);
+	const manuals = phase.tasks.filter((t) => effectiveTaskKind(t) === "manual");
+
+	if (deliverables.length > 0) {
+		lines.push("## What this phase ships", "");
+		for (const t of deliverables) {
 			lines.push(`- [${t.done ? "x" : " "}] ${t.title}`);
 		}
 		lines.push("");
 	}
+
+	if (followUps.length > 0) {
+		lines.push(
+			"## Reviewer follow-ups",
+			"",
+			"Out of scope for this PR — file as issues or fold into a later phase:",
+			"",
+		);
+		for (const t of followUps) {
+			lines.push(`- [ ] ${t.title}`);
+			if (t.body.trim()) {
+				lines.push(
+					...t.body
+						.trim()
+						.split("\n")
+						.map((line) => `      ${line}`),
+				);
+			}
+		}
+		lines.push("");
+	}
+
+	if (questions.length > 0) {
+		lines.push("## Open questions", "", "Please weigh in before merge:", "");
+		for (const t of questions) {
+			lines.push(`- ${t.title}`);
+			if (t.body.trim()) {
+				lines.push(
+					...t.body
+						.trim()
+						.split("\n")
+						.map((line) => `    ${line}`),
+				);
+			}
+		}
+		lines.push("");
+	}
+
+	if (manuals.length > 0) {
+		lines.push(
+			"## Manual verification",
+			"",
+			"Steps the reviewer should run locally before merging:",
+			"",
+		);
+		for (const t of manuals) {
+			lines.push(`- [ ] ${t.title}`);
+			if (t.body.trim()) {
+				lines.push(
+					...t.body
+						.trim()
+						.split("\n")
+						.map((line) => `      ${line}`),
+				);
+			}
+		}
+		lines.push("");
+	}
+
 	if (phase.issueNumber) {
 		lines.push(`Closes #${phase.issueNumber}`);
 	}

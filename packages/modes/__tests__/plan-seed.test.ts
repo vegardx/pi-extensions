@@ -42,13 +42,14 @@ describe("renderPlanSeed", () => {
 				"## Plan: Test Plan (slug: test-plan)",
 				"- Phase `p-1` [active] — First: do the thing     ← THIS PHASE",
 				"",
-				"You are working on Phase `p-1`. Only execute its tasks. When all",
-				"tasks are done, run `/ship` — do NOT start the next phase.",
+				"You are working on Phase `p-1`. Only execute its deliverables. When",
+				"all deliverables are done, run `/ship` — do NOT start the next phase.",
+				"Notes are reviewer-facing and surface in the PR body; do not tick them.",
 			].join("\n"),
 		);
 	});
 
-	it("inlines tasks under the active phase with their done state", () => {
+	it("inlines deliverables under the active phase with their done state", () => {
 		const phase = makePhase({
 			id: "p-1",
 			title: "T",
@@ -75,9 +76,97 @@ describe("renderPlanSeed", () => {
 		});
 		const plan = makePlan([phase]);
 		const out = renderPlanSeed(plan, phase);
-		expect(out).toContain("  Tasks:");
+		expect(out).toContain(
+			"  Deliverables (your work; tick each as you finish):",
+		);
 		expect(out).toContain("    - [ ] first task");
 		expect(out).toContain("    - [x] second task");
+		expect(out).not.toContain("  Notes (informational");
+	});
+
+	it("renders non-deliverable tasks in a Notes section, not the deliverables list", () => {
+		const phase = makePhase({
+			id: "p-1",
+			status: "active",
+			tasks: [
+				{
+					id: "d",
+					title: "core change",
+					body: "",
+					done: false,
+					kind: "deliverable",
+					createdAt: "x",
+					updatedAt: "x",
+				},
+				{
+					id: "q",
+					title: "Drop legacy v1?",
+					body: "",
+					done: false,
+					kind: "question",
+					createdAt: "x",
+					updatedAt: "x",
+				},
+				{
+					id: "m",
+					title: "Smoke test",
+					body: "",
+					done: false,
+					kind: "manual",
+					createdAt: "x",
+					updatedAt: "x",
+				},
+				{
+					id: "f",
+					title: "Index by branch",
+					body: "",
+					done: false,
+					kind: "followUp",
+					createdAt: "x",
+					updatedAt: "x",
+				},
+			],
+		});
+		const plan = makePlan([phase]);
+		const out = renderPlanSeed(plan, phase);
+		expect(out).toContain(
+			"  Deliverables (your work; tick each as you finish):",
+		);
+		expect(out).toContain("    - [ ] core change");
+		expect(out).toContain("  Notes (informational; not for you to tick):");
+		expect(out).toContain("    - [?] Drop legacy v1? (question)");
+		expect(out).toContain("    - [!] Smoke test (manual)");
+		expect(out).toContain("    - [~] Index by branch (followUp)");
+		// Notes section uses kind markers, not done checkboxes.
+		expect(out).not.toContain("    - [ ] Drop legacy v1?");
+	});
+
+	it("renders plan-level follow-ups in their own block when present", () => {
+		const phase = makePhase({ id: "p-1", status: "active" });
+		const plan: Plan = {
+			...makePlan([phase]),
+			followUps: [
+				{
+					id: "pf",
+					title: "Cross-cutting note",
+					body: "",
+					done: false,
+					kind: "followUp",
+					createdAt: "x",
+					updatedAt: "x",
+				},
+			],
+		};
+		const out = renderPlanSeed(plan, phase);
+		expect(out).toContain("Plan-level follow-ups (not gating any phase):");
+		expect(out).toContain("  - [~] Cross-cutting note (followUp)");
+	});
+
+	it("omits the plan-level follow-ups block when followUps is empty", () => {
+		const phase = makePhase({ id: "p-1", status: "active" });
+		const plan = makePlan([phase]);
+		const out = renderPlanSeed(plan, phase);
+		expect(out).not.toContain("Plan-level follow-ups");
 	});
 
 	it("includes shipped phases' Summary blocks when present", () => {

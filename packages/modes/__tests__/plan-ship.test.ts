@@ -99,6 +99,107 @@ describe("renderPrBody", () => {
 		const body = renderPrBody(makePlan(), makePhase({ goal: "" }));
 		expect(body).toContain("_(no goal set)_");
 	});
+
+	it("renames Tasks section to 'What this phase ships' (deliverables only)", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tasks: [
+					{
+						id: "t-1",
+						title: "Ship me",
+						body: "",
+						done: true,
+						kind: "deliverable",
+						createdAt: now,
+						updatedAt: now,
+					},
+				],
+			}),
+		);
+		expect(body).toContain("## What this phase ships");
+		expect(body).toContain("- [x] Ship me");
+		expect(body).not.toContain("## Tasks");
+	});
+
+	it("separates followUps, questions, manual into reviewer-facing sections", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tasks: [
+					{
+						id: "d",
+						title: "core change",
+						body: "",
+						done: true,
+						kind: "deliverable",
+						createdAt: now,
+						updatedAt: now,
+					},
+					{
+						id: "q",
+						title: "Should we drop legacy v1?",
+						body: "v1 plans haven't been written in 6 months.",
+						done: false,
+						kind: "question",
+						createdAt: now,
+						updatedAt: now,
+					},
+					{
+						id: "f",
+						title: "Index in-flight plans by branch",
+						body: "",
+						done: false,
+						kind: "followUp",
+						createdAt: now,
+						updatedAt: now,
+					},
+					{
+						id: "m",
+						title: "Smoke-test on a v1 plan locally",
+						body: "",
+						done: false,
+						kind: "manual",
+						createdAt: now,
+						updatedAt: now,
+					},
+				],
+			}),
+		);
+		expect(body).toContain("## What this phase ships");
+		expect(body).toContain("- [x] core change");
+		expect(body).toContain("## Reviewer follow-ups");
+		expect(body).toContain("- [ ] Index in-flight plans by branch");
+		expect(body).toContain("## Open questions");
+		expect(body).toContain("- Should we drop legacy v1?");
+		expect(body).toContain("v1 plans haven't been written in 6 months.");
+		expect(body).toContain("## Manual verification");
+		expect(body).toContain("- [ ] Smoke-test on a v1 plan locally");
+		// Question shouldn't have a checkbox — it's not a checklist item.
+		expect(body).not.toContain("- [ ] Should we drop legacy v1?");
+	});
+
+	it("omits non-deliverable sections when there are no such tasks", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tasks: [
+					{
+						id: "d",
+						title: "only deliverable",
+						body: "",
+						done: true,
+						kind: "deliverable",
+						createdAt: now,
+						updatedAt: now,
+					},
+				],
+			}),
+		);
+		expect(body).not.toContain("## Reviewer follow-ups");
+		expect(body).not.toContain("## Open questions");
+		expect(body).not.toContain("## Manual verification");
+	});
 });
 
 describe("shipPhase", () => {
