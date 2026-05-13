@@ -82,6 +82,7 @@ import {
 	type ExploreNotification,
 	type ExploreTask,
 } from "./plan/explore-mailbox.js";
+import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import {
 	renderParentIssueBody,
 	renderPhaseIssueBody,
@@ -132,6 +133,7 @@ import {
 	decideFromChoice,
 	type TransitionDecision,
 } from "./plan/transition.js";
+import { isWorker } from "./plan/worker-protocol.js";
 import {
 	createWorktree,
 	removeWorktree,
@@ -1357,6 +1359,24 @@ export default function (pi: ExtensionAPI) {
 			return null;
 		}
 		if (!workingTreeClean(ctx.cwd)) {
+			if (isWorker()) {
+				notify(
+					ctx,
+					"worker: working tree dirty in `" +
+						ctx.cwd +
+						"` — aborting (orchestrator must reconcile)",
+					"error",
+				);
+				return null;
+			}
+			if (!ctx.hasUI) {
+				notify(
+					ctx,
+					"working tree dirty and no UI to confirm — aborting",
+					"error",
+				);
+				return null;
+			}
 			const proceed = await ctx.ui.confirm(
 				"Working tree is dirty",
 				"Uncommitted changes detected. Continue with checkout + pull anyway?",
@@ -1701,6 +1721,92 @@ export default function (pi: ExtensionAPI) {
 			"info",
 		);
 		await doImplement(ctx, null, "auto", false, adopt.id);
+	}
+
+	/**
+	 * Pattern X coordinator entry point. Spawns a `FleetManager`, which
+	 * spawns one worker subagent per independent chain. The orchestrator
+	 * blocks on the fleet's completion promise; on `agent_end` for any
+	 * worker, the manager re-evaluates the plan and fans out into
+	 * newly-unblocked chains.
+	 *
+	 * Fleet completion = no workers remain AND no ready chain heads
+	 * exist. The plan-completion check then surfaces in the parent
+	 * session as usual via the post-exec picker / plan-complete prompt.
+	 */
+	async function runFleetOrchestrator(ctx: ExtensionContext): Promise<void> {
+		const plan = currentPlan();
+		if (!plan) {
+			notify(
+				ctx,
+				"/implement --fanout: no active plan in this session. Run `/plan` first.",
+				"warning",
+			);
+			return;
+		}
+		const selfSessionId = ctx.sessionManager.getSessionId();
+		if (fleetWouldBeTrivial(plan, selfSessionId)) {
+			notify(
+				ctx,
+				"/implement --fanout: plan has fewer than two independent chains — falling back to single-driver `/implement`.",
+				"info",
+			);
+			await doImplement(ctx, null, "auto");
+			return;
+		}
+		notify(ctx, `fanout: spawning fleet for plan \`${plan.slug}\`…`, "info");
+		const fleet = new FleetManager(ctx, {
+			planSlug: plan.slug,
+			selfSessionId,
+		});
+		fleet.onEvent(({ chainId, notification }) => {
+			switch (notification.kind) {
+				case "phase-started":
+					notify(
+						ctx,
+						`fleet[${chainId.slice(0, 8)}] started \`${notification.phaseId}\``,
+						"info",
+					);
+					break;
+				case "phase-shipped": {
+					const pr = notification.prNumber
+						? ` (PR #${notification.prNumber})`
+						: "";
+					notify(
+						ctx,
+						`fleet[${chainId.slice(0, 8)}] shipped \`${notification.phaseId}\`${pr}`,
+						"info",
+					);
+					break;
+				}
+				case "phase-blocked":
+					notify(
+						ctx,
+						`fleet[${chainId.slice(0, 8)}] blocked on \`${notification.phaseId}\`: ${notification.reason}`,
+						"warning",
+					);
+					break;
+				case "phase-error":
+					notify(
+						ctx,
+						`fleet[${chainId.slice(0, 8)}] error on \`${notification.phaseId}\`: ${notification.error}`,
+						"error",
+					);
+					break;
+				case "chain-complete":
+					notify(ctx, `fleet[${chainId.slice(0, 8)}] chain complete✨`, "info");
+					break;
+			}
+		});
+		try {
+			await fleet.start();
+			notify(ctx, "fleet complete — no chains remain.", "info");
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			notify(ctx, `fleet error: ${msg}`, "error");
+		} finally {
+			await fleet.dispose();
+		}
 	}
 
 	async function runPostExecPicker(ctx: ExtensionContext): Promise<void> {
@@ -4896,7 +5002,9 @@ export default function (pi: ExtensionAPI) {
 			"Optionally provide a description; otherwise uses the current plan. " +
 			"Pass an exact phase id (or `--phase <id>`) to target a specific phase — " +
 			"useful when running multiple drivers across independent chains. " +
-			"Pass `--takeover` to override another session's claim on the active phase.",
+			"Pass `--takeover` to override another session's claim on the active phase. " +
+			"Pass `--fanout` from plan mode to spawn a fleet of worker subagents, one per " +
+			"independent chain (Pattern X).",
 		handler: async (args, ctx) => {
 			if (modeState?.mode === "hack") {
 				notify(
@@ -4904,6 +5012,19 @@ export default function (pi: ExtensionAPI) {
 					"/implement is plan/auto only — Shift+Tab back to plan first",
 					"warning",
 				);
+				return;
+			}
+			const raw = args ?? "";
+			if (/(?:^|\s)--fanout(?:\s|$)/.test(raw)) {
+				if (isWorker()) {
+					notify(
+						ctx,
+						"workers cannot fan out further — ignoring `--fanout`",
+						"warning",
+					);
+					return;
+				}
+				await runFleetOrchestrator(ctx);
 				return;
 			}
 			// Strip optional `--takeover` flag (anywhere in the args), then
@@ -4914,7 +5035,6 @@ export default function (pi: ExtensionAPI) {
 			//      ambiguous with description text.
 			// The leftover after stripping the flag and id is treated as the
 			// free-form description (existing behaviour).
-			const raw = args ?? "";
 			const takeover = /(?:^|\s)--takeover(?:\s|$)/.test(raw);
 			let stripped = raw.replace(/(?:^|\s)--takeover(?=\s|$)/g, " ").trim();
 			let targetPhaseId: string | null = null;
