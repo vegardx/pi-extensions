@@ -59,7 +59,18 @@ export function abandonNonTerminalPhases(
 	const archived: Phase[] = [];
 	const phases = plan.phases.map((phase): Phase => {
 		if (TERMINAL_STATUSES.includes(phase.status)) return phase;
-		const next: Phase = { ...phase, status: "abandoned", updatedAt: now };
+		// Drop driver claim on archive: the phase will never run again,
+		// so leaving a stale claim around would just be noise in plan
+		// inspections and confuse the adoption guard for any future plan
+		// that re-uses these slugs.
+		const next: Phase = {
+			...phase,
+			status: "abandoned",
+			updatedAt: now,
+		};
+		delete next.driverSessionId;
+		delete next.driverSessionFile;
+		delete next.driverClaimedAt;
 		archived.push(next);
 		return next;
 	});
@@ -191,6 +202,32 @@ export interface Phase {
 	 * session.
 	 */
 	sessionPath?: string;
+	/**
+	 * Identity of the pi session currently driving this phase. Set
+	 * when a session begins implementing the phase (status flips to
+	 * `active`); cleared when the phase enters a terminal status
+	 * (`shipped` / `abandoned`). Used for the multi-driver adoption
+	 * guard — a second session that tries to `/implement` the same
+	 * phase is refused unless the recorded driver is stale or the user
+	 * explicitly takes over.
+	 *
+	 * Liveness is decided by the recorded session's file mtime
+	 * (see `isDriverLive` in storage). A missing session file is
+	 * treated as stale, so crashed sessions don't block forever.
+	 *
+	 * Optional: phases that have never been activated have no
+	 * driver, and v1 plans carry no driver field at all.
+	 */
+	driverSessionId?: string;
+	/**
+	 * Filesystem path to the driving session's JSONL, captured
+	 * alongside `driverSessionId`. Used by the liveness check to
+	 * stat the session file's mtime. Optional because ephemeral
+	 * sessions and back-compat plans may not have it.
+	 */
+	driverSessionFile?: string;
+	/** ISO timestamp at which the driver claim was made. Cosmetic; for diagnostics. */
+	driverClaimedAt?: string;
 	/** GitHub issue number after /park; undefined before. */
 	issueNumber?: number;
 	tasks: Task[];

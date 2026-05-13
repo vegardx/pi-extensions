@@ -25,15 +25,19 @@ import {
 import {
 	_setPlansRootForTests,
 	activePlanForRepo,
+	assertPlanUnchanged,
 	deletePlan,
 	listPlans,
 	loadPlan,
 	migratePlan,
+	PlanNotFoundError,
+	PlanStaleError,
 	planExists,
 	plansForRepo,
 	plansForSession,
 	rebuildIndex,
 	savePlan,
+	withPlanLock,
 } from "../plan/storage.js";
 
 let tmp: string;
@@ -1259,5 +1263,158 @@ describe("blockedReason", () => {
 			],
 		});
 		expect(blockedReason(plan, plan.phases[0])).toContain("missing");
+	});
+});
+
+describe("withPlanLock", () => {
+	it("loads, mutates, and persists the plan in a single locked sequence", async () => {
+		const plan = makePlan({ slug: "lock-1", phases: [] });
+		savePlan(plan);
+
+		const result = await withPlanLock("lock-1", (p) => {
+			p.title = "Renamed";
+			p.updatedAt = "2026-06-01T00:00:00.000Z";
+			return "ok" as const;
+		});
+
+		expect(result).toBe("ok");
+		const reloaded = loadPlan("lock-1");
+		expect(reloaded?.title).toBe("Renamed");
+		expect(reloaded?.updatedAt).toBe("2026-06-01T00:00:00.000Z");
+	});
+
+	it("throws PlanNotFoundError when the slug doesn't resolve", async () => {
+		await expect(
+			withPlanLock("does-not-exist", () => "noop"),
+		).rejects.toBeInstanceOf(PlanNotFoundError);
+	});
+
+	it("releases the lock when the mutator throws", async () => {
+		savePlan(makePlan({ slug: "lock-2" }));
+
+		await expect(
+			withPlanLock("lock-2", () => {
+				throw new Error("boom");
+			}),
+		).rejects.toThrow("boom");
+
+		// If the lock leaked, this second call would hang waiting on it.
+		// The retry budget is bounded so a leak surfaces as a thrown
+		// "Lock file is already being held" — either way the test would
+		// fail. A clean release lets the second call complete promptly.
+		const result = await withPlanLock("lock-2", (p) => {
+			p.title = "After throw";
+			p.updatedAt = "2026-06-01T00:00:00.000Z";
+			return p.title;
+		});
+		expect(result).toBe("After throw");
+	});
+
+	it("supports async mutators", async () => {
+		savePlan(makePlan({ slug: "lock-3" }));
+
+		const result = await withPlanLock("lock-3", async (p) => {
+			await new Promise((r) => setTimeout(r, 5));
+			p.title = "Async edit";
+			p.updatedAt = "2026-06-01T00:00:00.000Z";
+			return p.title;
+		});
+
+		expect(result).toBe("Async edit");
+		expect(loadPlan("lock-3")?.title).toBe("Async edit");
+	});
+
+	it("skips the save when the mutator returns { save: false }", async () => {
+		savePlan(makePlan({ slug: "lock-4", title: "Original" }));
+
+		const result = await withPlanLock("lock-4", (p) => {
+			p.title = "Should not persist";
+			return { result: 42, save: false } as const;
+		});
+
+		expect(result).toBe(42);
+		expect(loadPlan("lock-4")?.title).toBe("Original");
+	});
+
+	it("serialises concurrent withPlanLock calls on the same slug", async () => {
+		savePlan(makePlan({ slug: "lock-5", phases: [] }));
+
+		const order: string[] = [];
+		const a = withPlanLock("lock-5", async (p) => {
+			order.push("a-start");
+			await new Promise((r) => setTimeout(r, 30));
+			p.title = "A";
+			p.updatedAt = "2026-06-01T00:00:01.000Z";
+			order.push("a-end");
+			return "a";
+		});
+		// Slight delay so a's lock is reliably acquired first.
+		await new Promise((r) => setTimeout(r, 5));
+		const b = withPlanLock("lock-5", async (p) => {
+			order.push("b-start");
+			p.title = `${p.title}-B`;
+			p.updatedAt = "2026-06-01T00:00:02.000Z";
+			order.push("b-end");
+			return "b";
+		});
+
+		await Promise.all([a, b]);
+		// b must observe a's write (no interleaving).
+		expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+		expect(loadPlan("lock-5")?.title).toBe("A-B");
+	});
+});
+
+describe("assertPlanUnchanged", () => {
+	it("returns silently when updatedAt matches", () => {
+		const plan = makePlan({
+			slug: "cas",
+			updatedAt: "2026-06-01T00:00:00.000Z",
+		});
+		expect(() =>
+			assertPlanUnchanged(plan, "2026-06-01T00:00:00.000Z"),
+		).not.toThrow();
+	});
+
+	it("throws PlanStaleError when updatedAt diverges", () => {
+		const plan = makePlan({
+			slug: "cas",
+			updatedAt: "2026-06-01T00:00:01.000Z",
+		});
+		try {
+			assertPlanUnchanged(plan, "2026-06-01T00:00:00.000Z");
+			throw new Error("expected throw");
+		} catch (err) {
+			expect(err).toBeInstanceOf(PlanStaleError);
+			const stale = err as PlanStaleError;
+			expect(stale.slug).toBe("cas");
+			expect(stale.expected).toBe("2026-06-01T00:00:00.000Z");
+			expect(stale.actual).toBe("2026-06-01T00:00:01.000Z");
+		}
+	});
+});
+
+describe("savePlan locking", () => {
+	it("doesn't tear when called concurrently from multiple async writers", async () => {
+		// Sanity: many parallel saves all complete and the final read is
+		// valid JSON. Lock prevents two writers stomping the file
+		// mid-write. We don't assert which write wins — just that the
+		// outcome is parseable and reflects exactly one of them.
+		savePlan(makePlan({ slug: "race", phases: [] }));
+
+		const writes = Array.from({ length: 20 }, (_, i) =>
+			Promise.resolve().then(() => {
+				const p = loadPlan("race");
+				if (!p) throw new Error("plan missing");
+				p.title = `T-${i}`;
+				p.updatedAt = `2026-06-01T00:00:${String(i).padStart(2, "0")}.000Z`;
+				savePlan(p);
+			}),
+		);
+		await Promise.all(writes);
+
+		const final = loadPlan("race");
+		expect(final).not.toBeNull();
+		expect(final?.title).toMatch(/^T-\d+$/);
 	});
 });

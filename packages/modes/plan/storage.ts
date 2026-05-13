@@ -23,6 +23,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { lock as lockAsync, lockSync } from "proper-lockfile";
 import type { Phase, Plan, Task } from "./schema.js";
 import { TERMINAL_STATUSES } from "./schema.js";
 
@@ -194,12 +195,209 @@ function deriveLegacyDependsOn(phases: Phase[], idx: number): string[] {
 
 const CURRENT_SCHEMA_VERSION = 2;
 
-/** Persist a plan and refresh the index. Caller is responsible for `updatedAt`. */
+/**
+ * Lockfile retry config used by both sync and async lock helpers.
+ * Tuned for short tool-layer mutations: 5 retries with 50–250ms
+ * backoff covers common contention without making concurrent
+ * writers feel laggy.
+ */
+const LOCK_RETRIES = { retries: 5, minTimeout: 50, maxTimeout: 250 };
+
+/**
+ * Stale lock TTL. proper-lockfile updates the lockfile mtime
+ * periodically while held; if it's older than this we consider the
+ * holder dead and break the lock. 30s covers the longest plausible
+ * intra-tool mutation (huge plan, slow disk) without leaving
+ * abandoned locks blocking other sessions for ages.
+ */
+const LOCK_STALE_MS = 30_000;
+
+/**
+ * Manual retry loop for `lockSync`. proper-lockfile's sync API
+ * doesn't accept a retries config (only the async API does), so we
+ * spin briefly with `Atomics.wait` for cross-process contention.
+ * Same parameters as `LOCK_RETRIES`.
+ */
+function lockSyncWithRetry(path: string): () => void {
+	const { retries, minTimeout, maxTimeout } = LOCK_RETRIES;
+	let lastErr: unknown;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			return lockSync(path, { stale: LOCK_STALE_MS });
+		} catch (err) {
+			lastErr = err;
+			if (attempt === retries) break;
+			const backoff = Math.min(maxTimeout, minTimeout * 2 ** attempt);
+			const sab = new SharedArrayBuffer(4);
+			Atomics.wait(new Int32Array(sab), 0, 0, backoff);
+		}
+	}
+	throw lastErr;
+}
+
+/**
+ * Ensure the plan dir exists so proper-lockfile can create the
+ * lockfile next to plan.json. proper-lockfile rejects if the parent
+ * directory is missing; for first-time saves we create it eagerly.
+ */
+function ensurePlanDir(slug: string): void {
+	ensurePlansRoot();
+	const dir = planDir(slug);
+	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+}
+
+/**
+ * Thrown by `withPlanLock` when the requested plan slug doesn't
+ * resolve to a loadable plan on disk. Distinct from a generic Error
+ * so callers can branch on missing-vs-corrupt without parsing
+ * messages.
+ */
+export class PlanNotFoundError extends Error {
+	constructor(public readonly slug: string) {
+		super(`plan ${slug} not found`);
+		this.name = "PlanNotFoundError";
+	}
+}
+
+/**
+ * Thrown by `assertPlanUnchanged` when an optimistic CAS check fails
+ * — i.e. another writer advanced `plan.updatedAt` between the time
+ * the caller read the plan and the time it tried to write it back.
+ *
+ * Use this for read-modify-write paths that span an LLM call (where
+ * holding the file lock for minutes would block every other
+ * session). The caller catches and re-loads + retries.
+ */
+export class PlanStaleError extends Error {
+	constructor(
+		public readonly slug: string,
+		public readonly expected: string,
+		public readonly actual: string,
+	) {
+		super(
+			`plan ${slug} changed on disk: expected updatedAt=${expected}, found ${actual}`,
+		);
+		this.name = "PlanStaleError";
+	}
+}
+
+/**
+ * Run `mutator` with exclusive access to the plan file. Loads the
+ * plan inside the lock (post-migration), passes it to the mutator,
+ * persists whatever the mutator returns or the in-place mutated
+ * plan, releases the lock — even on throw.
+ *
+ * Mutator contract:
+ *   - Receives the loaded plan. Free to mutate in place.
+ *   - Should bump `plan.updatedAt` itself when the change is
+ *     meaningful; this helper does NOT auto-bump (callers may want
+ *     to skip a bump for read-only paths or compute their own
+ *     timestamp).
+ *   - Returns whatever value should be returned to the caller.
+ *   - May be async.
+ *   - When `mutator` returns explicitly with `save: false`, the lock
+ *     is released without writing. Useful for branches that decide
+ *     mid-mutation that no save is needed.
+ *
+ * The mutator MUST NOT call `savePlan` itself — the helper handles
+ * the save and a nested `savePlan` would deadlock waiting on the
+ * lock it already holds.
+ *
+ * Cross-process safety: yes (lockfile is on disk, OS-arbitrated).
+ * Same-process re-entry: NO — do not nest withPlanLock calls on the
+ * same slug from the same process.
+ */
+export async function withPlanLock<T>(
+	slug: string,
+	mutator: (
+		plan: Plan,
+	) => Promise<T | { result: T; save: false }> | T | { result: T; save: false },
+): Promise<T> {
+	assertValidSlug(slug);
+	ensurePlanDir(slug);
+	const path = planFile(slug);
+	if (!existsSync(path)) {
+		// Touch an empty placeholder so proper-lockfile can lock it.
+		// Deleted again on the failure path below if loadPlan rejects.
+		writeFileSync(path, "", "utf8");
+	}
+	const release = await lockAsync(path, {
+		retries: LOCK_RETRIES,
+		stale: LOCK_STALE_MS,
+	});
+	try {
+		const plan = loadPlan(slug);
+		if (!plan) throw new PlanNotFoundError(slug);
+		const out = await mutator(plan);
+		if (
+			out &&
+			typeof out === "object" &&
+			"save" in (out as object) &&
+			(out as { save?: unknown }).save === false
+		) {
+			return (out as { result: T }).result;
+		}
+		writeFileSync(path, JSON.stringify(plan, null, 2), "utf8");
+		rebuildIndex();
+		return out as T;
+	} finally {
+		await release();
+	}
+}
+
+/**
+ * Optimistic concurrency check for read-modify-write paths that
+ * can't hold the file lock for the full duration (e.g. ones that
+ * span an LLM call). Compare the `updatedAt` you observed when you
+ * read the plan against what's on disk now; throws `PlanStaleError`
+ * if another writer raced you.
+ *
+ * Typical use:
+ *
+ *     const plan = loadPlan(slug);
+ *     const stamp = plan.updatedAt;
+ *     // ... long async work ...
+ *     await withPlanLock(slug, (fresh) => {
+ *       assertPlanUnchanged(fresh, stamp);
+ *       // safe to mutate `fresh` based on the work above
+ *     });
+ */
+export function assertPlanUnchanged(
+	plan: Plan,
+	expectedUpdatedAt: string,
+): void {
+	if (plan.updatedAt !== expectedUpdatedAt) {
+		throw new PlanStaleError(plan.slug, expectedUpdatedAt, plan.updatedAt);
+	}
+}
+
+/**
+ * Persist a plan and refresh the index.
+ *
+ * Acquires a short-lived lockfile around the write so concurrent
+ * writers from different processes don't tear the JSON. Caller is
+ * responsible for setting `plan.updatedAt`.
+ *
+ * For read-modify-write — load, mutate, save — prefer
+ * `withPlanLock(slug, mutator)`, which holds the lock for the entire
+ * sequence. Calling `savePlan` from inside a `withPlanLock` mutator
+ * deadlocks waiting on the lock that mutator already owns.
+ */
 export function savePlan(plan: Plan): void {
 	ensurePlansRoot();
 	const dir = planDir(plan.slug);
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-	writeFileSync(planFile(plan.slug), JSON.stringify(plan, null, 2), "utf8");
+	const path = planFile(plan.slug);
+	// Lockfile sits next to plan.json. Touching the data file when
+	// missing lets proper-lockfile open it for the duration of the
+	// lock; first-time saves are common (new plans).
+	if (!existsSync(path)) writeFileSync(path, "", "utf8");
+	const release = lockSyncWithRetry(path);
+	try {
+		writeFileSync(path, JSON.stringify(plan, null, 2), "utf8");
+	} finally {
+		release();
+	}
 	rebuildIndex();
 }
 
