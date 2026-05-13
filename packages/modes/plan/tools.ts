@@ -309,8 +309,10 @@ export function registerPlanTools(
 			dependsOn: Type.Optional(
 				Type.Array(Type.String(), {
 					description:
-						"Phase ids this phase depends on. At most one parent. Empty " +
-						"or omitted means no dependency (chain root).",
+						"Phase ids this phase depends on. At most one parent. " +
+						"On `add`, omitting this defaults to chaining off the " +
+						"last existing phase (linear plans). Pass `[]` explicitly " +
+						"to declare a chain root (e.g. a sibling chain in a forest).",
 				}),
 			),
 			position: Type.Optional(

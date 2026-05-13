@@ -383,14 +383,46 @@ export function effectiveDependsOn(
 }
 
 /**
+ * Phase statuses where the phase's branch holds work that hasn't
+ * reached the default branch yet. A successor phase activated while a
+ * predecessor is in one of these states must fork from the
+ * predecessor's branch (stacked PR) — see {@link pickBaseBranch}.
+ */
+const IN_FLIGHT_PARENT_STATUSES: readonly PhaseStatus[] = [
+	"active",
+	"in-review",
+	"ready-to-ship",
+	"needs-attention",
+] as const;
+
+/**
+ * Phase statuses where a successor phase can be activated. Either the
+ * parent has already shipped (default branch carries the change), or
+ * it's in-flight (successor stacks on parent's branch). Excludes
+ * `planned` (parent has no commits yet) and `abandoned` (parent's
+ * branch is gone).
+ */
+const ACTIVATABLE_PARENT_STATUSES: readonly PhaseStatus[] = [
+	...IN_FLIGHT_PARENT_STATUSES,
+	"shipped",
+] as const;
+
+/**
  * A phase is "ready" when `/implement` can activate it: it's still
  * `planned` AND its (single) parent in {@link effectiveDependsOn} is
- * either absent or `shipped`.
+ * either absent, `shipped`, or in-flight (active / in-review /
+ * ready-to-ship / needs-attention).
  *
- * Abandoned and unknown parents block the dependent phase. The user
- * must edit `dependsOn` (or revive the parent) to unblock — picking a
- * silent default would risk forking a phase off `main` when its work
- * actually depends on the abandoned predecessor.
+ * Allowing in-flight parents matches the stacked-PR workflow: a
+ * successor's branch forks off the parent's branch via
+ * {@link pickBaseBranch} and rebases onto the default branch when the
+ * parent's PR merges. Without this, the auto-loop would stall after
+ * every `/ship` (which only flips parent to `in-review`, not
+ * `shipped`).
+ *
+ * `planned`, `abandoned`, and unknown parents block the dependent
+ * phase. The user must activate / revive the parent or edit
+ * `dependsOn` to unblock.
  */
 export function isPhaseReady(
 	plan: Pick<Plan, "phases">,
@@ -400,7 +432,8 @@ export function isPhaseReady(
 	const deps = effectiveDependsOn(plan, phase);
 	if (deps.length === 0) return true;
 	const parent = plan.phases.find((p) => p.id === deps[0]);
-	return parent?.status === "shipped";
+	if (!parent) return false;
+	return ACTIVATABLE_PARENT_STATUSES.includes(parent.status);
 }
 
 /**
@@ -417,19 +450,19 @@ export function readyPhases(plan: Pick<Plan, "phases">): Phase[] {
 }
 
 /**
- * Walk down the chain rooted at `phase`, skipping any descendants that
- * are already `shipped`, and return the first descendant that isn't
- * shipped — i.e. the current frontier of the chain.
+ * Walk down the chain rooted at `phase`, following the first
+ * successor by array order at each step. Skips successors whose
+ * status is `shipped` (already done) and returns the first
+ * non-shipped successor on that path, or `null` if the path
+ * dead-ends (no successor) or terminates in `shipped`.
  *
  * Used by the auto loop after `/ship` to advance to the next phase in
- * the same chain. Returns `null` when the chain dead-ends (no
- * descendants) or when every descendant is shipped.
+ * the same chain.
  *
- * When a phase has multiple direct successors (forking chain), the
- * first one by array order is followed. The other successor(s) are
- * for a concurrent driver to claim — Phase 5 of plan-19 introduces
- * multi-driver semantics; until then the single-driver loop simply
- * takes the first branch and ends quietly when it dead-ends.
+ * Note: in a forked chain (`A → B`, `A → C`), only the first child by
+ * array order is followed. Sibling chains aren't visited; they're for
+ * a concurrent driver (Pattern Y) or fleet worker (Pattern X) to
+ * claim independently.
  */
 export function chainHead(
 	plan: Pick<Plan, "phases">,
@@ -474,7 +507,7 @@ export function blockedReason(
 	const parentId = deps[0];
 	const parent = plan.phases.find((p) => p.id === parentId);
 	if (!parent) return `unknown parent \`${parentId}\``;
-	if (parent.status === "shipped") return null;
+	if (ACTIVATABLE_PARENT_STATUSES.includes(parent.status)) return null;
 	if (parent.status === "abandoned") {
 		return `waiting on abandoned phase \`${parent.id}\` — edit dependsOn to unblock`;
 	}
@@ -497,12 +530,8 @@ export function repoNameFromPath(path: string): string {
  * not from main — otherwise the new branch loses access to the
  * predecessor's changes until that PR merges.
  */
-const PARENT_BRANCH_STATUSES: readonly PhaseStatus[] = [
-	"active",
-	"in-review",
-	"ready-to-ship",
-	"needs-attention",
-] as const;
+const PARENT_BRANCH_STATUSES: readonly PhaseStatus[] =
+	IN_FLIGHT_PARENT_STATUSES;
 
 /**
  * Pick the base branch a freshly-activated phase should fork from.
