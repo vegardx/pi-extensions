@@ -28,7 +28,7 @@
  */
 
 import type { Phase, PhaseStatus, Plan } from "./schema.js";
-import { readyPhases } from "./schema.js";
+import { blockedReason, readyPhases } from "./schema.js";
 
 /**
  * Status set the picker considers "actionable" — the user can still
@@ -112,7 +112,7 @@ export function shouldOfferShiftTabPicker(
 	);
 }
 
-export type PickerCopyKind = "in-flight" | "fresh" | "none";
+export type PickerCopyKind = "in-flight" | "fresh" | "blocked" | "none";
 
 export interface PickerCopy {
 	kind: PickerCopyKind;
@@ -160,6 +160,19 @@ export function buildPickerCopy(
 				"Implement (auto) — chug through commit/ship/next phase, no prompts",
 			implementAskLabel:
 				"Implement (ask) — execute each phase, pause at commit/ship",
+		};
+	}
+	// No ready phases but a planned one exists — it's blocked on deps
+	// (parent abandoned, missing, or not yet started). Surface the
+	// reason so the user knows why the picker isn't offering Implement.
+	const blocked = plan?.phases.find((p) => p.status === "planned");
+	if (blocked && plan) {
+		const reason = blockedReason(plan, blocked) ?? "blocked";
+		return {
+			kind: "blocked",
+			title: `modes: \`${blocked.id}\` ${reason}`,
+			implementAutoLabel: "Implement (auto)",
+			implementAskLabel: "Implement (ask)",
 		};
 	}
 	return {

@@ -1622,15 +1622,12 @@ export default function (pi: ExtensionAPI) {
 		const next = chainHead(refreshed, completedPhase);
 		if (!next) return;
 		if (!isPhaseReady(refreshed, next)) {
-			// Chain head exists but isn't ready — e.g. another driver
-			// claimed it (in-review) or the user reshuffled dependsOn.
-			// End the auto loop quietly with a reason; do not force-activate.
-			const reason = blockedReason(refreshed, next) ?? "not ready";
-			notify(
-				ctx,
-				`auto: next phase \`${next.id}\` ${reason} — stopping here.`,
-				"info",
-			);
+			// Chain head exists but isn't ready — parent is abandoned/missing
+			// or the user reshuffled dependsOn. End the auto loop quietly
+			// with a reason; do not force-activate.
+			const reason =
+				blockedReason(refreshed, next) ?? `\`${next.id}\` not ready`;
+			notify(ctx, `auto: ${reason} — stopping here.`, "info");
 			return;
 		}
 

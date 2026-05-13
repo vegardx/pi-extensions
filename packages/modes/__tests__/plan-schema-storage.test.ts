@@ -1021,6 +1021,42 @@ describe("isPhaseReady / readyPhases", () => {
 		expect(isPhaseReady(plan, plan.phases[0])).toBe(false);
 	});
 
+	it.each([
+		["active"],
+		["in-review"],
+		["ready-to-ship"],
+		["needs-attention"],
+		["shipped"],
+	] as const)("successor is ready when parent is %s (stacked PR / shipped)", (parentStatus) => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: parentStatus,
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(isPhaseReady(plan, plan.phases[1])).toBe(true);
+	});
+
+	it("successor is NOT ready when parent is still planned", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "planned",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(isPhaseReady(plan, plan.phases[1])).toBe(false);
+	});
+
 	it("v1 plan (dependsOn unset) falls back to array-order parent", () => {
 		const plan = makePlan({
 			phases: [
@@ -1165,7 +1201,10 @@ describe("blockedReason", () => {
 		expect(blockedReason(plan, plan.phases[0])).toContain("in-review");
 	});
 
-	it("surfaces parent's status when waiting", () => {
+	it("returns null when parent is in-flight (stacked PR is allowed)", () => {
+		// Option B: in-flight parents (active / in-review / ready-to-ship /
+		// needs-attention) don't block the successor. Stacked PRs fork off
+		// the parent's branch via pickBaseBranch.
 		const plan = makePlan({
 			phases: [
 				makePhase({
@@ -1177,8 +1216,23 @@ describe("blockedReason", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
+		expect(blockedReason(plan, plan.phases[1])).toBeNull();
+	});
+
+	it("surfaces parent's status when waiting on a not-yet-started parent", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "planned",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
 		expect(blockedReason(plan, plan.phases[1])).toBe(
-			"waiting on `a` (in-review)",
+			"waiting on `a` (planned)",
 		);
 	});
 

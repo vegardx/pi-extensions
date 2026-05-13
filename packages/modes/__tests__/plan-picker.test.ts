@@ -369,6 +369,17 @@ describe("buildPickerCopy", () => {
 		const copy = buildPickerCopy(null, null);
 		expect(copy.kind).toBe("none");
 	});
+
+	it("returns 'blocked' kind when planned phase depends on abandoned parent", () => {
+		const plan = makePlan([
+			makePhase({ id: "p-1", status: "abandoned", dependsOn: [] }),
+			makePhase({ id: "p-2", status: "planned", dependsOn: ["p-1"] }),
+		]);
+		const copy = buildPickerCopy(plan, "main");
+		expect(copy.kind).toBe("blocked");
+		expect(copy.title).toContain("abandoned");
+		expect(copy.title).toContain("p-2");
+	});
 });
 
 describe("planPickerView", () => {
@@ -530,17 +541,18 @@ describe("classifyImplementContext", () => {
 		}
 	});
 
-	it("returns 'blocked-on-deps' when every planned phase is blocked by an in-flight parent", () => {
-		// p-1 is in-review (PR open, not shipped). p-2 depends on it but
-		// can't be `ready` until p-1 ships. /implement should refuse
-		// rather than silently activate p-2 — the user must wait or edit.
+	it("adopts a planned phase whose parent is in-review (stacked PR)", () => {
+		// Under the chain-authoritative model, an in-review parent doesn't
+		// block the successor: the successor's branch forks from the
+		// parent's branch (stacked PR) and rebases when the parent merges.
+		// `pickBaseBranch` handles the stacking; the picker just activates.
 		const plan = makePlan([
 			makePhase({ id: "p-1", status: "in-review", dependsOn: [] }),
 			makePhase({ id: "p-2", status: "planned", dependsOn: ["p-1"] }),
 		]);
 		const result = classifyImplementContext(plan);
-		expect(result.kind).toBe("blocked-on-deps");
-		if (result.kind === "blocked-on-deps") {
+		expect(result.kind).toBe("use-phase");
+		if (result.kind === "use-phase") {
 			expect(result.phase.id).toBe("p-2");
 		}
 	});
