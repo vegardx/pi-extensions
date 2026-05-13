@@ -4,24 +4,29 @@
  * A worker is a `pi` subagent process spawned by the FleetManager with
  * `PI_PLAN_WORKER=1` and `PI_PLAN_WORKER_CHAIN_ID=<chainId>` set in
  * its environment. The worker loads the `modes` extension and runs
- * `/implement <chainHead>`; modes detects the env vars on activation
- * and emits structured `notify(...)` calls at every phase-lifecycle
- * boundary so the orchestrator can render fleet progress and decide
- * when to fan out into newly-unblocked chains.
+ * `/implement <chainHead>`.
  *
- * Why a separate protocol: the explore mailbox lifts notify text
- * verbatim, but here we need a discriminated union so the orchestrator
- * can route per-event-kind. We piggy-back on the same `notify` tool —
- * the worker calls it with a JSON-serialised payload in `text` and
- * `kind: "worker-event"`. The orchestrator parses `text` back into a
- * `WorkerNotification`.
+ * ## Event derivation (current implementation)
  *
- * Design decision: re-using the existing `notify` tool (rather than
- * introducing a second one) avoids forking the explore-notify
- * extension and keeps the worker's tool surface minimal. The
- * `kind: "worker-event"` discriminator stays out of the explore
- * mailbox's interest set, so a single worker pi process could in
- * principle emit both flavours without confusion.
+ * Lifecycle events are derived **on the orchestrator side** by the
+ * `WorkerMailbox`, which diffs `plan.json` snapshots on every
+ * `agent_end` (see `diffWorkerEvents`). The worker process itself
+ * does not emit `notify(...)` calls with `kind: "worker-event"`; the
+ * notify tool isn't even loaded into the worker's tool surface.
+ *
+ * The encode/decode helpers below are kept as a dormant API: if a
+ * future revision wants worker-side emission (e.g. for events that
+ * can't be derived from plan-status diffs, like agent-internal
+ * blocks), the wire format is already defined. Until then, the
+ * orchestrator-side diff is the source of truth.
+ *
+ * ## Event coverage today
+ *
+ * `diffWorkerEvents` produces `phase-started`, `phase-shipped`, and
+ * `chain-complete`. `phase-error` is synthesised by `FleetManager`
+ * on spawn failure. `phase-blocked` is currently unused; the
+ * orchestrator handles it as a defensive branch should worker-side
+ * emission land later.
  */
 
 /**

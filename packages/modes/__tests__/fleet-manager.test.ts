@@ -315,4 +315,55 @@ describe("FleetManager", () => {
 		await fleet.start();
 		expect(fleet.getSnapshot().complete).toBe(true);
 	});
+
+	it("serialises concurrent refresh() bursts so maxParallel isn't exceeded", async () => {
+		// Several phase-shipped events firing in the same tick used to
+		// trigger overlapping refresh() runs that each saw spare
+		// capacity and over-spawned. With the in-flight mutex,
+		// concurrent refreshes coalesce into one.
+		const plan = chainPlan([
+			{ id: "a", status: "planned", deps: [] },
+			{ id: "b", status: "planned", deps: [] },
+			{ id: "c", status: "planned", deps: [] },
+			{ id: "d", status: "planned", deps: [] },
+		]);
+		writePlan(plansRoot, "fleet-test", plan);
+		const created: FakeMailbox[] = [];
+		const fleet = new FleetManager(CTX, {
+			planSlug: "fleet-test",
+			selfSessionId: "self",
+			maxParallel: 2,
+			workerDeps: deps(),
+			workerFactory: (_ctx, opts) => {
+				const mb = makeFakeMailbox(opts);
+				created.push(mb);
+				return mb;
+			},
+		});
+		const startPromise = fleet.start();
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		expect(created).toHaveLength(2);
+
+		// Fire a burst of phase-shipped events from the live workers
+		// (without actually shipping a phase — just exercise the event
+		// path so refresh() runs concurrently).
+		created[0]!.emit({ kind: "phase-shipped", phaseId: "a" });
+		created[0]!.emit({ kind: "phase-shipped", phaseId: "a" });
+		created[0]!.emit({ kind: "phase-shipped", phaseId: "a" });
+		created[1]!.emit({ kind: "phase-shipped", phaseId: "b" });
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+
+		// Without the mutex, multiple concurrent refresh() runs each
+		// saw `workers.size === 2 < maxParallel === 2 (strict)` ... wait,
+		// they'd see `< 2` and try to add. Either way: total live
+		// workers must never exceed maxParallel.
+		expect(fleet.getSnapshot().workers.length).toBeLessThanOrEqual(2);
+		expect(created.length).toBeLessThanOrEqual(2);
+
+		await fleet.dispose();
+		await startPromise;
+	});
 });

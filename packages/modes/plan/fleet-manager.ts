@@ -144,6 +144,13 @@ export class FleetManager {
 	private completionResolvers: Array<() => void> = [];
 	private disposed = false;
 	private complete = false;
+	// Serialise refresh() runs. `void this.refresh()` from event
+	// handlers can race; concurrent runs would each see
+	// `this.workers.size < maxParallel` and over-spawn. We keep one
+	// in-flight, plus at most one queued (further requests collapse
+	// onto the queued one).
+	private refreshing: Promise<void> | null = null;
+	private refreshQueued = false;
 
 	constructor(ctx: ExtensionContext, opts: FleetOptions) {
 		this.ctx = ctx;
@@ -211,6 +218,27 @@ export class FleetManager {
 	 * lifecycle event.
 	 */
 	private async refresh(): Promise<void> {
+		// Single in-flight refresh + at most one queued. Coalesces a
+		// burst of `phase-shipped` events into one re-scan after each
+		// run.
+		if (this.refreshing) {
+			this.refreshQueued = true;
+			return this.refreshing;
+		}
+		this.refreshing = (async () => {
+			try {
+				do {
+					this.refreshQueued = false;
+					await this.runRefresh();
+				} while (this.refreshQueued && !this.disposed);
+			} finally {
+				this.refreshing = null;
+			}
+		})();
+		return this.refreshing;
+	}
+
+	private async runRefresh(): Promise<void> {
 		if (this.disposed) return;
 		const plan = loadPlan(this.opts.planSlug);
 		if (!plan) return;

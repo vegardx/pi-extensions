@@ -206,20 +206,98 @@ describe("WorkerMailbox", () => {
 		expect(mailbox.getState().lastToolSummary).toBe("$ npm test");
 	});
 
-	it("transitions to ended on agent_end and notifies onEnd handlers", async () => {
+	it("defers onEnd after agent_end so per-turn boundaries don't tear down the worker", async () => {
+		// pi's `agent_end` is per-turn; /implement schedules follow-up
+		// turns. The mailbox must not fire `onEnd` immediately on every
+		// agent_end — only when no follow-up arrives within the
+		// deferral window, or when chain-complete is observed.
+		vi.useFakeTimers();
+		try {
+			const agent = makeMockAgent();
+			const { deps } = makeDeps(agent, [
+				plan([{ id: "p1", status: "planned" }]),
+			]);
+			const mailbox = new WorkerMailbox(
+				CTX,
+				{ chainId: "p1", chainHeadId: "p1", planSlug: "test", cwd: "/repo" },
+				deps,
+			);
+			await mailbox.start();
+			const onEnd = vi.fn();
+			mailbox.onEnd(onEnd);
+
+			agent.emit({ type: "agent_end", messages: [] });
+			// Immediately: not yet ended (deferral pending).
+			expect(onEnd).not.toHaveBeenCalled();
+			expect(mailbox.getState().status).toBe("running");
+
+			// A follow-up turn cancels the deferral.
+			agent.emit({ type: "agent_start" } as unknown as AgentEvent);
+			vi.runAllTimers();
+			expect(onEnd).not.toHaveBeenCalled();
+			expect(mailbox.getState().status).toBe("running");
+
+			// Another agent_end with no follow-up: timer fires, end
+			// handlers called.
+			agent.emit({ type: "agent_end", messages: [] });
+			vi.runAllTimers();
+			expect(onEnd).toHaveBeenCalledOnce();
+			expect(mailbox.getState().status).toBe("ended");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("fires onEnd immediately when a chain-complete event is derived", async () => {
+		vi.useFakeTimers();
+		try {
+			const agent = makeMockAgent();
+			// Initial: head shipped, no descendants → chain-complete fires.
+			const { deps } = makeDeps(agent, [
+				plan([{ id: "p1", status: "planned" }]),
+				plan([{ id: "p1", status: "shipped" }]),
+			]);
+			const mailbox = new WorkerMailbox(
+				CTX,
+				{ chainId: "p1", chainHeadId: "p1", planSlug: "test", cwd: "/repo" },
+				deps,
+			);
+			await mailbox.start();
+			const onEnd = vi.fn();
+			mailbox.onEnd(onEnd);
+			agent.emit({ type: "agent_end", messages: [] });
+			expect(onEnd).toHaveBeenCalledOnce();
+			expect(mailbox.getState().status).toBe("ended");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("disposes the spawned agent if prompt() throws after spawn", async () => {
+		// Without cleanup the worker process / pool would leak when
+		// `agent.prompt()` (or event subscription) errors after spawn
+		// succeeded.
 		const agent = makeMockAgent();
-		const { deps } = makeDeps(agent, [plan([{ id: "p1", status: "planned" }])]);
+		agent.prompt.mockRejectedValueOnce(new Error("boom"));
+		const dispose = vi.fn().mockResolvedValue(undefined);
+		const deps: WorkerMailboxDeps = {
+			spawnAgent: vi.fn(async () => ({
+				agent: agent as unknown as Awaited<
+					ReturnType<WorkerMailboxDeps["spawnAgent"]>
+				>["agent"],
+				dispose,
+			})),
+			readPlan: vi.fn(() => plan([{ id: "p1", status: "planned" }])),
+		};
 		const mailbox = new WorkerMailbox(
 			CTX,
 			{ chainId: "p1", chainHeadId: "p1", planSlug: "test", cwd: "/repo" },
 			deps,
 		);
-		await mailbox.start();
-		const onEnd = vi.fn();
-		mailbox.onEnd(onEnd);
-		agent.emit({ type: "agent_end", messages: [] });
-		expect(onEnd).toHaveBeenCalledOnce();
-		expect(mailbox.getState().status).toBe("ended");
+		await expect(mailbox.start()).rejects.toThrow("boom");
+		expect(dispose).toHaveBeenCalledOnce();
+		expect(mailbox.getState().status).toBe("error");
+		expect(mailbox.getState().error).toBe("boom");
 	});
 
 	it("dispose() is idempotent", async () => {

@@ -256,10 +256,13 @@ Behaviour:
 - **Spawn-on-shipped**: when a worker ships a phase, the manager
   re-scans the plan for newly-unblocked chain heads and starts
   workers for them up to the cap.
-- **Lifecycle events**: each worker emits `phase-started`,
-  `phase-shipped`, `phase-blocked`, `phase-error`,
-  `chain-complete` notifications. They render in the orchestrator
-  as `fleet[<chainId>] <event>` lines.
+- **Lifecycle events**: the orchestrator derives `phase-started`,
+  `phase-shipped`, and `chain-complete` events by diffing the
+  plan-status snapshot on every worker-turn boundary; `phase-error`
+  is synthesised on worker spawn failure. They render in the
+  orchestrator as `fleet[<chainId>] <event>` lines. (`phase-blocked`
+  is reserved for future worker-side emission and currently never
+  fires.)
 - **Worker non-interactivity**: workers run with
   `PI_PLAN_WORKER=1` set in their environment. Modes refuses
   `--fanout` recursively, and any code path that would prompt the
@@ -285,14 +288,17 @@ plan is well-scoped and you trust the auto-loop to ship it.
 - **Worker crashes** (`phase-error`): the orchestrator surfaces
   the error and removes the worker. The chain stays where it
   was; you can `/implement <id> --takeover` from another session
-  to pick up.
+  to pick up. (Currently only spawn failures synthesise this
+  event; mid-run errors surface via worker exit + chain not
+  advancing.)
 - **Worker blocks** (`phase-blocked`): worker hit something it
   can't decide non-interactively (dirty worktree, ambiguous
   branch state). Fix the underlying issue, then
   `/implement --fanout` again — the manager re-scans and
   re-spawns missing workers.
 - **No primary model configured**: workers fail to spawn with
-  "no normal-tier model configured". Add `backgroundModels.modes.normal`
+  "no normal-tier model configured". Add
+  `backgroundModels.primary.normal` (or `extensionConfig.modes.model`)
   to your settings.
 - **Detach / rejoin**: not supported in v1. If you Esc out of the
   orchestrator, workers keep running but you lose the unified

@@ -113,6 +113,15 @@ const WORKER_TOOLS: readonly string[] = [
 ];
 const WORKER_AGENT_PROMPT = join(PROMPTS_DIR, "worker-agent.md");
 
+/**
+ * Window in which a follow-up `agent_start` may arrive after
+ * `agent_end`. /implement schedules follow-up turns via
+ * `triggerTurn: true`; the next turn typically begins within a few
+ * tens of milliseconds. 250ms gives ample slack while bounding the
+ * "worker is truly done" detection delay.
+ */
+const AGENT_END_DEFERRAL_MS = 250;
+
 export function defaultWorkerDeps(): WorkerMailboxDeps {
 	return {
 		async spawnAgent(ctx, opts) {
@@ -122,7 +131,9 @@ export function defaultWorkerDeps(): WorkerMailboxDeps {
 			});
 			if (!resolved) {
 				throw new Error(
-					"no normal-tier model configured — add backgroundModels.modes.normal to settings.json",
+					"no normal-tier model configured — set " +
+						"`backgroundModels.primary.normal` (or " +
+						"`extensionConfig.modes.model`) in settings.json",
 				);
 			}
 			const pool = new SubagentPool();
@@ -251,6 +262,11 @@ export class WorkerMailbox {
 	private listeners = new Set<(event: WorkerNotification) => void>();
 	private endHandlers = new Set<() => void>();
 	private disposed = false;
+	// Defer firing `onEnd` after `agent_end` so we don't tear down the
+	// worker mid-chain when pi schedules a follow-up turn (per-turn
+	// `agent_end` is not the worker's terminal). If `agent_start`
+	// arrives within the deferral window, the timer is cancelled.
+	private pendingEndTimer: NodeJS.Timeout | null = null;
 
 	constructor(
 		ctx: ExtensionContext,
@@ -296,6 +312,7 @@ export class WorkerMailbox {
 	 */
 	async start(): Promise<void> {
 		if (this.disposed) throw new Error("WorkerMailbox is disposed");
+		let localDispose: (() => Promise<void>) | null = null;
 		try {
 			const initialPlan = this.deps.readPlan(this.opts.planSlug);
 			if (initialPlan) {
@@ -305,6 +322,7 @@ export class WorkerMailbox {
 				this.ctx,
 				this.opts,
 			);
+			localDispose = dispose;
 			this.agentDispose = dispose;
 			this.unsubscribe = agent.onEvent((event) => this.handleEvent(event));
 			this.state.status = "running";
@@ -313,6 +331,20 @@ export class WorkerMailbox {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.state.status = "error";
 			this.state.error = msg;
+			// If the agent was spawned but a later step (event subscription,
+			// initial prompt) threw, dispose the running subagent/pool so we
+			// don't leak a process. Wrap in try/catch so the original error
+			// keeps propagating even if disposal also fails.
+			this.unsubscribe?.();
+			this.unsubscribe = null;
+			if (localDispose) {
+				try {
+					await localDispose();
+				} catch {
+					/* best-effort — surface the original error, not the dispose failure */
+				}
+				this.agentDispose = null;
+			}
 			throw err;
 		}
 	}
@@ -320,6 +352,10 @@ export class WorkerMailbox {
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		if (this.pendingEndTimer) {
+			clearTimeout(this.pendingEndTimer);
+			this.pendingEndTimer = null;
+		}
 		this.unsubscribe?.();
 		this.unsubscribe = null;
 		const dispose = this.agentDispose;
@@ -337,6 +373,15 @@ export class WorkerMailbox {
 
 	private handleEvent(event: AgentEvent): void {
 		switch (event.type) {
+			case "agent_start": {
+				// A new turn started — cancel any pending end deferral. The
+				// previous `agent_end` was a per-turn boundary, not terminal.
+				if (this.pendingEndTimer) {
+					clearTimeout(this.pendingEndTimer);
+					this.pendingEndTimer = null;
+				}
+				break;
+			}
 			case "tool_execution_start": {
 				const args = (event.args ?? {}) as Record<string, unknown>;
 				this.state.lastToolSummary = summariseToolCall(event.toolName, args);
@@ -346,6 +391,7 @@ export class WorkerMailbox {
 				// Worker's turn finished. Re-read the plan and emit
 				// derived events.
 				const plan = this.deps.readPlan(this.opts.planSlug);
+				let sawChainComplete = false;
 				if (plan) {
 					const events = diffWorkerEvents(
 						this.lastSnapshot,
@@ -356,6 +402,7 @@ export class WorkerMailbox {
 					this.lastSnapshot = snapshotStatuses(plan);
 					for (const evt of events) {
 						this.state.lastEvent = evt;
+						if (evt.kind === "chain-complete") sawChainComplete = true;
 						for (const l of this.listeners) {
 							try {
 								l(evt);
@@ -365,18 +412,40 @@ export class WorkerMailbox {
 						}
 					}
 				}
-				this.state.status = "ended";
-				for (const h of this.endHandlers) {
-					try {
-						h();
-					} catch {
-						/* best-effort */
-					}
+				if (sawChainComplete) {
+					// Definitive plan-derived terminal: chain root is shipped
+					// AND no descendant remains. End immediately.
+					this.fireEnd();
+					break;
 				}
+				// pi's `agent_end` is per-turn, not terminal. /implement
+				// schedules follow-up turns via `triggerTurn: true`; the
+				// next `agent_start` cancels this deferral. If no follow-up
+				// arrives within the window, treat the worker as ended.
+				if (this.pendingEndTimer) clearTimeout(this.pendingEndTimer);
+				this.pendingEndTimer = setTimeout(() => {
+					this.pendingEndTimer = null;
+					this.fireEnd();
+				}, AGENT_END_DEFERRAL_MS);
+				// Don't keep the event loop alive on this timer: the
+				// orchestrator owns the lifecycle.
+				this.pendingEndTimer.unref?.();
 				break;
 			}
 			default:
 				break;
+		}
+	}
+
+	private fireEnd(): void {
+		if (this.state.status === "ended") return;
+		this.state.status = "ended";
+		for (const h of this.endHandlers) {
+			try {
+				h();
+			} catch {
+				/* best-effort */
+			}
 		}
 	}
 }
