@@ -732,6 +732,46 @@ describe("migratePlan", () => {
 		expect(out.phases[0].dependsOn).toEqual([]);
 		expect(out.followUps).toEqual([]);
 	});
+
+	it(
+		"v2 normalisation backfills dependsOn even when followUps + kinds " +
+			"are already present (regression: copilot review on PR #125)",
+		() => {
+			// Trigger the exact bug path: schemaVersion=2, every task has
+			// `kind`, `followUps` is present — so the only missing field is a
+			// phase's `dependsOn`. Pre-fix, normaliseV2 returned the original
+			// plan because `mutated` never flipped, dropping the backfilled
+			// phases array.
+			const partial: Plan = {
+				slug: "partial-v2-deps-only",
+				title: "Partial deps-only",
+				repo: { path: "/r" },
+				schemaVersion: 2,
+				followUps: [],
+				phases: [
+					{
+						...makePhase({ id: "a", branch: "feat/a", status: "planned" }),
+						tasks: [
+							{
+								id: "t-1",
+								title: "task",
+								body: "",
+								done: false,
+								kind: "deliverable",
+								createdAt: "2026-01-01T00:00:00.000Z",
+								updatedAt: "2026-01-01T00:00:00.000Z",
+							},
+						],
+						// dependsOn deliberately omitted.
+					},
+				],
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-02T00:00:00.000Z",
+			};
+			const out = migratePlan(partial);
+			expect(out.phases[0].dependsOn).toEqual([]);
+		},
+	);
 });
 
 describe("effectiveDependsOn", () => {
