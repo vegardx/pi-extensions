@@ -107,6 +107,128 @@ planned ─► active ─► in-review ─► ready-to-ship ─► shipped
 
 Transitions are gated by `plan_phase update` — invalid transitions are rejected.
 
+### Plan dependency graph
+
+From v2 of the plan schema, every phase carries an optional `dependsOn:
+string[]` field. It records the **chain parent** — the phase whose work
+this phase forks from. The constraint is enforced at write time: at most
+one parent (chains, not diamonds), no cycles, no self-references.
+
+```
+         planned→ add-webhook (root, dependsOn: [])
+            ↓
+         in-review→ validate-signatures (dependsOn: [add-webhook])
+            ↓
+         active→ retry-failed (dependsOn: [validate-signatures])
+```
+
+Siblings under the same parent form a **forest** — independent chains
+that can run in parallel. The `phases[]` array order is purely cosmetic
+from v2 onwards; ordering decisions are made via `dependsOn`.
+
+- `effectiveDependsOn(plan, phase)` reads the chain parent, falling back
+  to the immediately preceding non-abandoned phase for v1 plans.
+- `readyPhases(plan)` returns phases whose status is `planned` and whose
+  parent (if any) has shipped. Auto-mode picks from this set.
+- `chainHead(plan, phase)` walks descendants of a phase to find the
+  next non-shipped phase in the same chain. Auto-mode advances along
+  the chain after each ship.
+- `pickBaseBranch(plan, phaseId, defaultBranch)` consults the parent's
+  status to choose where to fork the phase branch. Stacks PRs onto the
+  parent's branch when the parent is in-flight; uses the default branch
+  when the parent is shipped or absent.
+
+Migration: v1 plans (no `dependsOn`) are migrated lazily on `loadPlan`
+— each phase's `dependsOn` is back-filled from array order, skipping
+abandoned predecessors. The migrated shape is written to disk on the
+next `savePlan`.
+
+**Cycle and conflict handling**: `plan_phase add` / `plan_phase update`
+run a DFS cycle check before persisting. Multi-parent (`{B, C} → D`) is
+rejected because the compaction summary chain only flows along a chain.
+Unknown-id parents block the phase via `blockedReason()` until the user
+edits `dependsOn` to point at something real.
+
+### Task kinds
+
+From v2, every task carries an optional `kind` field describing what it
+is to the agent and to the human reviewer:
+
+| kind          | gates `/ship`? | rendered as     | surfaces in           |
+|---------------|----------------|-----------------|-----------------------|
+| `deliverable` | yes (default)  | `[ ]` / `[x]`   | PR `What this phase ships` |
+| `followUp`    | no             | `[~]`           | PR `Reviewer follow-ups` |
+| `question`    | no             | `[?]`           | PR `Open questions`   |
+| `manual`      | no             | `[!]`           | PR `Manual verification` |
+
+**Completion gate**: a phase auto-completes when every `deliverable`
+task is done. Non-deliverables don't block. A phase with zero
+deliverables never auto-completes — a PR with no actual work shouldn't
+fire `/ship`.
+
+Plan-level follow-ups live on `Plan.followUps` rather than under a
+specific phase. Add via `plan_task action='add' phaseId='@plan'`. They
+appear in the parent /park issue rather than per-phase PRs.
+
+### Concurrent drivers (multi-session execution)
+
+From v2, plan storage is concurrency-safe and phases track which
+session is driving them. This unlocks running multiple pi sessions
+against the same plan:
+
+- **Plan file integrity**: every `savePlan` acquires a per-plan
+  lockfile (`<plan>.json.lock`) so cross-process writers don't tear
+  the JSON.
+- **Driver claim**: when a session activates a phase, its session id
+  is recorded as `phase.driverSessionId` (along with the session
+  file path and a timestamp). A second session calling `/implement`
+  on the same phase is **refused** unless either:
+  - the recorded driver is **stale** (its session file is missing or
+    its mtime is older than 30 minutes), or
+  - the second session passes `/implement --takeover`.
+- **Auto-loop ownership**: a driver's auto-loop walks its own chain
+  via `chainHead`. Once the chain is exhausted, it scans for an
+  **unclaimed** ready chain head elsewhere in the plan and adopts it
+  (single-driver convergence). If only blocked or peer-owned phases
+  remain, the loop exits quietly with a reason.
+
+#### Pattern Y — peer pi sessions
+
+For a plan with two independent chains, open a second pi session in
+the same repo (or in a separate worktree) and explicitly target the
+other chain's head:
+
+```bash
+# session 1 (already running):
+/implement                      # auto-picks chain A
+
+# session 2 (a new terminal):
+pi --resume <session-id>
+/implement add-webhook-spec     # explicit phase id
+# or:
+/implement --phase add-webhook-spec
+```
+
+Both sessions ship their chains independently. Status updates flow
+through the lockfile-protected plan file; the widget shows a `[peer]`
+marker on phases driven by another session, and `plan_view` annotates
+the header with `driver: \`<id-prefix>\``.
+
+#### Conflict recovery
+
+- **Adoption refused**: another live session owns the phase. Either
+  pick a different ready phase, or wait for the peer to ship, or
+  run `/implement --takeover` if you know the peer is gone.
+- **Stale claim, silent adoption**: the previous driver's session
+  file is missing or hasn't been touched in 30 minutes. The auto-loop
+  silently re-claims with an info notify. If the previous driver
+  comes back, its next save will hit the lockfile and proceed; the
+  driver claim will simply belong to whoever activated last.
+- **CAS failure** (`PlanStaleError`): used by code paths that span
+  an LLM call (the lock can't be held that long). The caller
+  re-loads the plan and retries. Surfaced to the agent as a tool
+  error so the next turn sees fresh state.
+
 ## Session model
 
 A plan owns **two kinds of pi sessions**: one **planning session** for plan
