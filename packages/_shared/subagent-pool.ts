@@ -59,6 +59,11 @@ export interface AgentConfig {
 	 *  sub-agent process (e.g. to register a notify tool the parent
 	 *  observes via the event stream). */
 	extraArgs?: readonly string[];
+	/** Extra environment variables passed to the child process. Merged
+	 *  with `process.env` by RpcClient. Used by callers who need to
+	 *  signal the child that it's running in a restricted context
+	 *  (e.g. `PI_PLAN_WORKER=1`). */
+	env?: Record<string, string>;
 	/** Optional progress callback invoked on tool calls and turn ends. */
 	onProgress?: (progress: AgentProgress) => void;
 }
@@ -325,6 +330,7 @@ export class SubagentPool {
 			cwd: config.cwd,
 			provider: config.provider,
 			model: config.model,
+			...(config.env ? { env: config.env } : {}),
 			args: [
 				"--no-session",
 				"--tools",

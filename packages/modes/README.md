@@ -229,6 +229,75 @@ the header with `driver: \`<id-prefix>\``.
   re-loads the plan and retries. Surfaced to the agent as a tool
   error so the next turn sees fresh state.
 
+#### Pattern X — orchestrator + worker subagents (`/implement --fanout`)
+
+From plan mode, `/implement --fanout` spawns one pi subagent per
+independent chain in the plan. Each worker runs an unattended
+`/implement <phaseId>` and ships through the chain on its own. The
+orchestrator (the session that issued `--fanout`) stays in the
+foreground and surfaces fleet progress via `notify(...)`.
+
+```text
+orchestrator session
+        │
+        ├── worker subagent (chain A) → ships A1, A2, A3
+        ├── worker subagent (chain B) → ships B1
+        └── worker subagent (chain C) → spawns after A's chain-complete
+```
+
+Behaviour:
+
+- **Trivial-fleet fallback**: if the plan has fewer than two
+  unclaimed ready chains, `--fanout` falls back to a single-driver
+  `/implement`. Spinning up a one-worker fleet is pure overhead.
+- **Parallelism cap**: at most `maxParallel` workers run
+  concurrently (default 3). Excess chains queue and start as
+  earlier workers finish.
+- **Spawn-on-shipped**: when a worker ships a phase, the manager
+  re-scans the plan for newly-unblocked chain heads and starts
+  workers for them up to the cap.
+- **Lifecycle events**: each worker emits `phase-started`,
+  `phase-shipped`, `phase-blocked`, `phase-error`,
+  `chain-complete` notifications. They render in the orchestrator
+  as `fleet[<chainId>] <event>` lines.
+- **Worker non-interactivity**: workers run with
+  `PI_PLAN_WORKER=1` set in their environment. Modes refuses
+  `--fanout` recursively, and any code path that would prompt the
+  user (`ctx.ui.confirm`/`ctx.ui.select`) is short-circuited; the
+  worker either falls back to a safe default or aborts and lets
+  the orchestrator surface the issue.
+
+#### Pattern X vs Pattern Y — when to use which
+
+| | Pattern X (`--fanout`) | Pattern Y (peer sessions) |
+|---|---|---|
+| **Trigger** | One command in plan mode | Open another terminal, `/implement <id>` |
+| **Coordination** | Automatic (FleetManager) | Manual (you assign chains) |
+| **Best for** | "Walk away, let it ship" autopilot | "I want to watch one chain, intervene if needed" |
+| **Resource cost** | N pi processes + N model token streams | Same N, but you started them |
+| **Failure surface** | Centralised in the orchestrator's notify stream | Each peer's own session |
+
+Use Y when you want eyeballs on a specific chain. Use X when the
+plan is well-scoped and you trust the auto-loop to ship it.
+
+#### Failure modes (Pattern X)
+
+- **Worker crashes** (`phase-error`): the orchestrator surfaces
+  the error and removes the worker. The chain stays where it
+  was; you can `/implement <id> --takeover` from another session
+  to pick up.
+- **Worker blocks** (`phase-blocked`): worker hit something it
+  can't decide non-interactively (dirty worktree, ambiguous
+  branch state). Fix the underlying issue, then
+  `/implement --fanout` again — the manager re-scans and
+  re-spawns missing workers.
+- **No primary model configured**: workers fail to spawn with
+  "no normal-tier model configured". Add `backgroundModels.modes.normal`
+  to your settings.
+- **Detach / rejoin**: not supported in v1. If you Esc out of the
+  orchestrator, workers keep running but you lose the unified
+  notify stream. Watch the plan via `plan_view` instead.
+
 ## Session model
 
 A plan owns **two kinds of pi sessions**: one **planning session** for plan
