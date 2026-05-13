@@ -505,11 +505,11 @@ describe("classifyImplementContext", () => {
 		}
 	});
 
-	it("returns 'use-phase' with the next planned phase when nothing is in flight", () => {
+	it("returns 'use-phase' with the next ready phase when nothing is in flight", () => {
 		const plan = makePlan([
-			makePhase({ id: "p-shipped", status: "shipped" }),
-			makePhase({ id: "p-next", status: "planned" }),
-			makePhase({ id: "p-later", status: "planned" }),
+			makePhase({ id: "p-shipped", status: "shipped", dependsOn: [] }),
+			makePhase({ id: "p-next", status: "planned", dependsOn: ["p-shipped"] }),
+			makePhase({ id: "p-later", status: "planned", dependsOn: ["p-next"] }),
 		]);
 		const result = classifyImplementContext(plan);
 		expect(result.kind).toBe("use-phase");
@@ -527,6 +527,43 @@ describe("classifyImplementContext", () => {
 		expect(result.kind).toBe("use-phase");
 		if (result.kind === "use-phase") {
 			expect(result.phase.id).toBe("p-active");
+		}
+	});
+
+	it("returns 'blocked-on-deps' when every planned phase is blocked by an in-flight parent", () => {
+		// p-1 is in-review (PR open, not shipped). p-2 depends on it but
+		// can't be `ready` until p-1 ships. /implement should refuse
+		// rather than silently activate p-2 — the user must wait or edit.
+		const plan = makePlan([
+			makePhase({ id: "p-1", status: "in-review", dependsOn: [] }),
+			makePhase({ id: "p-2", status: "planned", dependsOn: ["p-1"] }),
+		]);
+		const result = classifyImplementContext(plan);
+		expect(result.kind).toBe("blocked-on-deps");
+		if (result.kind === "blocked-on-deps") {
+			expect(result.phase.id).toBe("p-2");
+		}
+	});
+
+	it("returns 'blocked-on-deps' when planned phase depends on abandoned parent", () => {
+		const plan = makePlan([
+			makePhase({ id: "p-1", status: "abandoned", dependsOn: [] }),
+			makePhase({ id: "p-2", status: "planned", dependsOn: ["p-1"] }),
+		]);
+		const result = classifyImplementContext(plan);
+		expect(result.kind).toBe("blocked-on-deps");
+	});
+
+	it("surfaces the FIRST ready phase across a forest with multiple roots", () => {
+		const plan = makePlan([
+			makePhase({ id: "a", status: "shipped", dependsOn: [] }),
+			makePhase({ id: "b", status: "planned", dependsOn: ["a"] }),
+			makePhase({ id: "c", status: "planned", dependsOn: [] }),
+		]);
+		const result = classifyImplementContext(plan);
+		expect(result.kind).toBe("use-phase");
+		if (result.kind === "use-phase") {
+			expect(result.phase.id).toBe("b");
 		}
 	});
 });

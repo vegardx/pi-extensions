@@ -92,7 +92,10 @@ import {
 } from "./plan/pr-sweep.js";
 import {
 	abandonNonTerminalPhases,
+	blockedReason,
+	chainHead,
 	type ImplementBranchPlan,
+	isPhaseReady,
 	matchPhaseId,
 	type Plan,
 	type Phase as PlanPhase,
@@ -1611,12 +1614,27 @@ export default function (pi: ExtensionAPI) {
 
 		// `doShip` mutates the plan in place; re-read so we see the new
 		// status of the just-shipped phase before deciding whether to
-		// advance.
+		// advance. Single-driver auto loop only walks ITS chain: chainHead
+		// returns the next non-shipped descendant of the just-shipped
+		// phase. Independent chains belong to other drivers (Phase 5).
 		const refreshed = currentPlan();
-		const nextPlanned = refreshed?.phases.find((p) => p.status === "planned");
-		if (!nextPlanned) return;
+		if (!refreshed || !completedPhase) return;
+		const next = chainHead(refreshed, completedPhase);
+		if (!next) return;
+		if (!isPhaseReady(refreshed, next)) {
+			// Chain head exists but isn't ready — e.g. another driver
+			// claimed it (in-review) or the user reshuffled dependsOn.
+			// End the auto loop quietly with a reason; do not force-activate.
+			const reason = blockedReason(refreshed, next) ?? "not ready";
+			notify(
+				ctx,
+				`auto: next phase \`${next.id}\` ${reason} — stopping here.`,
+				"info",
+			);
+			return;
+		}
 
-		notify(ctx, `auto: advancing to Phase \`${nextPlanned.id}\`…`, "info");
+		notify(ctx, `auto: advancing to Phase \`${next.id}\`…`, "info");
 		await doImplement(ctx, null, "auto");
 	}
 
@@ -2404,6 +2422,22 @@ export default function (pi: ExtensionAPI) {
 				"plan has no actionable phase (all shipped/abandoned). " +
 					"Use /plan to start a new plan, or Shift+Tab to hack mode " +
 					"for an off-plan branch.",
+				"warning",
+			);
+			modeState.stage = "planning";
+			persist();
+			return;
+		}
+		if (classified.kind === "blocked-on-deps" && plan) {
+			// Planned phases exist but every one is blocked on an in-flight
+			// or unresolvable parent. Surface the specific blocker so the
+			// user can edit dependsOn or wait for the predecessor to ship.
+			const reason =
+				blockedReason(plan, classified.phase) ?? "blocked on dependencies";
+			notify(
+				ctx,
+				`plan has planned phases but none are ready: \`${classified.phase.id}\` ${reason}. ` +
+					"Edit dependsOn (plan_phase update) to unblock, or wait for the predecessor to ship.",
 				"warning",
 			);
 			modeState.stage = "planning";

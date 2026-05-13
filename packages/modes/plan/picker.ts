@@ -28,6 +28,7 @@
  */
 
 import type { Phase, PhaseStatus, Plan } from "./schema.js";
+import { readyPhases } from "./schema.js";
 
 /**
  * Status set the picker considers "actionable" — the user can still
@@ -150,7 +151,7 @@ export function buildPickerCopy(
 			implementAskLabel: `Resume (ask) — continue on \`${inFlight.branch}\`, pause at commit/ship`,
 		};
 	}
-	const planned = plan?.phases.find((p) => p.status === "planned");
+	const planned = plan ? readyPhases(plan)[0] : undefined;
 	if (planned) {
 		return {
 			kind: "fresh",
@@ -247,10 +248,15 @@ export function planPickerView(
  *   - `use-phase`: a plan and an actionable phase exist; that's the
  *     phase /implement should bind to. Active/needs-attention
  *     resumes; planned activates.
+ *   - `blocked-on-deps`: every planned phase is blocked by an
+ *     in-flight, abandoned, or unknown parent in `dependsOn`.
+ *     /implement refuses with a reason; the user must edit the
+ *     blocking dependency or wait for the predecessor to ship.
  */
 export type ImplementContext =
 	| { kind: "no-plan" }
 	| { kind: "refuse-no-actionable" }
+	| { kind: "blocked-on-deps"; phase: Phase }
 	| { kind: "use-phase"; phase: Phase };
 
 export function classifyImplementContext(plan: Plan | null): ImplementContext {
@@ -259,7 +265,13 @@ export function classifyImplementContext(plan: Plan | null): ImplementContext {
 		(p) => p.status === "active" || p.status === "needs-attention",
 	);
 	if (inFlight) return { kind: "use-phase", phase: inFlight };
-	const planned = plan.phases.find((p) => p.status === "planned");
-	if (planned) return { kind: "use-phase", phase: planned };
+	const ready = readyPhases(plan)[0];
+	if (ready) return { kind: "use-phase", phase: ready };
+	// Planned phases exist but every one is blocked on an in-flight /
+	// abandoned / unknown parent. Surface a different refusal so the
+	// caller can explain *what* is blocking, rather than the generic
+	// "all shipped/abandoned" message.
+	const blocked = plan.phases.find((p) => p.status === "planned");
+	if (blocked) return { kind: "blocked-on-deps", phase: blocked };
 	return { kind: "refuse-no-actionable" };
 }

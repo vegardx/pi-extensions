@@ -382,6 +382,105 @@ export function effectiveDependsOn(
 	return [];
 }
 
+/**
+ * A phase is "ready" when `/implement` can activate it: it's still
+ * `planned` AND its (single) parent in {@link effectiveDependsOn} is
+ * either absent or `shipped`.
+ *
+ * Abandoned and unknown parents block the dependent phase. The user
+ * must edit `dependsOn` (or revive the parent) to unblock — picking a
+ * silent default would risk forking a phase off `main` when its work
+ * actually depends on the abandoned predecessor.
+ */
+export function isPhaseReady(
+	plan: Pick<Plan, "phases">,
+	phase: Pick<Phase, "id" | "status" | "dependsOn">,
+): boolean {
+	if (phase.status !== "planned") return false;
+	const deps = effectiveDependsOn(plan, phase);
+	if (deps.length === 0) return true;
+	const parent = plan.phases.find((p) => p.id === deps[0]);
+	return parent?.status === "shipped";
+}
+
+/**
+ * Phases that can be activated right now, in array order.
+ *
+ * Used by:
+ *   - the auto loop's "next phase" picker (single driver picks the
+ *     first ready phase by array order),
+ *   - concurrent driver discovery (Phase 5 of plan-19),
+ *   - widgets that surface what's available to start.
+ */
+export function readyPhases(plan: Pick<Plan, "phases">): Phase[] {
+	return plan.phases.filter((p) => isPhaseReady(plan, p));
+}
+
+/**
+ * Walk down the chain rooted at `phase`, skipping any descendants that
+ * are already `shipped`, and return the first descendant that isn't
+ * shipped — i.e. the current frontier of the chain.
+ *
+ * Used by the auto loop after `/ship` to advance to the next phase in
+ * the same chain. Returns `null` when the chain dead-ends (no
+ * descendants) or when every descendant is shipped.
+ *
+ * When a phase has multiple direct successors (forking chain), the
+ * first one by array order is followed. The other successor(s) are
+ * for a concurrent driver to claim — Phase 5 of plan-19 introduces
+ * multi-driver semantics; until then the single-driver loop simply
+ * takes the first branch and ends quietly when it dead-ends.
+ */
+export function chainHead(
+	plan: Pick<Plan, "phases">,
+	phase: Pick<Phase, "id">,
+): Phase | null {
+	let curId = phase.id;
+	// Bound the walk by the phase count so a hand-edited plan with a
+	// dependency cycle can't infinite-loop here. Cycles are rejected at
+	// write time but on-disk plans may still be edited externally.
+	for (let steps = 0; steps < plan.phases.length; steps++) {
+		const next = plan.phases.find(
+			(p) => effectiveDependsOn(plan, p)[0] === curId,
+		);
+		if (!next) return null;
+		if (next.status === "shipped") {
+			curId = next.id;
+			continue;
+		}
+		return next;
+	}
+	return null;
+}
+
+/**
+ * Human-readable reason `phase` isn't in {@link readyPhases}, or
+ * `null` when the phase IS ready (caller treats that as "go for it").
+ *
+ * Surface examples (used by widgets / `/plan list`):
+ *   - `"phase \`auth\` is in-review, not planned"`
+ *   - `"waiting on \`auth\` (in-review)"`
+ *   - `"waiting on abandoned phase \`old-auth\` — edit dependsOn to unblock"`
+ */
+export function blockedReason(
+	plan: Pick<Plan, "phases">,
+	phase: Pick<Phase, "id" | "status" | "dependsOn">,
+): string | null {
+	if (phase.status !== "planned") {
+		return `phase \`${phase.id}\` is ${phase.status}, not planned`;
+	}
+	const deps = effectiveDependsOn(plan, phase);
+	if (deps.length === 0) return null;
+	const parentId = deps[0];
+	const parent = plan.phases.find((p) => p.id === parentId);
+	if (!parent) return `unknown parent \`${parentId}\``;
+	if (parent.status === "shipped") return null;
+	if (parent.status === "abandoned") {
+		return `waiting on abandoned phase \`${parent.id}\` — edit dependsOn to unblock`;
+	}
+	return `waiting on \`${parent.id}\` (${parent.status})`;
+}
+
 /** Repo-name derivation — the basename used for worktree path scoping. */
 export function repoNameFromPath(path: string): string {
 	// Use node:path so Windows backslashes and mixed separators are
@@ -415,33 +514,37 @@ const PARENT_BRANCH_STATUSES: readonly PhaseStatus[] = [
  * changes until N merges, which can introduce silent conflicts or
  * "why is this code missing?" confusion.
  *
- * Algorithm: walk the predecessors backwards from `activatingPhaseId`.
- *   - On the first non-skippable predecessor:
- *     - shipped → main has its commits, fork from defaultBranch.
- *     - active / in-review / ready-to-ship / needs-attention →
- *       fork from that predecessor's branch.
- *   - Skip `abandoned` (its branch is dead-end work) and `planned`
- *     (shouldn't be a predecessor in practice, but treat as not-yet-
- *     started so we look further back).
+ * Under v2 (DAG) semantics, the dependency edge is whatever
+ * {@link effectiveDependsOn} returns — the explicit `dependsOn` if set,
+ * else a v1-fallback to the nearest non-abandoned predecessor by array
+ * order. Multi-parent is rejected at write time so the parent set is
+ * at most one phase.
  *
- * Returns `defaultBranch` when the phase has no predecessors, when
- * every predecessor is abandoned/planned, or when `activatingPhaseId`
- * isn't found in the plan (defensive fallback).
+ * Algorithm: look at the at-most-one parent.
+ *   - No parent / parent missing from plan / parent shipped / parent
+ *     abandoned / parent planned → fork from `defaultBranch`. (Parent
+ *     has either no in-flight branch with extra commits, or its work
+ *     has already landed on main, so main is the right base.)
+ *   - Parent active / in-review / ready-to-ship / needs-attention →
+ *     fork from parent's branch. (Stacked-PR case: parent's PR isn't
+ *     merged, but its commits live on its branch.)
+ *
+ * Returns `defaultBranch` when the activating phase isn't found in the
+ * plan (defensive fallback).
  */
 export function pickBaseBranch(
 	plan: Pick<Plan, "phases">,
 	activatingPhaseId: string,
 	defaultBranch: string,
 ): string {
-	const idx = plan.phases.findIndex((p) => p.id === activatingPhaseId);
-	if (idx < 0) return defaultBranch;
-	for (let i = idx - 1; i >= 0; i--) {
-		const prev = plan.phases[i];
-		if (!prev) continue;
-		if (prev.status === "shipped") return defaultBranch;
-		if (PARENT_BRANCH_STATUSES.includes(prev.status)) return prev.branch;
-		// abandoned / planned: skip, look further back.
-	}
+	const activating = plan.phases.find((p) => p.id === activatingPhaseId);
+	if (!activating) return defaultBranch;
+	const deps = effectiveDependsOn(plan, activating);
+	const parentId = deps[0];
+	if (!parentId) return defaultBranch;
+	const parent = plan.phases.find((p) => p.id === parentId);
+	if (!parent) return defaultBranch;
+	if (PARENT_BRANCH_STATUSES.includes(parent.status)) return parent.branch;
 	return defaultBranch;
 }
 

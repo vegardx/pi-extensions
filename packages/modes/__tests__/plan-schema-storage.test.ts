@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	abandonNonTerminalPhases,
+	blockedReason,
 	canTransition,
+	chainHead,
 	effectiveDependsOn,
 	effectiveTaskKind,
+	isPhaseReady,
 	matchPhaseId,
 	matchTaskId,
 	type Phase,
@@ -14,6 +17,7 @@ import {
 	phaseId,
 	pickBaseBranch,
 	planImplementBranch,
+	readyPhases,
 	repoNameFromPath,
 	slugify,
 	taskId,
@@ -398,122 +402,242 @@ describe("storage", () => {
 describe("pickBaseBranch", () => {
 	const DEFAULT = "main";
 
-	it("returns default branch when phase has no predecessors", () => {
+	it("returns default branch when phase has no parent", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
 		});
 		expect(pickBaseBranch(plan, "p-1", DEFAULT)).toBe("main");
 	});
 
-	it("returns default when only predecessor is shipped (its work is on main)", () => {
+	it("returns default when parent is shipped (its work is on main)", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "shipped" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
 		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("main");
 	});
 
-	it("forks from in-review predecessor's branch", () => {
+	it("forks from in-review parent's branch", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "in-review",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
 		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
 	});
 
-	it("forks from ready-to-ship predecessor's branch", () => {
+	it("forks from ready-to-ship parent's branch", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "ready-to-ship" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "ready-to-ship",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
 		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
 	});
 
-	it("forks from needs-attention predecessor's branch", () => {
+	it("forks from needs-attention parent's branch", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "needs-attention" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "needs-attention",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
 		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
 	});
 
-	it("forks from active predecessor's branch (unusual but supported)", () => {
+	it("forks from active parent's branch (concurrent driver case)", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "active" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "active",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
 		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("feat/p-1");
 	});
 
-	it("skips abandoned predecessors and walks further back", () => {
+	it("abandoned parent → default (parent's branch is dead-end)", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "abandoned" }),
-				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "abandoned",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
-		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-1");
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("main");
 	});
 
-	it("skips planned predecessors and walks further back", () => {
-		// Edge case: shouldn't normally happen (you'd activate phases in
-		// order), but the helper should still degrade sensibly.
+	it("planned parent → default (parent has no commits yet)", () => {
+		// `isPhaseReady` would return false in this state, but the picker
+		// stays mechanical: don't fork from a branch that doesn't have any
+		// commits. The auto loop won't activate this phase anyway.
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
-				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "planned",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "planned",
+				}),
 			],
 		});
-		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-1");
+		expect(pickBaseBranch(plan, "p-2", DEFAULT)).toBe("main");
 	});
 
-	it("uses the FIRST non-skippable predecessor walking backwards", () => {
-		// p-2 (in-review) is between p-1 (in-review) and p-3.
-		// p-3 should fork from p-2, NOT p-1 — p-2 is built on top of p-1
-		// and contains p-1's commits via the previous /implement.
+	it("unknown parent id → default (defensive)", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
-				makePhase({ id: "p-2", branch: "feat/p-2", status: "in-review" }),
-				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: ["missing"],
+				}),
+			],
+		});
+		expect(pickBaseBranch(plan, "p-1", DEFAULT)).toBe("main");
+	});
+
+	it("chain: middle phase forks from its in-flight parent, not the root", () => {
+		// p-3 depends on p-2 (in-review). p-2 contains p-1's commits via
+		// stacking, so forking from feat/p-2 is correct — NOT from feat/p-1.
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "p-1",
+					branch: "feat/p-1",
+					dependsOn: [],
+					status: "in-review",
+				}),
+				makePhase({
+					id: "p-2",
+					branch: "feat/p-2",
+					dependsOn: ["p-1"],
+					status: "in-review",
+				}),
+				makePhase({
+					id: "p-3",
+					branch: "feat/p-3",
+					dependsOn: ["p-2"],
+					status: "planned",
+				}),
 			],
 		});
 		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-2");
 	});
 
-	it("returns default when phase id isn't found in the plan (defensive)", () => {
-		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
-		});
-		expect(pickBaseBranch(plan, "p-bogus", DEFAULT)).toBe("main");
-	});
-
-	it("returns default when every predecessor is skippable", () => {
+	it("forest: sibling chains don't see each other (different parent edges)", () => {
 		const plan = makePlan({
 			phases: [
-				makePhase({ id: "p-1", branch: "feat/p-1", status: "abandoned" }),
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "in-review",
+				}),
+				makePhase({
+					id: "b",
+					branch: "feat/b",
+					dependsOn: [],
+					status: "planned",
+				}),
+			],
+		});
+		// b has no parent → forks from main, even though `a` exists earlier
+		// in the array and is in-review.
+		expect(pickBaseBranch(plan, "b", DEFAULT)).toBe("main");
+	});
+
+	it("v1 plan (dependsOn unset) falls back to nearest non-abandoned predecessor", () => {
+		// On migrate, dependsOn would be backfilled to ["p-1"] (skipping the
+		// abandoned p-2). Here we test the in-memory fallback directly.
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
 				makePhase({ id: "p-2", branch: "feat/p-2", status: "abandoned" }),
 				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
 			],
 		});
-		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("main");
+		expect(pickBaseBranch(plan, "p-3", DEFAULT)).toBe("feat/p-1");
+	});
+
+	it("phase id not in plan → default (defensive)", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
+		});
+		expect(pickBaseBranch(plan, "p-bogus", DEFAULT)).toBe("main");
 	});
 
 	it("respects the caller's defaultBranch (e.g. 'master')", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1" })],
+			phases: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
 		});
 		expect(pickBaseBranch(plan, "p-1", "master")).toBe("master");
 	});
@@ -812,5 +936,274 @@ describe("effectiveTaskKind", () => {
 	it("returns explicit kind", () => {
 		expect(effectiveTaskKind({ kind: "followUp" })).toBe("followUp");
 		expect(effectiveTaskKind({ kind: "manual" })).toBe("manual");
+	});
+});
+
+describe("isPhaseReady / readyPhases", () => {
+	it("first phase with no parent is ready when planned", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
+		});
+		expect(isPhaseReady(plan, plan.phases[0])).toBe(true);
+		expect(readyPhases(plan).map((p) => p.id)).toEqual(["a"]);
+	});
+
+	it("non-planned phases are never ready", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "in-review",
+				}),
+				makePhase({
+					id: "b",
+					branch: "feat/b",
+					dependsOn: [],
+					status: "shipped",
+				}),
+			],
+		});
+		expect(readyPhases(plan)).toEqual([]);
+	});
+
+	it("chain: only head is ready when middle is planned", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+				makePhase({ id: "c", branch: "feat/c", dependsOn: ["b"] }),
+			],
+		});
+		expect(readyPhases(plan).map((p) => p.id)).toEqual(["b"]);
+	});
+
+	it("forest: roots of two independent chains are both ready", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "a1", branch: "feat/a1", dependsOn: [] }),
+				makePhase({ id: "a2", branch: "feat/a2", dependsOn: ["a1"] }),
+				makePhase({ id: "b1", branch: "feat/b1", dependsOn: [] }),
+				makePhase({ id: "b2", branch: "feat/b2", dependsOn: ["b1"] }),
+			],
+		});
+		expect(readyPhases(plan).map((p) => p.id)).toEqual(["a1", "b1"]);
+	});
+
+	it("abandoned parent blocks dependent (does not silently fall back)", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "abandoned",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(isPhaseReady(plan, plan.phases[1])).toBe(false);
+		expect(readyPhases(plan)).toEqual([]);
+	});
+
+	it("unknown parent blocks the dependent", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["missing"] }),
+			],
+		});
+		expect(isPhaseReady(plan, plan.phases[0])).toBe(false);
+	});
+
+	it("v1 plan (dependsOn unset) falls back to array-order parent", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
+				makePhase({ id: "b", branch: "feat/b" }),
+			],
+		});
+		expect(readyPhases(plan).map((p) => p.id)).toEqual(["b"]);
+	});
+});
+
+describe("chainHead", () => {
+	it("returns null when phase has no successors", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
+		});
+		expect(chainHead(plan, plan.phases[0])).toBeNull();
+	});
+
+	it("returns immediate planned successor", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(chainHead(plan, plan.phases[0])?.id).toBe("b");
+	});
+
+	it("skips shipped descendants and returns first non-shipped", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({
+					id: "b",
+					branch: "feat/b",
+					dependsOn: ["a"],
+					status: "shipped",
+				}),
+				makePhase({ id: "c", branch: "feat/c", dependsOn: ["b"] }),
+				makePhase({ id: "d", branch: "feat/d", dependsOn: ["c"] }),
+			],
+		});
+		expect(chainHead(plan, plan.phases[0])?.id).toBe("c");
+	});
+
+	it("returns null when every descendant is shipped", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({
+					id: "b",
+					branch: "feat/b",
+					dependsOn: ["a"],
+					status: "shipped",
+				}),
+			],
+		});
+		expect(chainHead(plan, plan.phases[0])).toBeNull();
+	});
+
+	it("on a fork picks the first child by array order", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+				makePhase({ id: "c", branch: "feat/c", dependsOn: ["a"] }),
+			],
+		});
+		expect(chainHead(plan, plan.phases[0])?.id).toBe("b");
+	});
+
+	it("is bounded against external on-disk cycles (no infinite loop)", () => {
+		// dependsOn cycle b↔c. Plan-tools rejects this at write time;
+		// chainHead must not infinite-loop when a hand-edited plan slips
+		// one through.
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "shipped",
+				}),
+				makePhase({
+					id: "b",
+					branch: "feat/b",
+					dependsOn: ["c"],
+					status: "shipped",
+				}),
+				makePhase({
+					id: "c",
+					branch: "feat/c",
+					dependsOn: ["b"],
+					status: "shipped",
+				}),
+			],
+		});
+		expect(() => chainHead(plan, plan.phases[0])).not.toThrow();
+	});
+});
+
+describe("blockedReason", () => {
+	it("returns null when phase is ready", () => {
+		const plan = makePlan({
+			phases: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
+		});
+		expect(blockedReason(plan, plan.phases[0])).toBeNull();
+	});
+
+	it("flags non-planned phase", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "in-review",
+				}),
+			],
+		});
+		expect(blockedReason(plan, plan.phases[0])).toContain("in-review");
+	});
+
+	it("surfaces parent's status when waiting", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "in-review",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(blockedReason(plan, plan.phases[1])).toBe(
+			"waiting on `a` (in-review)",
+		);
+	});
+
+	it("explains abandoned parent", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({
+					id: "a",
+					branch: "feat/a",
+					dependsOn: [],
+					status: "abandoned",
+				}),
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
+			],
+		});
+		expect(blockedReason(plan, plan.phases[1])).toContain("abandoned");
+		expect(blockedReason(plan, plan.phases[1])).toContain("dependsOn");
+	});
+
+	it("flags unknown parent", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "b", branch: "feat/b", dependsOn: ["missing"] }),
+			],
+		});
+		expect(blockedReason(plan, plan.phases[0])).toContain("missing");
 	});
 });

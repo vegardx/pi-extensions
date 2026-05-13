@@ -282,6 +282,42 @@ describe("plan_phase dependsOn", () => {
 		expect(plan.phases[1].dependsOn).toEqual(["first"]);
 	});
 
+	it("defaults dependsOn to last phase when omitted (linear chain ergonomic)", async () => {
+		await call("plan_phase", { action: "add", title: "First" });
+		await call("plan_phase", { action: "add", title: "Second" });
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[1].dependsOn).toEqual(["first"]);
+	});
+
+	it("first phase in an empty plan defaults to []", async () => {
+		await call("plan_phase", { action: "add", title: "Solo" });
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[0].dependsOn).toEqual([]);
+	});
+
+	it("explicit dependsOn: [] declares a sibling root (overrides default)", async () => {
+		await call("plan_phase", { action: "add", title: "First" });
+		await call("plan_phase", {
+			action: "add",
+			title: "Second",
+			dependsOn: [],
+		});
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[1].dependsOn).toEqual([]);
+	});
+
+	it("explicit dependsOn forks off an earlier phase", async () => {
+		await call("plan_phase", { action: "add", title: "A" });
+		await call("plan_phase", { action: "add", title: "B" });
+		await call("plan_phase", {
+			action: "add",
+			title: "C",
+			dependsOn: ["a"],
+		});
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[2].dependsOn).toEqual(["a"]);
+	});
+
 	it("rejects multi-parent on add (chain-only constraint)", async () => {
 		await call("plan_phase", { action: "add", title: "A" });
 		await call("plan_phase", { action: "add", title: "B" });
