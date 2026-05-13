@@ -20,6 +20,53 @@ Current mode is shown in the footer (`hack` renders red — no safety net; `ask`
 
 Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (default `plan`). Existing persisted sessions always use their saved mode.
 
+### Mode transitions
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    [*] --> plan: fresh session
+
+    hack --> plan: Shift+Tab (prompts)
+    plan --> ask: Shift+Tab (picker)
+    ask --> auto: Shift+Tab
+    auto --> hack: Shift+Tab
+
+    plan --> auto: /implement
+    plan --> ask: /implement
+
+    auto --> plan: /plan
+    ask --> plan: /plan
+    hack --> plan: /plan
+
+    plan --> [*]: /park
+    auto --> [*]: /ship
+    ask --> [*]: /ship
+```
+
+Two edges open a picker; everything else flips silently — including `/implement`, which starts execution with no confirmation step:
+
+- `hack → plan` (Shift+Tab) — carry-over context: keep or lossy-compact the active phase. Skipped headless.
+- `plan → ask` (Shift+Tab, when a plan is in flight) — Implement (auto) / Implement (ask) / Park / Continue discussing.
+
+Session-restore boundaries (full table under [Session model](#session-model)):
+
+| Transition | Session |
+| --- | --- |
+| `/plan` (any source) and `Shift+Tab` to plan | `switchSession(plan.planSessionPath)` |
+| `/implement` first time on a phase | NEW auto session, seeded from the plan doc |
+| `/implement` resume (`active` / `needs-attention`) | `switchSession(phase.sessionPath)` |
+| `Shift+Tab` between `hack`, `ask`, `auto` | (no session change) |
+| `/ship` | (no session change) — commits, pushes, opens PR |
+
+Compaction & seed touchpoints:
+
+- `/implement` writes a deterministic plan-doc **seed** into the new auto session — no LLM call. See [Per-phase session seeding](#per-phase-session-seeding).
+- In `auto` and `ask`, **mid-phase compaction** fires from `turn_end` when `sys + work` exceeds `compaction.workingTokens`. `plan` mode is exempt — the human is in the loop.
+- `/ship` summarises the auto session into `phase.summary`; the next phase's seed inlines all prior shipped phases' summaries verbatim. See [Cross-phase carry-forward](#cross-phase-carry-forward).
+
+
 ### Choosing a mode at /implement
 
 When you commit to a plan via the picker (Shift+Tab plan→ask) or `/implement`, two implement options are offered:
