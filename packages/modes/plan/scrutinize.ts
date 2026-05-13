@@ -16,7 +16,7 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { candidateJsonPayloads } from "@vegardx/pi-extensions-shared/json-extraction.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
-import type { Plan } from "./schema.js";
+import { effectiveTaskKind, type Plan, type TaskKind } from "./schema.js";
 
 const PROMPTS_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -49,17 +49,26 @@ export interface ScrutinyResult {
 }
 
 /** Compact plan representation sent to the sub-agent. */
+interface PlanPayloadTask {
+	id: string;
+	title: string;
+	body: string;
+	done: boolean;
+	kind: TaskKind;
+}
+
 interface PlanPayloadPhase {
 	id: string;
 	title: string;
 	goal: string;
 	status: string;
-	tasks: Array<{
-		id: string;
-		title: string;
-		body: string;
-		done: boolean;
-	}>;
+	dependsOn: string[];
+	tasks: PlanPayloadTask[];
+}
+
+interface PlanPayload {
+	phases: PlanPayloadPhase[];
+	followUps: PlanPayloadTask[];
 }
 
 /**
@@ -68,24 +77,36 @@ interface PlanPayloadPhase {
  * Strips `phase.summary` (implementation narrative — not useful for gap
  * analysis) and truncates `task.body` to MAX_BODY_CHARS to keep the prompt
  * within reason.
+ *
+ * Carries `kind` and `dependsOn` so the scrutinizer knows which tasks
+ * gate completion vs which are reviewer notes, and which phases are
+ * actually allowed to depend on which.
  */
 function serialisePlan(plan: Plan): string {
-	const phases: PlanPayloadPhase[] = plan.phases.map((phase) => ({
-		id: phase.id,
-		title: phase.title,
-		goal: phase.goal,
-		status: phase.status,
-		tasks: phase.tasks.map((task) => ({
-			id: task.id,
-			title: task.title,
-			body:
-				task.body.length > MAX_BODY_CHARS
-					? task.body.slice(0, MAX_BODY_CHARS) + "…"
-					: task.body,
-			done: task.done,
+	const toTask = (
+		task: Plan["phases"][number]["tasks"][number],
+	): PlanPayloadTask => ({
+		id: task.id,
+		title: task.title,
+		body:
+			task.body.length > MAX_BODY_CHARS
+				? task.body.slice(0, MAX_BODY_CHARS) + "…"
+				: task.body,
+		done: task.done,
+		kind: effectiveTaskKind(task),
+	});
+	const payload: PlanPayload = {
+		phases: plan.phases.map((phase) => ({
+			id: phase.id,
+			title: phase.title,
+			goal: phase.goal,
+			status: phase.status,
+			dependsOn: phase.dependsOn ?? [],
+			tasks: phase.tasks.map(toTask),
 		})),
-	}));
-	return JSON.stringify(phases);
+		followUps: (plan.followUps ?? []).map(toTask),
+	};
+	return JSON.stringify(payload);
 }
 
 function isValidFinding(item: unknown): item is ScrutinyFinding {

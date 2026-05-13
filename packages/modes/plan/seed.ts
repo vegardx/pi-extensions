@@ -27,7 +27,11 @@
  */
 
 import type { SessionManager } from "@mariozechner/pi-coding-agent";
-import type { Plan, Phase as PlanPhase } from "./schema.js";
+import {
+	effectiveTaskKind,
+	type Plan,
+	type Phase as PlanPhase,
+} from "./schema.js";
 
 /** customType tag for the seed entry. */
 export const PLAN_SEED_CUSTOM_TYPE = "modes:plan-seed";
@@ -53,13 +57,22 @@ function indentLines(text: string, indent: number): string {
  *       Summary:
  *         <phase.summary, indented; omitted if not set>
  *     - Phase `2` [active]         — title: goal     ← THIS PHASE
- *       Tasks:
+ *       Deliverables (your work; tick each as you finish):
  *         - [ ] task 1 title
  *         - [x] task 2 title
+ *       Notes (informational; not for you to tick):
+ *         - [?] open question title
+ *         - [!] manual smoke step title
+ *         - [~] follow-up to file later
  *     - Phase `3` [planned]        — title: goal
  *
- *     You are working on Phase `2`. Only execute its tasks. When all
- *     tasks are done, run `/ship` — do NOT start the next phase.
+ *     Plan-level follow-ups (not gating any phase):
+ *       - [~] cross-cutting follow-up
+ *
+ *     You are working on Phase `2`. Only execute its deliverables. When
+ *     all deliverables are done, run `/ship` — do NOT start the next
+ *     phase. Notes are reviewer-facing and surface in the PR body; do
+ *     not tick them.
  */
 export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 	const lines: string[] = [`## Plan: ${plan.title} (slug: ${plan.slug})`];
@@ -78,18 +91,62 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 		}
 
 		if (isActive && phase.tasks.length > 0) {
-			lines.push("  Tasks:");
-			for (const task of phase.tasks) {
-				const box = task.done ? "[x]" : "[ ]";
-				lines.push(`    - ${box} ${task.title}`);
+			// Split by kind so the agent gets a clean signal: deliverables
+			// are its work; question / manual / followUp tasks are
+			// reviewer-facing notes that surface in the PR body and must
+			// not be ticked off.
+			const deliverables = phase.tasks.filter(
+				(t) => effectiveTaskKind(t) === "deliverable",
+			);
+			const notes = phase.tasks.filter(
+				(t) => effectiveTaskKind(t) !== "deliverable",
+			);
+
+			if (deliverables.length > 0) {
+				lines.push("  Deliverables (your work; tick each as you finish):");
+				for (const task of deliverables) {
+					const box = task.done ? "[x]" : "[ ]";
+					lines.push(`    - ${box} ${task.title}`);
+				}
 			}
+
+			if (notes.length > 0) {
+				lines.push("  Notes (informational; not for you to tick):");
+				for (const task of notes) {
+					const kind = effectiveTaskKind(task);
+					const kindMarker =
+						kind === "question" ? "[?]" : kind === "manual" ? "[!]" : "[~]";
+					lines.push(`    - ${kindMarker} ${task.title} (${kind})`);
+				}
+			}
+		}
+	}
+
+	const planFollowUps = plan.followUps ?? [];
+	if (planFollowUps.length > 0) {
+		lines.push("");
+		lines.push("Plan-level follow-ups (not gating any phase):");
+		for (const task of planFollowUps) {
+			const kind = effectiveTaskKind(task);
+			const kindMarker =
+				kind === "question"
+					? "[?]"
+					: kind === "manual"
+						? "[!]"
+						: kind === "followUp"
+							? "[~]"
+							: task.done
+								? "[x]"
+								: "[ ]";
+			lines.push(`  - ${kindMarker} ${task.title} (${kind})`);
 		}
 	}
 
 	lines.push("");
 	lines.push(
-		`You are working on Phase \`${activePhase.id}\`. Only execute its tasks. When all`,
-		"tasks are done, run `/ship` — do NOT start the next phase.",
+		`You are working on Phase \`${activePhase.id}\`. Only execute its deliverables. When`,
+		"all deliverables are done, run `/ship` — do NOT start the next phase.",
+		"Notes are reviewer-facing and surface in the PR body; do not tick them.",
 	);
 
 	return lines.join("\n");
