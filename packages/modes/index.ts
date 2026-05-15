@@ -113,6 +113,7 @@ import {
 	abandonNonTerminalPhases,
 	blockedReason,
 	chainHead,
+	effectiveDependsOn,
 	effectiveTaskKind,
 	type ImplementBranchPlan,
 	isPhaseReady,
@@ -4617,6 +4618,24 @@ export default function (pi: ExtensionAPI) {
 				"Route commit/push/PR work through /commit and /ship — don't shell out to `git commit`, `git push`, or `gh pr create` directly. If you already did, /sync will reconcile.",
 				"",
 			];
+			// If this phase depends on a predecessor, surface its authoritative
+			// plan state so the agent doesn't infer push/PR status from git
+			// (which may be stale, wrong worktree, or out of sync).
+			if (phase && plan) {
+				const parentId = effectiveDependsOn(plan, phase)[0];
+				if (parentId) {
+					const parent = plan.phases.find((p) => p.id === parentId);
+					if (parent) {
+						let parentInfo = `Predecessor \`${parent.id}\`: status=\`${parent.status}\``;
+						if (parent.branch) parentInfo += `, branch=\`${parent.branch}\``;
+						if (parent.prNumber) parentInfo += `, PR=#${parent.prNumber}`;
+						lines.push(
+							`${parentInfo} — trust this, do not re-check its push/PR state from git.`,
+							"",
+						);
+					}
+				}
+			}
 			if (remainingDeliverables.length > 0) {
 				lines.push(
 					"Remaining deliverables (titles short — see plan_view for full body):",
