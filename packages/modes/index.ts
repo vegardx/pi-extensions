@@ -66,6 +66,7 @@ import {
 	DEFAULT_SUMMARY_TOKENS,
 	DEFAULT_WORKING_TOKENS,
 	findLatestCompactionSummary,
+	planSummaryContent,
 	type SummariseFn,
 	shouldCompactMidPhase,
 } from "./plan/compaction.js";
@@ -1561,6 +1562,21 @@ export default function (pi: ExtensionAPI) {
 			modeState.stage = "planning";
 			persist();
 			return;
+		}
+
+		// Emit the current plan into chat so the user can review phases
+		// without having to open a separate view.
+		const summary = planSummaryContent(currentPlan(), view.action);
+		if (summary) {
+			pi.sendMessage(
+				{
+					customType: EXT_ID,
+					content: summary,
+					display: true,
+					details: { planSummaryBeforePicker: true },
+				},
+				{ triggerTurn: false },
+			);
 		}
 
 		const choice = await ctx.ui.select(view.title, view.options);

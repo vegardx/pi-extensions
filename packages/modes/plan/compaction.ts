@@ -771,3 +771,20 @@ export function shouldResumeAfterCompaction(
 //    extract this into a standalone package and parametrise the rendering
 //    helpers (renderPlanSection / renderPhaseSection) over a phase shape.
 // ---------------------------------------------------------------------------
+
+/**
+ * Returns the markdown content for the plan-summary message that is
+ * emitted into chat immediately before the plan-ready picker dialog
+ * fires. Returns `null` when:
+ *   - no plan exists, or
+ *   - the picker resolved to `"bail"` (nothing actionable to pick).
+ *
+ * Exported for unit testing; `runPicker` is the only production caller.
+ */
+export function planSummaryContent(
+	plan: Plan | null | undefined,
+	viewAction: string,
+): string | null {
+	if (!plan || viewAction === "bail") return null;
+	return renderPlanSection(plan);
+}
