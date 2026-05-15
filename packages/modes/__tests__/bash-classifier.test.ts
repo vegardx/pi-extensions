@@ -14,11 +14,17 @@ describe("classifyStatic", () => {
 		});
 
 		it("allows common read-only binaries", () => {
-			expect(classifyStatic("cat src/foo.ts")?.verdict).toBe("allow");
+			// cat is excluded — it redirects to the read tool (tested separately)
 			expect(classifyStatic("ls -la src/")?.verdict).toBe("allow");
 			expect(classifyStatic("rg TODO src/")?.verdict).toBe("allow");
 			expect(classifyStatic("tree src/")?.verdict).toBe("allow");
 			expect(classifyStatic("wc -l src/foo.ts")?.verdict).toBe("allow");
+		});
+
+		it("redirects cat to the read tool", () => {
+			const r = classifyStatic("cat src/foo.ts");
+			expect(r?.verdict).toBe("redirect");
+			expect(r?.tool).toBe("read");
 		});
 
 		it("allows gh CLI read operations", () => {
@@ -79,7 +85,13 @@ describe("classifyStatic", () => {
 	});
 
 	describe("chaining / bypass prevention", () => {
-		it("blocks chained commands when any segment is dangerous", () => {
+		it("redirects piped cat — chain handler propagates redirect", () => {
+			const r = classifyStatic("cat package.json | grep prepare");
+			expect(r?.verdict).toBe("redirect");
+			expect(r?.tool).toBe("read");
+		});
+
+		it("still blocks chained commands when any segment is dangerous", () => {
 			expect(classifyStatic("git log && rm -rf node_modules")?.verdict).toBe(
 				"block",
 			);

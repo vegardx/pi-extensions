@@ -145,7 +145,7 @@ const ALLOW_PREFIXES: readonly string[] = [
  */
 const ALLOW_BINARIES: readonly string[] = [
 	"ls",
-	"cat",
+	// cat intentionally omitted — redirected to the read tool (see classifyStatic)
 	"less",
 	"more",
 	"tree",
@@ -247,7 +247,12 @@ export function classifyStatic(command: string): ClassifyResult | null {
 			const segResult = classifyStatic(seg.trim());
 			if (segResult?.verdict === "block") return segResult;
 		}
-		// If no segment is blocked, check if any is ambiguous
+		// Surface a redirect if any segment prefers a pi tool (e.g. cat file | grep)
+		for (const seg of segments) {
+			const segResult = classifyStatic(seg.trim());
+			if (segResult?.verdict === "redirect") return segResult;
+		}
+		// If no segment is blocked or redirected, check if any is ambiguous
 		for (const seg of segments) {
 			const segResult = classifyStatic(seg.trim());
 			if (segResult === null) return null;
@@ -294,6 +299,15 @@ export function classifyStatic(command: string): ClassifyResult | null {
 		};
 	}
 
+	// ---- Static redirects --------------------------------------------------
+	// Checked before the allowlist so these binaries never slip through as
+	// "allow" just because they are technically read-only.
+
+	// cat reads file content — the built-in read tool is always better.
+	if (firstToken === "cat") {
+		return { verdict: "redirect", reason: "reads a file", tool: "read" };
+	}
+
 	// ---- Allowlist (only after denylist clears) ----------------------------
 
 	// Check binary allowlist (just the command name, no args)
@@ -333,8 +347,10 @@ Respond with JSON only — no markdown, no explanation outside the JSON:
 
 Examples:
   git log --oneline -10                      → {"verdict":"allow","reason":"read-only git history","tool":null}
-  cat src/index.ts                           → {"verdict":"redirect","reason":"reads a file — use the read tool","tool":"read"}
+  cat src/index.ts                           → {"verdict":"redirect","reason":"reads a file","tool":"read"}
+  cat package.json | grep -A3 'prepare'      → {"verdict":"redirect","reason":"reads a file","tool":"read"}
   grep -rn TODO src/                         → {"verdict":"allow","reason":"read-only text search","tool":null}
+  find packages/foo -type f | sort           → {"verdict":"redirect","reason":"lists files in a directory","tool":"find"}
   curl -s https://api.example.com/docs       → {"verdict":"allow","reason":"fetches information from an API","tool":null}
   node search.js "query"                     → {"verdict":"allow","reason":"runs a script to gather information","tool":null}
   python3 -c "print(2+2)"                    → {"verdict":"allow","reason":"trivial computation, no side effects","tool":null}
