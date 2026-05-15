@@ -11,6 +11,17 @@ Building it is the most fun I've had with software in years. Using it is mostly 
 
 If something looks weird, it probably is. If something works really well, that's the part you should steal.
 
+## What I care about
+
+The agent runs on someone else's GPU; my job is to make every token count. You can't have everything, but smart caching, a lean working context, and small phases that parallelise get you most of the way:
+
+- **Cache hits over context length.** System prompts, the plan-doc seed, and carry-forward summaries are byte-stable across turns and phases. The KV-cache reuses the whole stable prefix; you pay for the new tail, not the rebuilt head.
+- **Working slice small enough to stay sharp.** Mid-phase compaction fires *before* the live message tail gets long. Frontier models degrade past a certain point — the goal is to live in the sweet spot, not 80% of `contextWindow`.
+- **Short context, faster turns.** Less context = faster tokens-per-second from most providers. Less wall time, less waiting around.
+- **Small phases, run in parallel.** A plan broken into small independent phases ships faster end-to-end than one giant chain. The plan model is what unlocks parallelism — fanout workers per chain, or peer sessions in separate worktrees.
+- **Cheap models for cheap work.** Tiered backgrounds (`fast` / `normal` / `heavy`) — ghost text isn't running on the frontier and the seven review lenses aren't running on Haiku.
+
+
 ## What's in the box
 
 ### Phase/task plans + a four-mode permission cycle
