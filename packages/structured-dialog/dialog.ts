@@ -55,6 +55,35 @@ export function renderCacheIsValid(
  * Show the structured dialog and return the user's decisions.
  * Blocks until the user submits or cancels.
  */
+
+/**
+ * Renders the submit affordance lines for the Submit tab body.
+ *
+ * When `ready` is true, renders a box-bordered Submit button with
+ * selectedBg/text accent (matching the selected-option treatment).
+ * When `ready` is false, renders the ⚠ Required warning listing the
+ * missing item labels — same dimmed treatment as before.
+ *
+ * Exported for unit testing; the closure in showStructuredDialog calls
+ * this and pipes each line through truncateToWidth.
+ */
+export function renderSubmitAffordance(
+	ready: boolean,
+	missing: string[],
+	theme: Theme,
+): string[] {
+	if (!ready) {
+		return [`   ${theme.fg("warning", `⚠ Required: ${missing.join(", ")}`)}`];
+	}
+	const label = " ↵  Submit ";
+	const inner = label.length;
+	return [
+		`   ${theme.fg("accent", `┌${"─".repeat(inner)}┐`)}`,
+		`   ${theme.fg("accent", "│")}${theme.bg("selectedBg", theme.fg("text", label))}${theme.fg("accent", "│")}`,
+		`   ${theme.fg("accent", `└${"─".repeat(inner)}┘`)}`,
+	];
+}
+
 export async function showStructuredDialog(
 	ctx: ExtensionContext,
 	config: StructuredDialogConfig,
@@ -615,15 +644,13 @@ export async function showStructuredDialog(
 				const total = s.items.length;
 				add(`   ${theme.fg("muted", `${answered}/${total} answered`)}`);
 
-				if (!canSubmit(s)) {
-					const missing = unansweredItems(s)
-						.map((it) => it.label)
-						.join(", ");
-					lines.push("");
-					add(`   ${theme.fg("warning", `⚠ Required: ${missing}`)}`);
-				} else {
-					lines.push("");
-					add(`   ${theme.fg("success", "Press Enter to submit")}`);
+				lines.push("");
+				for (const line of renderSubmitAffordance(
+					canSubmit(s),
+					unansweredItems(s).map((it) => it.label),
+					theme,
+				)) {
+					add(line);
 				}
 			}
 
