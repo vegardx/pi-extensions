@@ -71,7 +71,11 @@ import {
 	decideFromCompletionChoice,
 	NEW_PLAN_STALE_MESSAGE,
 } from "./plan/completion.js";
-import { DelegateAgents } from "./plan/delegate-tools.js";
+import {
+	DEFAULT_RESEARCH_TIMEOUT_MS,
+	DelegateAgents,
+	type ResearchOutcome,
+} from "./plan/delegate-tools.js";
 import {
 	claimPhase,
 	evaluateClaim,
@@ -332,6 +336,12 @@ export default function (pi: ExtensionAPI) {
 				type: "string",
 				default: "auto",
 				doc: "Default option highlighted in the /implement picker: auto | ask. `auto` chugs through commit/ship/next phase autonomously; `ask` pauses at git boundaries. Set to `ask` if you want a human-in-the-loop default.",
+			},
+			{
+				key: "researchTimeoutMs",
+				type: "number",
+				default: DEFAULT_RESEARCH_TIMEOUT_MS,
+				doc: "Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. Default 90000 (90s).",
 			},
 		],
 	});
@@ -2409,6 +2419,55 @@ export default function (pi: ExtensionAPI) {
 		return null;
 	}
 
+	function readResearchTimeoutMs(ctx: ExtensionContext): number {
+		const settings = readRelevantSettings(ctx.cwd);
+		const extCfg = settings.extensionConfig?.[EXT_ID] as
+			| Record<string, unknown>
+			| undefined;
+		const raw = extCfg?.researchTimeoutMs;
+		if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+			return Math.floor(raw);
+		}
+		return DEFAULT_RESEARCH_TIMEOUT_MS;
+	}
+
+	/**
+	 * Map a `ResearchOutcome` into the `{ content, details }` shape the
+	 * tool runtime expects. Timeout outcomes also fire a one-shot
+	 * warning notify so the user knows a research call was reaped.
+	 *
+	 * The agent-facing text keeps the historical `[research …]`
+	 * bracketed-message convention so existing prompts continue to
+	 * recognise failure shapes; `details` carries the structured
+	 * outcome verbatim for any caller that wants to branch on it.
+	 */
+	function formatResearchOutcome(
+		ctx: ExtensionContext,
+		outcome: ResearchOutcome,
+	): {
+		content: { type: "text"; text: string }[];
+		details: ResearchOutcome;
+	} {
+		let text: string;
+		if (outcome.ok) {
+			text = outcome.text;
+		} else if (outcome.reason === "timeout") {
+			notify(
+				ctx,
+				`research timed out after ${outcome.elapsedMs}ms (limit ${outcome.timeoutMs}ms)`,
+				"warning",
+			);
+			text = `[research timeout: no response after ${outcome.elapsedMs}ms (limit ${outcome.timeoutMs}ms)]`;
+		} else if (outcome.reason === "no-model") {
+			text = `[research: ${outcome.detail}]`;
+		} else if (outcome.reason === "subagent-error") {
+			text = `[research error: ${outcome.detail}]`;
+		} else {
+			text = "[research: no response]";
+		}
+		return { content: [{ type: "text", text }], details: outcome };
+	}
+
 	/**
 	 * Build the SummariseFn used by the compaction orchestrators. Returns
 	 * null when no normal-tier model is configured/auth'd — callers then
@@ -4002,10 +4061,26 @@ export default function (pi: ExtensionAPI) {
 			question: Type.String({
 				description: "What to research.",
 			}),
+			timeoutMs: Type.Optional(
+				Type.Number({
+					description:
+						"Hard timeout in milliseconds for this call. Overrides " +
+						"`extensionConfig.modes.researchTimeoutMs`. On timeout the " +
+						"call returns a structured failure (does not throw) so you " +
+						"can recover; the user is notified once.",
+				}),
+			),
 		}),
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await ensureDelegateAgents(ctx).research(params.question);
-			return { content: [{ type: "text", text: result }], details: {} };
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			const timeoutMs = params.timeoutMs ?? readResearchTimeoutMs(ctx);
+			const outcome = await ensureDelegateAgents(ctx).research(
+				params.question,
+				{
+					timeoutMs,
+					signal,
+				},
+			);
+			return formatResearchOutcome(ctx, outcome);
 		},
 	});
 

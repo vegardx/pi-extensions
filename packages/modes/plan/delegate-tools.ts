@@ -6,8 +6,9 @@
  * stays request/response — each call spawns a fresh process and they
  * already run in parallel without main-context bloat.
  *
- * Errors are returned as bracketed messages — never thrown — so the
- * main agent can decide how to proceed.
+ * Errors are returned as a structured discriminated outcome — never
+ * thrown — so the main agent can decide how to proceed and the host
+ * tool can format / notify based on the failure reason.
  */
 
 import { dirname, join } from "node:path";
@@ -23,7 +24,58 @@ const PROMPTS_DIR = join(
 );
 
 const RESEARCH_TOOLS: readonly string[] = ["websearch", "webfetch"];
-const RESEARCH_TIMEOUT_MS = 90_000;
+
+/**
+ * Fallback timeout when neither the per-call `timeoutMs` nor the
+ * `extensionConfig.modes.researchTimeoutMs` setting is provided.
+ *
+ * 90s matches the historical hard-coded value before the timeout
+ * became configurable (issue #167).
+ */
+export const DEFAULT_RESEARCH_TIMEOUT_MS = 90_000;
+
+export interface ResearchOptions {
+	/**
+	 * Hard timeout in milliseconds. When unset, falls back to
+	 * {@link DEFAULT_RESEARCH_TIMEOUT_MS}. Forwarded to
+	 * `runSubagent` → `RpcClient.waitForIdle`.
+	 */
+	timeoutMs?: number;
+	/** Host abort signal — propagated into `runSubagent`. */
+	signal?: AbortSignal;
+}
+
+/**
+ * Discriminated outcome of a `research()` call. The host tool maps
+ * this to a tool-call result + optional notify. Internal callers can
+ * branch on `reason` without parsing bracketed strings.
+ */
+export type ResearchOutcome =
+	| { ok: true; text: string; elapsedMs: number }
+	| {
+			ok: false;
+			reason: "no-model";
+			detail: string;
+			elapsedMs: number;
+	  }
+	| {
+			ok: false;
+			reason: "timeout";
+			elapsedMs: number;
+			timeoutMs: number;
+	  }
+	| {
+			ok: false;
+			reason: "subagent-error";
+			detail: string;
+			elapsedMs: number;
+	  }
+	| {
+			ok: false;
+			reason: "empty";
+			detail: string;
+			elapsedMs: number;
+	  };
 
 export class DelegateAgents {
 	private readonly ctx: ExtensionContext;
@@ -38,8 +90,17 @@ export class DelegateAgents {
 	 * Ask the research agent a question. Each call spawns a fresh
 	 * one-shot process so multiple concurrent questions run fully in
 	 * parallel.
+	 *
+	 * Returns a structured {@link ResearchOutcome}. Never throws —
+	 * abort/timeout/no-model failures all surface as `ok: false` with
+	 * a discriminating `reason`.
 	 */
-	async research(question: string): Promise<string> {
+	async research(
+		question: string,
+		opts: ResearchOptions = {},
+	): Promise<ResearchOutcome> {
+		const timeoutMs = opts.timeoutMs ?? DEFAULT_RESEARCH_TIMEOUT_MS;
+		const start = Date.now();
 		const id = this.nextResearchId++;
 		const flat = question.replace(/\s+/g, " ").trim();
 		const topic = flat.length > 60 ? `${flat.slice(0, 57)}…` : flat;
@@ -51,7 +112,13 @@ export class DelegateAgents {
 				tier: "fast",
 			});
 			if (!resolved) {
-				return "[research: no fast-tier model configured — add backgroundModels.primary.fast to settings.json]";
+				return {
+					ok: false,
+					reason: "no-model",
+					detail:
+						"no fast-tier model configured — add backgroundModels.primary.fast to settings.json",
+					elapsedMs: Date.now() - start,
+				};
 			}
 			const outcome = await runSubagent({
 				tag: id,
@@ -61,10 +128,34 @@ export class DelegateAgents {
 				provider: resolved.model.provider,
 				model: resolved.model.id,
 				cwd: this.ctx.cwd,
-				timeoutMs: RESEARCH_TIMEOUT_MS,
+				signal: opts.signal,
+				timeoutMs,
 			});
-			if (outcome.error) return `[research error: ${outcome.error}]`;
-			return outcome.rawText || "[research: no response]";
+			const elapsedMs = Date.now() - start;
+			if (outcome.error) {
+				// `RpcClient.waitForIdle` rejects with "Timeout waiting for
+				// agent to become idle…" when the deadline fires. We could
+				// pattern-match the message, but elapsed-vs-deadline is
+				// more robust against upstream message changes.
+				if (elapsedMs >= timeoutMs) {
+					return { ok: false, reason: "timeout", elapsedMs, timeoutMs };
+				}
+				return {
+					ok: false,
+					reason: "subagent-error",
+					detail: outcome.error,
+					elapsedMs,
+				};
+			}
+			if (!outcome.rawText) {
+				return {
+					ok: false,
+					reason: "empty",
+					detail: "subagent returned no text",
+					elapsedMs,
+				};
+			}
+			return { ok: true, text: outcome.rawText, elapsedMs };
 		} finally {
 			this.activeResearch.delete(id);
 			this.updateResearchWidget();
