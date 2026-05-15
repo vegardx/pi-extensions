@@ -32,9 +32,11 @@ Each phase runs in its own pi session, **seeded** deterministically from the pla
 
 → [Mode-transitions diagram](packages/modes/README.md#mode-transitions) · [Plan model](packages/modes/README.md#plan-model)
 
-### `/review` — seven lenses, two models
+### `/review` — seven specialist lenses
 
-Seven specialist reviewers fanned in parallel: architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker. Findings are cross-checked: the same diff runs against both `primary` and `secondary` models and only findings both agree on surface. Cuts false-positives without losing real bugs.
+Seven reviewers run in parallel against the active model: architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker. Each has its own focus and prompt; you walk findings interactively.
+
+Modes' auto-review pipeline runs the same lenses but gives the orchestrator a `consult_secondary_model` tool — uncertain findings get a second opinion before they reach you.
 
 → [`packages/review`](packages/review)
 
