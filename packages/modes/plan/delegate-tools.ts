@@ -128,15 +128,20 @@ export class DelegateAgents {
 				provider: resolved.model.provider,
 				model: resolved.model.id,
 				cwd: this.ctx.cwd,
-				signal: opts.signal,
+				// Use AbortSignal.timeout so the deadline covers client.start() and
+				// client.prompt() too, not just waitForIdle. Combine with the
+				// caller's signal so either abort source cancels cleanly.
+				signal: opts.signal
+					? AbortSignal.any([opts.signal, AbortSignal.timeout(timeoutMs)])
+					: AbortSignal.timeout(timeoutMs),
 				timeoutMs,
 			});
 			const elapsedMs = Date.now() - start;
 			if (outcome.error) {
-				// `RpcClient.waitForIdle` rejects with "Timeout waiting for
-				// agent to become idle…" when the deadline fires. We could
-				// pattern-match the message, but elapsed-vs-deadline is
-				// more robust against upstream message changes.
+				// AbortSignal.timeout fires at exactly timeoutMs ms, so any error
+				// with elapsed ≥ timeoutMs was caused by the deadline (not a
+				// coincidentally slow non-timeout failure). This is more precise
+				// than matching the upstream "Timeout waiting…" message string.
 				if (elapsedMs >= timeoutMs) {
 					return { ok: false, reason: "timeout", elapsedMs, timeoutMs };
 				}
