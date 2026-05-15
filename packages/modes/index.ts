@@ -4861,6 +4861,33 @@ export default function (pi: ExtensionAPI) {
 				completion.diagnostic &&
 				(modeState.mode === "auto" || modeState.mode === "ask")
 			) {
+				// No active phase at all (e.g. session resumed after a phase
+				// shipped): in auto mode, advance to the next ready phase
+				// rather than stopping. This covers the common case of a
+				// new session starting mid-plan with stage=executing but
+				// no phase currently marked active.
+				if (
+					completion.gate === "no-tasks" &&
+					modeState.mode === "auto" &&
+					plan &&
+					activePhase(plan) === null
+				) {
+					const selfSessionId = ctx.sessionManager.getSessionId();
+					const candidates = readyPhases(plan).filter((p) => {
+						const d = evaluateClaim(p, selfSessionId);
+						return d.kind !== "occupied";
+					});
+					const adopt = candidates[0];
+					if (adopt) {
+						notify(
+							ctx,
+							`auto: no active phase — advancing to \`${adopt.id}\`…`,
+							"info",
+						);
+						await doImplement(ctx, null, "auto", false, adopt.id);
+						return;
+					}
+				}
 				notify(
 					ctx,
 					`auto-loop: stopped at gate "${completion.gate}" — ${
