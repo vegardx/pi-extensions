@@ -1127,32 +1127,40 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const MAX_LINE = 60;
-		const lines: string[] = [];
 		// Self vs peer driver detection: a phase claimed by another live
 		// session is annotated so the user understands why the local
 		// auto-loop won't pick it up.
 		const selfSessionId = ctx.sessionManager.getSessionId();
-		for (const phase of plan.phases) {
-			const statusGlyph = STATUS_GLYPH[phase.status] ?? "○";
-			const peerSuffix =
-				phase.driverSessionId && phase.driverSessionId !== selfSessionId
-					? ` [peer]`
-					: "";
-			const title = truncateToWidth(
-				`${phase.title}${peerSuffix}`,
-				MAX_LINE - 6,
-			);
-			lines.push(`${statusGlyph} ${title}`);
-			// Show tasks only for phases with a worktree (active or needs-attention)
-			if (WORKTREE_STATUSES.includes(phase.status)) {
-				for (const task of phase.tasks) {
-					const label = truncateToWidth(task.title, MAX_LINE - 4);
-					lines.push(`  ${task.done ? "☑" : "☐"} ${label}`);
+		// Use the factory overload so MAX_LINE scales with the actual terminal
+		// width at render time rather than being a hard-coded constant.
+		// pi-tui re-invokes render(width) on resize automatically.
+		ctx.ui.setWidget("modes-steps", (_tui, _theme) => ({
+			render(width) {
+				const maxLine = Math.min(60, width);
+				const result: string[] = [];
+				for (const phase of plan.phases) {
+					const statusGlyph = STATUS_GLYPH[phase.status] ?? "○";
+					const peerSuffix =
+						phase.driverSessionId && phase.driverSessionId !== selfSessionId
+							? ` [peer]`
+							: "";
+					const title = truncateToWidth(
+						`${phase.title}${peerSuffix}`,
+						maxLine - 6,
+					);
+					result.push(`${statusGlyph} ${title}`);
+					// Show tasks only for phases with a worktree (active or needs-attention)
+					if (WORKTREE_STATUSES.includes(phase.status)) {
+						for (const task of phase.tasks) {
+							const label = truncateToWidth(task.title, maxLine - 4);
+							result.push(`  ${task.done ? "☑" : "☐"} ${label}`);
+						}
+					}
 				}
-			}
-		}
-		ctx.ui.setWidget("modes-steps", lines);
+				return result;
+			},
+			invalidate() {},
+		}));
 	}
 
 	/**
@@ -2151,7 +2159,7 @@ export default function (pi: ExtensionAPI) {
 				const dialogMod = await import("@vegardx/pi-structured-dialog");
 				const items = disputed.map((f) => ({
 					id: `${f.file}:${f.line ?? 0}:${f.title}`,
-					label: f.title.length > 30 ? `${f.title.slice(0, 27)}…` : f.title,
+					label: truncateToWidth(f.title, 30),
 					prompt: `**[${f.severity}]** ${f.title}\n\n${f.description}`,
 					options: [
 						{ value: "fix", label: "Fix" },
@@ -2259,10 +2267,7 @@ export default function (pi: ExtensionAPI) {
 
 		const items = questions.map((q) => ({
 			id: q.id,
-			label:
-				q.question.length > 30
-					? `${q.question.slice(0, 27)}\u2026`
-					: q.question,
+			label: truncateToWidth(q.question, 30),
 			prompt: q.question,
 			options: (q.options ?? []).map((opt, i) => ({
 				value: String(i),
