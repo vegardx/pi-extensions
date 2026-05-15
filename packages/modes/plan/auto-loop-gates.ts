@@ -22,7 +22,6 @@ import {
 export type AgentEndGate =
 	| "no-mode-state"
 	| "stage-not-executing"
-	| "no-active-phase"
 	| "no-tasks"
 	| "no-deliverables"
 	| "deliverables-incomplete";
