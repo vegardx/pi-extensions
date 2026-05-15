@@ -263,6 +263,9 @@ export function resolveImplementModeForCurrentMode(
 	defaultMode: ImplementMode,
 ): ImplementMode {
 	if (currentMode === "ask" || currentMode === "auto") return currentMode;
+	// hack maps to auto: ImplementMode is "auto" | "ask" only, and hack
+	// semantics are closest to auto (no plan ceremony, full tool access).
+	if (currentMode === "hack") return "auto";
 	return defaultMode;
 }
 
@@ -5247,7 +5250,8 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("implement", {
 		description:
-			"Sync to the default branch, create a feature branch, and switch to auto mode. " +
+			"Sync to the default branch, create a feature branch, and start executing. " +
+			"Preserves current mode (ask/auto → keep; hack → auto; plan → implementDefault setting). " +
 			"Optionally provide a description; otherwise uses the current plan. " +
 			"Pass an exact phase id (or `--phase <id>`) to target a specific phase — " +
 			"useful when running multiple drivers across independent chains. " +
