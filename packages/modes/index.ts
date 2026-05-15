@@ -74,6 +74,7 @@ import {
 	decideFromCompletionChoice,
 	NEW_PLAN_STALE_MESSAGE,
 } from "./plan/completion.js";
+import { findConnectionError } from "./plan/connection-error.js";
 import {
 	DEFAULT_RESEARCH_TIMEOUT_MS,
 	DelegateAgents,
@@ -4782,9 +4783,89 @@ export default function (pi: ExtensionAPI) {
 		// agent's call.
 	});
 
+	// ---- Connection-error recovery dialog ----------------------------------
+
+	async function handleConnectionError(
+		ctx: ExtensionContext,
+		errMsg: string,
+	): Promise<void> {
+		let dialogMod: typeof import("@vegardx/pi-structured-dialog") | null = null;
+		try {
+			dialogMod = await import("@vegardx/pi-structured-dialog");
+		} catch {
+			// structured-dialog not available; surface as plain notify.
+			notify(ctx, `Connection error: ${errMsg}. Retry manually.`, "error");
+			return;
+		}
+
+		const result = await dialogMod.showStructuredDialog(ctx, {
+			title: "Connection error",
+			items: [
+				{
+					id: "action",
+					label: "What would you like to do?",
+					prompt: errMsg,
+					badge: "error",
+					options: [
+						{
+							value: "retry",
+							label: "Retry",
+							description: "Re-send the last message and try again",
+						},
+						{
+							value: "pause",
+							label: "Pause",
+							description: "Stop here — resume manually when ready",
+						},
+						{
+							value: "abort",
+							label: "Abort",
+							description: "Discard the turn and do nothing",
+						},
+					],
+				},
+			],
+		});
+
+		if (
+			result.cancelled ||
+			result.answers.find((a) => a.id === "action")?.value !== "retry"
+		)
+			return;
+
+		pi.sendMessage(
+			{
+				customType: EXT_ID,
+				content:
+					"[Connection error was transient — please retry the last turn.]",
+				display: false,
+				details: { connectionErrorRetry: true },
+			},
+			{ deliverAs: "followUp", triggerTurn: true },
+		);
+	}
+
 	// ---- Completion detection ---------------------------------------------
 
-	pi.on("agent_end", async (_event, ctx) => {
+	pi.on("agent_end", async (event, ctx) => {
+		// Connection error guard: pop Retry / Pause / Abort before any other
+		// completion logic so the user can recover without disrupting plan state.
+		if (ctx.hasUI) {
+			const connErr = findConnectionError(
+				event.messages as ReadonlyArray<{
+					role: string;
+					stopReason?: string;
+					errorMessage?: string;
+				}>,
+			);
+			if (connErr) {
+				runDetached("connection-error dialog", ctx, () =>
+					handleConnectionError(ctx, connErr),
+				);
+				return;
+			}
+		}
+
 		// If the agent queued questions via the `ask` tool, present them
 		// as a structured dialog and feed answers back. This takes priority
 		// over the plan picker — the agent needs answers before it can
