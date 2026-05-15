@@ -31,7 +31,31 @@ const EXT_ID = "wrap-up";
 const PAUSE_CMD = "pause";
 const CONTINUE_CMD = "continue";
 
+/**
+ * Returns a warning message when /continue should refuse because a /pause
+ * turn is still in-flight, or null when it is safe to proceed.
+ *
+ * Exported so it can be unit-tested without a running pi session.
+ */
+export function pauseRaceWarning(inFlight: boolean): string | null {
+	if (!inFlight) return null;
+	return (
+		"/pause is still running — wait for the agent to finish writing " +
+		"the handover file, then run /continue again."
+	);
+}
+
 export default function (pi: ExtensionAPI) {
+	// Tracks whether a /pause turn is currently in-flight so /continue can
+	// warn instead of silently returning "No handover files found".
+	// Cleared on turn_end — at that point the agent has either written the
+	// file (autoSave:true) or is awaiting the user's save confirmation.
+	let pauseInFlight = false;
+
+	pi.on("turn_end", () => {
+		pauseInFlight = false;
+	});
+
 	declareExtension({
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
@@ -100,6 +124,7 @@ export default function (pi: ExtensionAPI) {
 				"info",
 			);
 
+			pauseInFlight = true;
 			pi.sendMessage(
 				{
 					customType: EXT_ID,
@@ -117,6 +142,16 @@ export default function (pi: ExtensionAPI) {
 			"Resume from a previous session's handover document. " +
 			"Finds the most relevant handover file, injects it, and asks how to proceed.",
 		handler: async (_args, ctx) => {
+			// Guard: /pause dispatches a fire-and-forget agent turn that
+			// writes the handover file. If the user runs /continue before
+			// that turn finishes, discoverHandovers() will find nothing (or
+			// stale files). Warn early so the user isn't left confused by
+			// "No handover files found" when a pause is clearly in-flight.
+			const raceWarn = pauseRaceWarning(pauseInFlight);
+			if (raceWarn) {
+				ctx.ui.notify(raceWarn, "warning");
+				return;
+			}
 			const settings = readRelevantSettings(ctx.cwd);
 			const configuredDir = getExtensionConfigString(
 				settings,
