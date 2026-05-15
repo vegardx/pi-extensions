@@ -1155,9 +1155,18 @@ export default function (pi: ExtensionAPI) {
 					result.push(`${statusGlyph} ${title}`);
 					// Show tasks only for phases with a worktree (active or needs-attention)
 					if (WORKTREE_STATUSES.includes(phase.status)) {
-						for (const task of phase.tasks) {
-							const label = truncateToWidth(task.title, maxLine - 4);
-							result.push(`  ${task.done ? "☑" : "☐"} ${label}`);
+						if (phase.tasks.length === 0) {
+							// Explicit placeholder so the user can distinguish
+							// the active phase's (empty) task list from the
+							// planned phases rendered below it (#188).
+							result.push(
+								`  (no tasks — use plan_task(add) to add a deliverable)`,
+							);
+						} else {
+							for (const task of phase.tasks) {
+								const label = truncateToWidth(task.title, maxLine - 4);
+								result.push(`  ${task.done ? "☑" : "☐"} ${label}`);
+							}
 						}
 					}
 				}
@@ -4840,7 +4849,7 @@ export default function (pi: ExtensionAPI) {
 					ctx,
 					`auto-loop: stopped at gate "${completion.gate}" — ${
 						completion.gate === "no-tasks"
-							? "active phase has no tasks; add at least one deliverable to enable auto-completion"
+							? `active phase \`${activePhase(plan)?.id ?? "unknown"}\` has no tasks; use plan_task(add) to add at least one deliverable`
 							: "active phase has no deliverables (only notes); add a deliverable task to enable auto-completion"
 					}`,
 					"warning",
