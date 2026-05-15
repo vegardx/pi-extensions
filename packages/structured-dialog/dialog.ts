@@ -3,7 +3,11 @@
  * structured dialog as either a fullscreen or overlay component.
  */
 
-import type { ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionContext,
+	Theme,
+	ThemeColor,
+} from "@mariozechner/pi-coding-agent";
 import {
 	CURSOR_MARKER,
 	Key,
@@ -33,7 +37,13 @@ import {
 	submitText,
 	unansweredItems,
 } from "./state.js";
-import type { DialogResult, StructuredDialogConfig } from "./types.js";
+import type {
+	DialogItem,
+	DialogOption,
+	DialogPreview,
+	DialogResult,
+	StructuredDialogConfig,
+} from "./types.js";
 
 /**
  * Returns true when the cached render output is still valid for the
@@ -82,6 +92,31 @@ export function renderSubmitAffordance(
 		`   ${theme.fg("accent", "│")}${theme.bg("selectedBg", theme.fg("text", label))}${theme.fg("accent", "│")}`,
 		`   ${theme.fg("accent", `└${"─".repeat(inner)}┘`)}`,
 	];
+}
+
+/**
+ * Determines what to show in the right preview pane for the current
+ * option. Priority: option-level preview → pros/cons block → item-level
+ * preview → nothing.
+ *
+ * Exported for unit testing.
+ */
+export type RightPaneContent =
+	| { kind: "preview"; preview: DialogPreview }
+	| { kind: "proscons"; pros: string[]; cons: string[] }
+	| { kind: "none" };
+
+export function resolveRightPaneContent(
+	item: Pick<DialogItem, "preview">,
+	currOpt: Pick<DialogOption, "preview" | "pros" | "cons"> | undefined,
+): RightPaneContent {
+	if (currOpt?.preview) return { kind: "preview", preview: currOpt.preview };
+	const pros = currOpt?.pros ?? [];
+	const cons = currOpt?.cons ?? [];
+	if (pros.length > 0 || cons.length > 0)
+		return { kind: "proscons", pros, cons };
+	if (item.preview) return { kind: "preview", preview: item.preview };
+	return { kind: "none" };
 }
 
 export async function showStructuredDialog(
@@ -401,7 +436,11 @@ export async function showStructuredDialog(
 				const item = currentItem(s);
 				if (!item) return;
 
-				if (item.preview) {
+				const opts = currentOptions(s);
+				const currOpt = opts[s.optionIndex];
+				const pane = resolveRightPaneContent(item, currOpt);
+
+				if (pane.kind !== "none") {
 					renderSplitLayout(s, theme, width, lines);
 				} else {
 					renderSingleColumnLayout(s, theme, width, lines);
@@ -450,7 +489,7 @@ export async function showStructuredDialog(
 				lines: string[],
 			) {
 				const item = currentItem(s);
-				if (!item?.preview) return;
+				if (!item) return;
 
 				// Divide width: left ~55%, separator 3 chars, right ~45%.
 				const sepStr = " │ ";
@@ -484,42 +523,67 @@ export async function showStructuredDialog(
 
 				renderOptionsAndTextField(s, theme, leftWidth, leftLines);
 
-				// ---- Build right pane (preview with proper box) ----
+				// ---- Build right pane ----
 				const rightLines: string[] = [];
-				const preview = item.preview;
+				const opts2 = currentOptions(s);
+				const currOpt2 = opts2[s.optionIndex];
 				const previewInner = rightWidth - 4; // 2 for border + 2 padding
-				const title = preview.title ?? "preview";
+				const pane = resolveRightPaneContent(item, currOpt2);
 
-				// Top border
-				const topLabel = `─ ${title} `;
-				const topPad = Math.max(0, rightWidth - 2 - visibleWidth(topLabel));
-				rightLines.push(
-					theme.fg("muted", `┌${topLabel}${"─".repeat(topPad)}┐`),
-				);
-
-				// Content lines
-				const previewContentLines = preview.content.split("\n");
-				const maxPreviewLines = 20;
-				const shown = previewContentLines.slice(0, maxPreviewLines);
-				for (const pLine of shown) {
-					const wrapped = wrapTextWithAnsi(pLine, previewInner);
-					for (const wl of wrapped) {
-						const pad = Math.max(0, previewInner - visibleWidth(wl));
+				if (pane.kind === "preview") {
+					const title = pane.preview.title ?? "preview";
+					const topLabel = `─ ${title} `;
+					const topPad = Math.max(0, rightWidth - 2 - visibleWidth(topLabel));
+					rightLines.push(
+						theme.fg("muted", `┌${topLabel}${"─".repeat(topPad)}┐`),
+					);
+					const contentLines = pane.preview.content.split("\n");
+					const maxLines = 20;
+					const shown = contentLines.slice(0, maxLines);
+					for (const pLine of shown) {
+						const wrapped = wrapTextWithAnsi(pLine, previewInner);
+						for (const wl of wrapped) {
+							const pad = Math.max(0, previewInner - visibleWidth(wl));
+							rightLines.push(
+								`${theme.fg("muted", "│")} ${wl}${" ".repeat(pad)} ${theme.fg("muted", "│")}`,
+							);
+						}
+					}
+					if (contentLines.length > maxLines) {
+						const moreLabel = `… ${contentLines.length - maxLines} more lines`;
+						const morePad = Math.max(0, previewInner - visibleWidth(moreLabel));
 						rightLines.push(
-							`${theme.fg("muted", "│")} ${wl}${" ".repeat(pad)} ${theme.fg("muted", "│")}`,
+							`${theme.fg("muted", "│")} ${theme.fg("dim", moreLabel)}${" ".repeat(morePad)} ${theme.fg("muted", "│")}`,
 						);
 					}
-				}
-				if (previewContentLines.length > maxPreviewLines) {
-					const moreLabel = `… ${previewContentLines.length - maxPreviewLines} more lines`;
-					const morePad = Math.max(0, previewInner - visibleWidth(moreLabel));
-					rightLines.push(
-						`${theme.fg("muted", "│")} ${theme.fg("dim", moreLabel)}${" ".repeat(morePad)} ${theme.fg("muted", "│")}`,
+					rightLines.push(theme.fg("muted", `└${"─".repeat(rightWidth - 2)}┘`));
+				} else if (pane.kind === "proscons") {
+					const topPad = Math.max(
+						0,
+						rightWidth - 2 - visibleWidth("─ option "),
 					);
+					rightLines.push(
+						theme.fg("muted", `┌─ option ${"─".repeat(topPad)}┐`),
+					);
+					const addRow = (text: string, colour: ThemeColor) => {
+						const pad = Math.max(0, previewInner - visibleWidth(text));
+						rightLines.push(
+							`${theme.fg("muted", "│")} ${theme.fg(colour, text)}${" ".repeat(pad)} ${theme.fg("muted", "│")}`,
+						);
+					};
+					if (pane.pros.length > 0) {
+						addRow("✔ pros", "success");
+						for (const p of pane.pros) addRow(`  ${p}`, "success");
+					}
+					if (pane.pros.length > 0 && pane.cons.length > 0) {
+						addRow("", "text");
+					}
+					if (pane.cons.length > 0) {
+						addRow("✖ cons", "warning");
+						for (const c of pane.cons) addRow(`  ${c}`, "warning");
+					}
+					rightLines.push(theme.fg("muted", `└${"─".repeat(rightWidth - 2)}┘`));
 				}
-
-				// Bottom border
-				rightLines.push(theme.fg("muted", `└${"─".repeat(rightWidth - 2)}┘`));
 
 				// ---- Zip left and right panes ----
 				const totalLines = Math.max(leftLines.length, rightLines.length);

@@ -12,6 +12,21 @@ export interface DialogOption {
 	label: string;
 	/** Optional short description rendered below the label. */
 	description?: string;
+	/**
+	 * Advantages of this option — rendered in success colour in the
+	 * right-pane when the option is highlighted.
+	 */
+	pros?: string[];
+	/**
+	 * Disadvantages of this option — rendered in warning colour in the
+	 * right-pane when the option is highlighted.
+	 */
+	cons?: string[];
+	/**
+	 * Per-option preview pane content. Takes priority over the item-level
+	 * `DialogItem.preview` when the option is highlighted.
+	 */
+	preview?: DialogPreview;
 }
 
 /**
