@@ -333,28 +333,38 @@ export default function (pi: ExtensionAPI): void {
 		}
 		pendingRealInput = false;
 
-		const suggestion = await predictor.predict(event.messages);
+		// Snapshot the live references before the async gap. If a session
+		// switch fires while the prediction is in-flight (session_shutdown
+		// → editor_ready), the module-level `editor` and `predictor` will
+		// have been replaced. Comparing post-await prevents us from showing
+		// a stale suggestion on the new session's editor.
+		const snapEditor = editor;
+		const snapPredictor = predictor;
+
+		const suggestion = await snapPredictor.predict(event.messages);
 		if (!suggestion) return;
+		// Session changed during prediction — bail.
+		if (editor !== snapEditor || predictor !== snapPredictor) return;
 		// Post-await guards: the prediction API call takes time; by the time it
 		// resolves the user may have submitted another prompt (agent is running
 		// again) or started typing. isIdle() is reliable here — unlike the
 		// pre-await path, enough wall-clock time has elapsed for Pi's internal
 		// streaming flag to have settled.
 		if (!ctx.isIdle()) {
-			predictor.lastStatus = "post: agent-running";
-			editor?.clearGhost();
+			snapPredictor.lastStatus = "post: agent-running";
+			snapEditor.clearGhost();
 			return;
 		}
 		if (ctx.hasPendingMessages()) {
-			predictor.lastStatus = "post: pending-messages";
-			editor?.clearGhost();
+			snapPredictor.lastStatus = "post: pending-messages";
+			snapEditor.clearGhost();
 			return;
 		}
 		if (ctx.ui.getEditorText() !== "") {
-			predictor.lastStatus = "post: buffer-not-empty";
+			snapPredictor.lastStatus = "post: buffer-not-empty";
 			return;
 		}
 
-		editor.setGhost(suggestion);
+		snapEditor.setGhost(suggestion);
 	});
 }
