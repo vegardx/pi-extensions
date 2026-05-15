@@ -5142,8 +5142,62 @@ export default function (pi: ExtensionAPI) {
 
 	// ---- Shift+Tab shortcut -----------------------------------------------
 
+	/**
+	 * Shared implementation for the hack/ask/auto → plan transition triggered
+	 * by Shift+Tab. Shows the context-handling picker (keep / compact / new
+	 * session), then restores the plan session if one was recorded.
+	 *
+	 * Extracted so hack, ask, and auto paths all get the same treatment
+	 * without code duplication.
+	 */
+	async function shiftTabToPlan(
+		prev: Mode,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		const decision = await runModeTransition(prev, ctx, {
+			canStartNewSession: false,
+		});
+		if (decision.action === "compact") {
+			const plan = currentPlan();
+			if (plan && !compactionInFlight) {
+				compactionInFlight = true;
+				try {
+					await compactPhaseSlice(ctx, plan, decision.phaseId);
+				} finally {
+					compactionInFlight = false;
+				}
+			}
+		}
+		const plan = currentPlan();
+		const targetPath = plan?.planSessionPath;
+		const currentPath = ctx.sessionManager.getSessionFile();
+		if (targetPath && targetPath !== currentPath) {
+			if (hasSessionControl(ctx)) {
+				runDetached(`${prev}→plan session restore`, ctx, async () => {
+					await ctx.switchSession(targetPath, {
+						withSession: async (newCtx) => {
+							setMode("plan", newCtx);
+							persist();
+							updateWidget(newCtx);
+							notify(newCtx, "plan mode (resumed planning session)", "info");
+						},
+					});
+				});
+			} else {
+				setMode("plan", ctx);
+				persist();
+				updateWidget(ctx);
+				notify(ctx, "plan mode", "info");
+			}
+			return;
+		}
+		setMode("plan", ctx);
+		notify(ctx, "plan mode", "info");
+	}
+
 	pi.registerShortcut("shift+tab", {
-		description: "Cycle permission mode (hack → plan → ask → auto → hack)",
+		description:
+			"Cycle permission mode: no-mode→hack, hack→plan, plan→ask, ask/auto→plan",
 		handler: async (ctx) => {
 			if (!modeState) {
 				modeState = {
@@ -5162,54 +5216,12 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// hack → plan (cycle entry point). Prompt for handling carried-over
-			// context: keep / lossy-compact active phase. Session restore uses
-			// `hasSessionControl` guard — degrades to in-place mode flip when
-			// command-context methods are unavailable.
+			// hack → plan. Prompt for handling carried-over context: keep /
+			// lossy-compact active phase. Session restore uses `hasSessionControl`
+			// guard — degrades to in-place mode flip when command-context methods
+			// are unavailable.
 			if (modeState.mode === "hack") {
-				const decision = await runModeTransition("hack", ctx, {
-					canStartNewSession: false,
-				});
-				if (decision.action === "compact") {
-					const plan = currentPlan();
-					if (plan && !compactionInFlight) {
-						compactionInFlight = true;
-						try {
-							await compactPhaseSlice(ctx, plan, decision.phaseId);
-						} finally {
-							compactionInFlight = false;
-						}
-					}
-				}
-				const plan = currentPlan();
-				const targetPath = plan?.planSessionPath;
-				const currentPath = ctx.sessionManager.getSessionFile();
-				if (targetPath && targetPath !== currentPath) {
-					if (hasSessionControl(ctx)) {
-						runDetached("hack→plan session restore", ctx, async () => {
-							await ctx.switchSession(targetPath, {
-								withSession: async (newCtx) => {
-									setMode("plan", newCtx);
-									persist();
-									updateWidget(newCtx);
-									notify(
-										newCtx,
-										"plan mode (resumed planning session)",
-										"info",
-									);
-								},
-							});
-						});
-					} else {
-						setMode("plan", ctx);
-						persist();
-						updateWidget(ctx);
-						notify(ctx, "plan mode", "info");
-					}
-					return;
-				}
-				setMode("plan", ctx);
-				notify(ctx, "plan mode", "info");
+				await shiftTabToPlan("hack", ctx);
 				return;
 			}
 
@@ -5234,18 +5246,15 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 
-			// ask → auto. Going more permissive within the same plan; carrying
-			// context is fine.
+			// ask → plan. Same transition logic as hack→plan: offer the context
+			// picker and restore the plan session if one was recorded.
 			if (modeState.mode === "ask") {
-				setMode("auto", ctx);
-				notify(ctx, "auto mode", "info");
+				await shiftTabToPlan("ask", ctx);
 				return;
 			}
 
-			// auto → hack (cycle wrap). Going more permissive; carrying context
-			// is fine — no prompt.
-			setMode("hack", ctx);
-			notify(ctx, "hack mode", "info");
+			// auto → plan. Same as above — going back to plan after executing.
+			await shiftTabToPlan("auto", ctx);
 		},
 	});
 
