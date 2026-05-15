@@ -179,6 +179,39 @@ describe("selectOption", () => {
 		selectOption(state);
 		expect(state.answers.get("a")?.value).toBe("skip");
 	});
+
+	// --- finding #5: auto-advance searches from index 0, not from currentTab+1 ---
+	it("auto-advances to an earlier unanswered tab after out-of-order answering", () => {
+		// Three items: answer C (idx 2) first by jumping there directly.
+		// The old code (idx > currentTab) would then skip A and B since they
+		// come before tab 2. The fix searches from 0.
+		const config = {
+			items: [
+				{
+					id: "a",
+					label: "A",
+					prompt: "?",
+					options: [{ value: "y", label: "Yes" }],
+				},
+				{
+					id: "b",
+					label: "B",
+					prompt: "?",
+					options: [{ value: "y", label: "Yes" }],
+				},
+				{
+					id: "c",
+					label: "C",
+					prompt: "?",
+					options: [{ value: "y", label: "Yes" }],
+				},
+			],
+		};
+		const state = createState(config);
+		goToTab(state, 2); // jump to C
+		selectOption(state); // answer C — next unanswered from 0 should be A (idx 0)
+		expect(state.currentTab).toBe(0); // must find A, not advance to submit
+	});
 });
 
 describe("answer tracking", () => {

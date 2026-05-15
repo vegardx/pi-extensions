@@ -22,7 +22,9 @@ function fence(lang: string, content: string): string {
  * double quotes, backslashes, and newlines.
  */
 function fmSafe(value: string): string {
-	return value.replace(/["\\\n\r]/g, "");
+	// Strips double-quotes and newlines only — NOT backslashes.
+	// Removing backslashes corrupted Windows paths (e.g. C:\Users\... → CUsers).
+	return value.replace(/["\n\r]/g, "");
 }
 
 /**
@@ -106,7 +108,9 @@ export function buildPausePrompt(
 		snapshotParts.push(`Upstream:     ${ctx.upstream}`);
 	}
 	if (ctx.remoteUrl) {
-		snapshotParts.push(`Remote:       ${ctx.remoteUrl}`);
+		// CWE-532: strip embedded credentials consistently — same guard
+		// already applied to the frontmatter repo field below.
+		snapshotParts.push(`Remote:       ${stripCredentials(ctx.remoteUrl)}`);
 	}
 	if (ctx.prInfo) {
 		snapshotParts.push(`PR:           ${formatPr(ctx.prInfo)}`);

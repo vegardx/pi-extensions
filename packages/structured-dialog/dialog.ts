@@ -55,6 +55,9 @@ export async function showStructuredDialog(
 		(tui, theme, _kb, done) => {
 			const state = createState(config);
 			let cachedLines: string[] | undefined;
+			// Track the width that produced cachedLines so a resize invalidates
+			// the cache automatically without needing an explicit refresh().
+			let cachedWidth = -1;
 
 			// Cursor position for text field (character index).
 			let cursorPos = 0;
@@ -261,7 +264,8 @@ export async function showStructuredDialog(
 			}
 
 			function render(width: number): string[] {
-				if (cachedLines) return cachedLines;
+				if (cachedLines !== undefined && width === cachedWidth)
+					return cachedLines;
 				const lines: string[] = [];
 				const add = (s: string) => lines.push(truncateToWidth(s, width));
 
@@ -302,6 +306,7 @@ export async function showStructuredDialog(
 				add(theme.fg("dim", help));
 				add(theme.fg("accent", "─".repeat(width)));
 
+				cachedWidth = width;
 				cachedLines = lines;
 				return lines;
 			}
@@ -610,6 +615,7 @@ export async function showStructuredDialog(
 				render,
 				invalidate: () => {
 					cachedLines = undefined;
+					cachedWidth = -1;
 				},
 				handleInput,
 			};
