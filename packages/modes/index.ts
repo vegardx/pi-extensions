@@ -53,6 +53,10 @@ import {
 	scanForSecrets,
 } from "./helpers.js";
 import {
+	diagnoseAgentEndCompletion,
+	diagnoseResumeAfterCompaction,
+} from "./plan/auto-loop-gates.js";
+import {
 	buildPhaseEndSummaryPreamble,
 	buildPhaseSliceCompactionResult,
 	computeCarryForwardSummaryChars,
@@ -64,7 +68,6 @@ import {
 	findLatestCompactionSummary,
 	type SummariseFn,
 	shouldCompactMidPhase,
-	shouldResumeAfterCompaction,
 } from "./plan/compaction.js";
 import {
 	buildCompletionPrompt,
@@ -2358,6 +2361,9 @@ export default function (pi: ExtensionAPI) {
 	let summaryBudgetWarnFired = false;
 
 	let compactionInFlight = false;
+	/** Guard preventing double-fire of the exec-complete auto-loop from both
+	 *  the agent_end path and the compaction-fallback path (#138). */
+	let postExecInFlight = false;
 
 	/**
 	 * Side-channel between modes' trigger sites and the
@@ -2627,7 +2633,7 @@ export default function (pi: ExtensionAPI) {
 		// manually, which defeats auto mode.
 		const plan = currentPlan();
 		const remaining = activeTasks(plan).filter(({ task }) => !task.done);
-		const resume = shouldResumeAfterCompaction({
+		const compactionResume = diagnoseResumeAfterCompaction({
 			compacted,
 			stageAtEntry,
 			modeAtEntry,
@@ -2635,7 +2641,65 @@ export default function (pi: ExtensionAPI) {
 			currentMode: modeState?.mode,
 			remainingTaskCount: remaining.length,
 		});
-		if (!resume) return;
+		if (!compactionResume.resume) {
+			// Fallback re-entry (#138): stage drifted to exec-complete during
+			// compaction — agent_end set the stage but the post-exec
+			// runDetached may not have survived the async gap. Fire the
+			// exec-complete path now. The postExecInFlight guard prevents
+			// double-firing if agent_end's own runDetached is still running.
+			if (compactionResume.driftedToExecComplete && !postExecInFlight) {
+				const planNow = currentPlan();
+				notify(
+					ctx,
+					"auto-loop: stage drifted to exec-complete during compaction — firing fallback re-entry",
+					"info",
+				);
+				runDetached("post-exec fallback", ctx, async () => {
+					if (postExecInFlight) return;
+					postExecInFlight = true;
+					try {
+						try {
+							await runBatchReview(ctx);
+						} catch {
+							// soft-fail: review error must not block re-entry
+						}
+						await new Promise<void>((resolve) => setImmediate(resolve));
+						if (modeState?.mode === "auto" && planNow) {
+							try {
+								await runAutoPhaseLoop(ctx, planNow, activePhase(planNow));
+								return;
+							} catch (err) {
+								notify(
+									ctx,
+									`auto loop fallback failed: ${
+										err instanceof Error ? err.message : String(err)
+									}`,
+									"error",
+								);
+							}
+						}
+						await runPostExecPicker(ctx);
+					} finally {
+						postExecInFlight = false;
+					}
+				});
+				return;
+			}
+			// Surface other non-trivial gate trips as info. Skip the obvious
+			// ones (user left auto, compaction failed) to avoid notify spam.
+			if (
+				compacted &&
+				compactionResume.gate !== "stage-at-entry-not-executing" &&
+				compactionResume.gate !== "mode-drifted"
+			) {
+				notify(
+					ctx,
+					`auto-loop: post-compaction resume skipped (gate: ${compactionResume.gate})`,
+					"info",
+				);
+			}
+			return;
+		}
 
 		pi.sendMessage(
 			{
@@ -4717,18 +4781,40 @@ export default function (pi: ExtensionAPI) {
 		// reviewer follow-ups) and don't block the agent from finishing.
 		// They surface in /ship's PR body and /park's issue body instead.
 		const allTasks = activeTasks(plan);
-		if (allTasks.length === 0) return;
 		const deliverables = allTasks.filter(
 			({ task }) => effectiveTaskKind(task) === "deliverable",
 		);
 		const notes = allTasks.filter(
 			({ task }) => effectiveTaskKind(task) !== "deliverable",
 		);
-		// Phase with zero deliverables (e.g. all-questions stub) doesn't
-		// auto-complete — the agent shouldn't ship a phase that has no
-		// concrete work declared.
-		if (deliverables.length === 0) return;
-		if (!deliverables.every(({ task }) => task.done)) return;
+		// Gate-diagnostic helper: emits a named warning for unusual stalls
+		// (e.g. executing with zero tasks/deliverables) so the user can
+		// diagnose why the auto-loop didn't fire. Silent for the common
+		// cases (incomplete work, wrong stage) to avoid notify spam (#149).
+		const completion = diagnoseAgentEndCompletion({
+			modeState,
+			taskCount: allTasks.length,
+			deliverableCount: deliverables.length,
+			deliverablesRemaining: deliverables.filter(({ task }) => !task.done)
+				.length,
+		});
+		if (!completion.proceed) {
+			if (
+				completion.diagnostic &&
+				(modeState.mode === "auto" || modeState.mode === "ask")
+			) {
+				notify(
+					ctx,
+					`auto-loop: stopped at gate "${completion.gate}" — ${
+						completion.gate === "no-tasks"
+							? "active phase has no tasks; add at least one deliverable to enable auto-completion"
+							: "active phase has no deliverables (only notes); add a deliverable task to enable auto-completion"
+					}`,
+					"warning",
+				);
+			}
+			return;
+		}
 
 		// All deliverables in the active phase complete.
 		const completedPhase = activePhase(plan);
@@ -4776,38 +4862,44 @@ export default function (pi: ExtensionAPI) {
 		// auto→hack mid-phase still does the right thing for the user's
 		// current intent.
 		runDetached("post-exec", ctx, async () => {
+			if (postExecInFlight) return;
+			postExecInFlight = true;
 			try {
-				await runBatchReview(ctx);
-			} catch (err) {
-				notify(
-					ctx,
-					`review failed: ${err instanceof Error ? err.message : String(err)}`,
-					"warning",
-				);
-			}
-			await new Promise<void>((resolve) => setImmediate(resolve));
-
-			if (modeState?.mode === "auto") {
-				if (!plan) {
+				try {
+					await runBatchReview(ctx);
+				} catch (err) {
 					notify(
 						ctx,
-						"auto loop skipped: no plan bound (falling back to ask-mode picker)",
+						`review failed: ${err instanceof Error ? err.message : String(err)}`,
 						"warning",
 					);
-				} else {
-					try {
-						await runAutoPhaseLoop(ctx, plan, completedPhase);
-						return;
-					} catch (err) {
+				}
+				await new Promise<void>((resolve) => setImmediate(resolve));
+
+				if (modeState?.mode === "auto") {
+					if (!plan) {
 						notify(
 							ctx,
-							`auto loop failed: ${err instanceof Error ? err.message : String(err)} — dropping into ask-mode picker so you can recover`,
-							"error",
+							"auto loop skipped: no plan bound (falling back to ask-mode picker)",
+							"warning",
 						);
+					} else {
+						try {
+							await runAutoPhaseLoop(ctx, plan, completedPhase);
+							return;
+						} catch (err) {
+							notify(
+								ctx,
+								`auto loop failed: ${err instanceof Error ? err.message : String(err)} — dropping into ask-mode picker so you can recover`,
+								"error",
+							);
+						}
 					}
 				}
+				await runPostExecPicker(ctx);
+			} finally {
+				postExecInFlight = false;
 			}
-			await runPostExecPicker(ctx);
 		});
 	});
 
