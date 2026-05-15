@@ -85,5 +85,5 @@ export const STEERING_CLASSIFIER = [
 	"  2. new task in the active phase \u2192 plan_task(add, ...) and continue",
 	"  3. new phase \u2192 plan_phase(add, ...) and continue current phase",
 	"  4. immediate course correction \u2192 act on it now",
-	"State the chosen option in one line, then proceed.",
+	"In one sentence say what you are doing and why (not which option), then proceed.",
 ].join("\n");
