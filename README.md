@@ -3,31 +3,47 @@
 [![CI](https://github.com/vegardx/pi-extensions/actions/workflows/ci.yml/badge.svg)](https://github.com/vegardx/pi-extensions/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-My opinionated setup for [pi](https://github.com/badlogic/pi-mono) — a phase/task plan model, a four-mode permission cycle, and a small skill ecosystem on top.
+> This is my pi-extensions. There are many like it, but this one is mine.
 
-## The workflow
+My personal [pi](https://github.com/badlogic/pi-mono) setup. Highly opinionated. Constantly changing. Often half-broken on `main`.
 
-```
-/plan    →  Shift+Tab  →  /implement  →  /ship
- plan        ask/auto      auto loop      PR up
-```
+Building it is the most fun I've had with software in years. Using it is mostly fine. Sometimes it just explodes in your face mid-turn — that's the deal you sign up for when your IDE is also your lab notebook.
 
-`/plan` builds a phase/task plan in [plan mode](packages/modes#mode-transitions) (read-only tools, no writes). Shift+Tab opens the Implement / Park / Continue picker. `/implement` creates a feature branch, switches to `auto`, and works the active phase end-to-end. `/ship` commits, pushes, opens the PR, and the auto loop walks to the next phase.
+If something looks weird, it probably is. If something works really well, that's the part you should steal.
 
-Each phase runs in its own pi session, **seeded** from a deterministic render of the plan doc — no LLM call. Shipped phases' summaries carry forward into later phases verbatim, so phase N walks in pre-loaded with what 1…N-1 actually discovered. Plan mode delegates codebase questions to a persistent **explore** sub-agent (non-blocking) and one-shot **research** lookups for the web. Full details in [`packages/modes/README.md`](packages/modes/README.md).
+## What's in the box
 
-## The mode cycle
+### Phase/task plans + a four-mode permission cycle
 
-`hack` → `plan` → `ask` → `auto` → `hack`, cycled by **Shift+Tab**:
+The centerpiece. `/plan` builds a phase/task tree in read-only plan mode; `/implement` flips to `auto`, creates a worktree-bound feature branch, and works the active phase end-to-end; `/ship` opens the PR and walks to the next phase. Shift+Tab cycles `hack → plan → ask → auto`, adding structure step by step.
 
-| Mode | What it is |
-| --- | --- |
-| `hack` | All tools, no safety net — full tool access, you own context length. |
-| `plan` | Read-only tools (`read`, `grep`, `find`, `ls`, `bash` reads, `websearch`, `webfetch`, plan tools, `explore_*`, `research`). Writes refused outright. |
-| `ask` | Same tools as `auto`, but pauses at the commit/ship boundary so you can review the diff. |
-| `auto` | Fully autonomous — `/commit` (non-interactive) → `/ship` → `/implement` next phase, all without prompting. |
+Each phase runs in its own pi session, **seeded** deterministically from the plan doc — no LLM call. Three-tier compaction (mid-phase, per-phase summary, plan-doc seed) keeps context lean across multi-phase runs.
 
-See the [mode-transitions diagram](packages/modes/README.md#mode-transitions) for the full state machine, including which transitions prompt the user, where session boundaries fire, and where compaction happens.
+→ [Mode-transitions diagram](packages/modes/README.md#mode-transitions) · [Plan model](packages/modes/README.md#plan-model)
+
+### `/review` — seven lenses, two models
+
+Seven specialist reviewers fanned in parallel: architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker. Findings are cross-checked: the same diff runs against both `primary` and `secondary` models and only findings both agree on surface. Cuts false-positives without losing real bugs.
+
+→ [`packages/review`](packages/review)
+
+### A small library of project-local skills
+
+Reusable agent workflows invoked as `/skill:<name>`: `diagnose` (disciplined bug loop), `improve` (architectural friction), `document` (CONTEXT.md / DESIGN.md), `propose-skill` (recurring pattern → new skill), `gh` (multi-host GitHub ops), `triage` (inbox sweeps), plus the lookup skills `context7` and `exa-search`. Skills compose — `/commit` calls `gh`, anything broken hands off to `diagnose`.
+
+→ [Skills table below](#skills)
+
+### Tiered background models, provider-agnostic
+
+Side tasks (ghost text, auto-titling, branch slugs, commit messages, the seven review lenses, the explore sub-agent) declare a tier — `fast` / `normal` / `heavy` — and you decide what those mean in `settings.json`. Cheap models for the cheap stuff, frontier for the heavy lifting. Swap providers without touching extension code.
+
+→ [Configuring background models](docs/configuring-models.md)
+
+### Non-blocking sub-agents in plan mode
+
+`/plan` delegates codebase questions to a persistent **explore** sub-agent and one-shot web lookups to a stateless **research** sub-agent. Both non-blocking — fire several `explore_ask` calls, keep planning, drain answers when ready. Slow turns don't stall the main agent; long-running explorations don't blow context.
+
+→ [Async explore](packages/modes/README.md#async-explore-plan-mode)
 
 ## Skills
 
@@ -45,8 +61,6 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 | [`improve`](packages/modes/skills/improve/SKILL.md) | Find architectural friction and propose deepening opportunities. |
 | [`document`](packages/modes/skills/document/SKILL.md) | Create or update project documentation when terminology is resolved. |
 | [`propose-skill`](packages/modes/skills/propose-skill/SKILL.md) | Analyse the current session for repeated patterns and propose new project-local skills. |
-
-The `review` skill backs `/review`, which the `modes` extension can run automatically after each implement loop (off by default — opt in per-repo via `extensionConfig.modes.review.enable`).
 
 ## Extensions
 
@@ -66,50 +80,19 @@ The `review` skill backs `/review`, which the `modes` extension can run automati
 | [`structured-dialog`](packages/structured-dialog) | shared | Tabbed multi-item TUI primitive shared by `review`, `wrap-up`, and `modes`. Not loaded standalone. |
 | [`_shared`](packages/_shared) | internal | Model resolver, settings helpers, macOS caffeinate wrapper. Used by other packages, not loaded directly. |
 
-## Background models
-
-Several extensions call an LLM on a side task — ghost text, auto-titling, branch slug generation, commit messages, the explore/research sub-agents, the seven review lenses. None hard-code a provider or model. Each declares a **tier** (`fast` / `normal` / `heavy`) and you decide what that means in `settings.json`.
-
-```jsonc
-// ~/.pi/agent/settings.json
-{
-  "backgroundModels": {
-    "primary": {
-      "fast":   "anthropic/claude-haiku-4-5-20251001",
-      "normal": "anthropic/claude-sonnet-4-6",
-      "heavy":  "anthropic/claude-opus-4-7"
-    },
-    "secondary": {
-      "fast":   "openai/gpt-5.4-mini",
-      "normal": "openai/gpt-5.5",
-      "heavy":  "openai/gpt-5.5-pro"
-    }
-  }
-}
-```
-
-`secondary` is the cross-model check — `/review` (and the post-implement auto-review pass in `modes`) runs each reviewer lane against both `primary` and `secondary` and only surfaces findings both agree on.
-
-→ [Full background-model docs](docs/configuring-models.md) — tiers, resolution order, cross-model checking, provider and gateway notes.
-
-## Quickstart
+## Get it running
 
 ```bash
 npm install
-pi -e ./packages/startup    # smoke-test
-```
-
-## Install all extensions
-
-```bash
-pi install git:github.com/vegardx/pi-extensions
+pi -e ./packages/startup                          # smoke-test one extension
+pi install git:github.com/vegardx/pi-extensions   # install everything
 ```
 
 ## Docs
 
 - [`packages/modes/README.md`](packages/modes/README.md) — modes deep-dive: state diagram, plan model, session lifecycle, compaction, multi-driver execution.
-- [Configuring background models](docs/configuring-models.md)
-- [pi extension API](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md)
+- [`docs/configuring-models.md`](docs/configuring-models.md) — background-model tiers, resolution order, cross-model checking, providers, gateways.
+- [pi extension API](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md) — upstream reference for writing your own.
 
 ## Inspired by
 
