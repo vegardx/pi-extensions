@@ -76,6 +76,8 @@ When you commit to a plan via the picker (Shift+Tab plan→ask) or `/implement`,
 
 `extensionConfig.modes.implementDefault` (default `auto`) controls which option is highlighted first — set it to `ask` if you prefer human-in-the-loop by default.
 
+When `/implement` is invoked from `ask` or `auto` mode it preserves that mode rather than reading the setting. This means a scripted `ask → /implement` flow stays in ask without any config change. `hack` mode maps to `auto` (ImplementMode excludes hack). Use `/hack`, `/ask`, or `/auto` to flip modes without going through the implement flow.
+
 ### End-of-plan PR sweep
 
 When `/ship` lands the last actionable phase of a plan (auto or manual), modes runs a PR sweep before showing the completion picker. For every phase with a `prNumber`, it queries `gh pr view` for state, CI rollup, and review decision, and renders a single summary like:
@@ -98,7 +100,10 @@ If any PR needs attention, the completion picker adds an extra option "Open PR #
 | `/plan resume <slug>` | Bind this session to a specific plan. Confirms before adopting a plan owned by another session. |
 | `/plan archive <slug>` | Soft-archive: mark all non-terminal phases as `abandoned`, tear down their worktrees, keep branches and the plan file on disk. |
 | `/plan delete <slug>` | Hard-delete: remove `~/.pi/plans/<slug>/` permanently. Refuses if any worktree is dirty; worktrees and branches are not touched. |
-| `/implement [desc]` | Sync, create a feature branch, switch to auto |
+| `/implement [desc]` | Sync, create a feature branch, start executing. Preserves current mode (ask/auto/hack → keep; plan → use `implementDefault` config) |
+| `/hack` | Flip to hack mode (direct tool access, no plan ceremony) |
+| `/ask` | Flip to ask mode (pauses at commit/ship boundaries) |
+| `/auto` | Flip to auto mode (autonomous commit/ship/next-phase loop) |
 | `/park` | Create a GitHub parent issue + per-phase sub-issues for the current plan |
 | `/ship [phaseId?]` | Commit, push, open PR; flips active phase to in-review |
 | `/sync` | Refresh plan from GitHub PR/issue state |
