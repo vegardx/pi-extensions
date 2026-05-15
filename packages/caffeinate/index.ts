@@ -67,7 +67,9 @@ export function renderStatusLine(state: KeepAwakeState): string {
 export function statusPill(state: KeepAwakeState): string | undefined {
 	if (!state.supported) return undefined;
 	if (state.active && state.enabled) {
-		const reasons = state.reasons.length ? ` (${state.reasons.join(", ")})` : "";
+		const reasons = state.reasons.length
+			? ` (${state.reasons.join(", ")})`
+			: "";
 		return `caffeinate: active${reasons}`;
 	}
 	// Supported but opt-in not taken: discoverability pill.
