@@ -189,6 +189,7 @@ to reference a public repo (or vice versa).
 | Category | Commands | Reference |
 |---|---|---|
 | Pull requests | `gh pr list/view/create/review/merge/diff/checks` | [reference/pr.md](reference/pr.md) |
+| Review threads | fetch thread IDs, reply, resolve, unresolve | [reference/pr.md#review-thread-operations](reference/pr.md#review-thread-operations) |
 | Issues | `gh issue list/view/create/edit/comment/close` | [reference/issues.md](reference/issues.md) |
 | CI/CD | `gh run list/view/watch/rerun`, `gh workflow run` | [reference/ci.md](reference/ci.md) |
 | Releases | `gh release create/list/view/download` | [reference/releases.md](reference/releases.md) |

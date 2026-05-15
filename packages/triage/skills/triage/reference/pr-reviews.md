@@ -44,34 +44,46 @@ them in the body rather than as actual inline comments), parse those too.
 For each comment/finding:
 
 1. Read the referenced file and surrounding context
-2. Reason about whether the claim is:
-   - **Valid** — the issue is real and should be fixed
-   - **Partially valid** — the concern has merit but the suggested fix
-     is wrong or incomplete
-   - **Invalid** — the bot misread the code, the concern doesn't apply,
-     or it's already handled
+2. Classify and decide thread outcome:
 
-Present your assessment to the user with a brief explanation. Group by
-validity:
-- Valid findings → propose concrete fix
-- Partially valid → explain what's right and what's wrong, propose
-  adjusted fix
-- Invalid → explain why, skip
+| Classification | Meaning | Thread outcome |
+|---|---|---|
+| **Agree** | Issue is real, suggestion is correct. | Apply fix, resolve thread. |
+| **Partial** | Concern is real but the suggested fix is wrong or incomplete. | Apply corrected fix, comment explaining the difference, resolve thread. |
+| **Disagree** | Bot misread the code, concern doesn't apply, or already handled. | Comment explaining why, resolve thread. |
+
+Present your assessment to the user with a brief explanation before acting.
+
+**All threads must be resolved** — unresolved threads block auto-merge.
+The distinction is what fix (if any) is applied and what comment is left,
+not whether the thread is resolved.
 
 ### 4. Plan and apply fixes
 
-For valid/partially-valid findings on a single PR:
+For agree/partial findings on a single PR:
 
 1. `gh pr checkout {N}` to get on the PR branch
 2. Apply fixes (use `edit` tool or write as appropriate)
-3. Run the project's check/test/lint commands if available
-4. Commit with conventional commit format:
+3. For **partial** findings, note what was done differently — you'll
+   need this for the thread reply in step 5
+4. Run the project's check/test/lint commands if available
+5. Commit with conventional commit format:
    ```bash
    git add <specific-files>
    git commit -m "fix(scope): description of fix"
    ```
-5. Push back to the branch (follow `/skill:gh` routing for fork-aware
+6. Push back to the branch (follow `/skill:gh` routing for fork-aware
    push and head-drift detection)
+
+### 5. Resolve all threads
+
+Every thread must be resolved — unresolved threads block auto-merge.
+For thread operations (fetch IDs, reply, resolve) see
+`/skill:gh` → `reference/pr.md#review-thread-operations`.
+
+- **Agree** — resolve silently.
+- **Partial** — reply explaining what was done differently, then resolve.
+- **Disagree** — reply explaining why it was not applied, then resolve.
 
 ### 5. CI gate
 

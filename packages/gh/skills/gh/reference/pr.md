@@ -182,3 +182,59 @@ EOF
 - `APPROVE` — approve the PR
 - `REQUEST_CHANGES` — block merge until addressed
 - `COMMENT` — leave feedback without verdict
+
+## Review thread operations
+
+Thread node IDs (`PRRT_xxx`) are only available via GraphQL.
+
+### Fetch unresolved thread IDs
+
+```bash
+gh api graphql -f query='
+  query($owner:String!, $repo:String!, $pr:Int!) {
+    repository(owner:$owner, name:$repo) {
+      pullRequest(number:$pr) {
+        reviewThreads(first:100) {
+          nodes { id isResolved path startLine line }
+        }
+      }
+    }
+  }' -F owner=OWNER -F repo=REPO -F pr=PR_NUMBER \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false)'
+```
+
+Match threads to comments by `path` + `line` to build a
+`path:line → threadId` lookup.
+
+### Reply to a thread
+
+```bash
+gh api graphql -f query='
+  mutation($id:ID!, $body:String!) {
+    addPullRequestReviewThreadReply(
+      input:{pullRequestReviewThreadId:$id, body:$body}
+    ) { comment { id } }
+  }' -F id=PRRT_xxx -F body="Your reply here"
+```
+
+### Resolve a thread
+
+```bash
+gh api graphql -f query='
+  mutation($id:ID!) {
+    resolveReviewThread(input:{threadId:$id}) {
+      thread { id isResolved }
+    }
+  }' -F id=PRRT_xxx
+```
+
+### Unresolve a thread
+
+```bash
+gh api graphql -f query='
+  mutation($id:ID!) {
+    unresolveReviewThread(input:{threadId:$id}) {
+      thread { id isResolved }
+    }
+  }' -F id=PRRT_xxx
+```
