@@ -10,6 +10,7 @@ import {
 	resolveHandoverDir,
 	type WrapUpContext,
 } from "../context.js";
+import { pauseRaceWarning } from "../index.js";
 import { buildPausePrompt } from "../prompt.js";
 
 // ---------------------------------------------------------------------------
@@ -497,5 +498,27 @@ describe("detectResources", () => {
 		expect(labels).toContain("Fly.io");
 		expect(labels).toContain("Docker");
 		expect(labels).toContain("GitHub Actions");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// pauseRaceWarning — /pause in-flight guard for /continue
+// ---------------------------------------------------------------------------
+
+describe("pauseRaceWarning", () => {
+	it("returns null when no pause is in-flight", () => {
+		expect(pauseRaceWarning(false)).toBeNull();
+	});
+
+	it("returns a warning string when a pause is in-flight", () => {
+		const msg = pauseRaceWarning(true);
+		expect(msg).not.toBeNull();
+		expect(msg).toContain("/pause");
+		expect(msg).toContain("/continue");
+	});
+
+	it("warning mentions waiting for the agent to finish", () => {
+		const msg = pauseRaceWarning(true) ?? "";
+		expect(msg.toLowerCase()).toContain("wait");
 	});
 });
