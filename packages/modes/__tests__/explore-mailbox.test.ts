@@ -9,8 +9,8 @@
  */
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import {
-	exploreWidgetShouldHide,
 	ExploreMailbox,
+	exploreWidgetShouldHide,
 	type MailboxDeps,
 } from "../plan/explore-mailbox.js";
 
@@ -434,17 +434,23 @@ describe("exploreWidgetShouldHide", () => {
 	});
 
 	it("hides when all tasks are timeout and no notifications", () => {
-		const tasks = [{ id: "a", question: "q", status: "timeout" as const, enqueuedAt: 0 }];
+		const tasks = [
+			{ id: "a", question: "q", status: "timeout" as const, enqueuedAt: 0 },
+		];
 		expect(exploreWidgetShouldHide(tasks, [])).toBe(true);
 	});
 
 	it("shows when a task is running", () => {
-		const tasks = [{ id: "a", question: "q", status: "running" as const, enqueuedAt: 0 }];
+		const tasks = [
+			{ id: "a", question: "q", status: "running" as const, enqueuedAt: 0 },
+		];
 		expect(exploreWidgetShouldHide(tasks, [])).toBe(false);
 	});
 
 	it("shows when a task is queued", () => {
-		const tasks = [{ id: "a", question: "q", status: "queued" as const, enqueuedAt: 0 }];
+		const tasks = [
+			{ id: "a", question: "q", status: "queued" as const, enqueuedAt: 0 },
+		];
 		expect(exploreWidgetShouldHide(tasks, [])).toBe(false);
 	});
 
@@ -454,7 +460,9 @@ describe("exploreWidgetShouldHide", () => {
 	});
 
 	it("shows when all tasks done but notifications pending", () => {
-		const tasks = [{ id: "a", question: "q", status: "done" as const, enqueuedAt: 0 }];
+		const tasks = [
+			{ id: "a", question: "q", status: "done" as const, enqueuedAt: 0 },
+		];
 		const notifications = [{ id: "n1", text: "result", at: Date.now() }];
 		expect(exploreWidgetShouldHide(tasks, notifications)).toBe(false);
 	});
