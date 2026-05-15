@@ -146,7 +146,7 @@ const STATE_ENTRY = "modes-state";
 const CUSTOM_MODE_CONTEXT = "modes-context";
 
 // Tools available in plan mode. edit/write are absent entirely.
-const PLAN_ONLY_TOOLS = [
+export const PLAN_ONLY_TOOLS = [
 	"read",
 	"bash",
 	"grep",
@@ -161,7 +161,30 @@ const PLAN_ONLY_TOOLS = [
 	"research",
 ] as const;
 
-const EXPLORE_TOOLS = ["explore_ask", "explore_check", "explore_wait"] as const;
+export const EXPLORE_TOOLS = [
+	"explore_ask",
+	"explore_check",
+	"explore_wait",
+] as const;
+
+/**
+ * Pure helper: compute the tool list for a given mode and prior-tools
+ * snapshot. Extracted so the filtering logic can be unit-tested without
+ * a live pi host.
+ */
+export function computeActiveTools(mode: Mode, priorTools: string[]): string[] {
+	const planTools = ["plan_phase", "plan_task", "plan_view"];
+	if (mode === "plan") {
+		return [...PLAN_ONLY_TOOLS, ...planTools];
+	}
+	// Restore prior tools and ensure plan_* + research are included.
+	// The explore_* triad is plan-mode only so it is removed.
+	const alwaysInclude = [...planTools, "research"];
+	const extra = alwaysInclude.filter((t) => !priorTools.includes(t));
+	return [...priorTools, ...extra].filter(
+		(t) => !EXPLORE_TOOLS.includes(t as (typeof EXPLORE_TOOLS)[number]),
+	);
+}
 
 /** Glyphs shown next to a phase in the widget for each status. */
 const STATUS_GLYPH: Record<string, string> = {
@@ -1312,22 +1335,7 @@ export default function (pi: ExtensionAPI) {
 
 	function applyModeTools(): void {
 		if (!modeState) return;
-		const planTools = ["plan_phase", "plan_task", "plan_view"];
-		if (modeState.mode === "plan") {
-			pi.setActiveTools([...PLAN_ONLY_TOOLS, ...planTools]);
-		} else {
-			// Restore prior tools and ensure plan_* + research are included.
-			// The explore_* triad is plan-mode only so it is removed.
-			// `research` is available in auto/ask/hack so it is always re-added.
-			const alwaysInclude = [...planTools, "research"];
-			const extra = alwaysInclude.filter(
-				(t) => !modeState?.priorTools.includes(t),
-			);
-			const withExtras = [...modeState.priorTools, ...extra].filter(
-				(t) => !EXPLORE_TOOLS.includes(t as (typeof EXPLORE_TOOLS)[number]),
-			);
-			pi.setActiveTools(withExtras);
-		}
+		pi.setActiveTools(computeActiveTools(modeState.mode, modeState.priorTools));
 	}
 
 	function restorePriorTools(): void {
@@ -2950,6 +2958,7 @@ export default function (pi: ExtensionAPI) {
 			disposeDelegateAgents(ctx);
 		}
 		modeState.mode = implementMode;
+		applyModeTools();
 		sm.appendCustomEntry(STATE_ENTRY, modeState satisfies ModeState);
 		updateWidget(ctx);
 
