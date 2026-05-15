@@ -13,6 +13,7 @@ import {
 	diagnoseResumeAfterCompaction,
 } from "../plan/auto-loop-gates.js";
 import { shouldResumeAfterCompaction } from "../plan/compaction.js";
+import { readyPhases, WORKTREE_STATUSES } from "../plan/schema.js";
 
 // ---- diagnoseAgentEndCompletion -----------------------------------------
 
@@ -191,5 +192,101 @@ describe("diagnoseResumeAfterCompaction", () => {
 			const orig = shouldResumeAfterCompaction(c);
 			expect(diag.resume).toBe(orig);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// no-tasks gate: no-active-phase vs empty-active-phase sub-cases
+//
+// The agent_end handler (index.ts) differentiates these two scenarios after
+// diagnoseAgentEndCompletion returns gate=="no-tasks":
+//
+//   1. activePhase(plan) === null  (no phase in WORKTREE_STATUSES)
+//      → auto mode: try readyPhases() + auto-advance via doImplement
+//      → ask  mode: fall through to the warning
+//
+//   2. activePhase(plan) !== null but phase has zero tasks
+//      → always: emit the warning with the phase id
+//
+// Because activePhase() and doImplement are unexported closures the handler
+// path can't be unit-tested here directly. These tests pin the helper
+// functions that drive the decision so a refactor can't silently break them.
+// ---------------------------------------------------------------------------
+
+function makePlan(
+	phases: Array<{ id: string; status: string; tasks?: unknown[] }>,
+) {
+	return {
+		slug: "test",
+		title: "Test",
+		repo: { path: "/tmp" },
+		phases: phases.map((p) => ({
+			...p,
+			title: p.id,
+			goal: p.id,
+			branch: `feat/${p.id}`,
+			dependsOn: [],
+			tasks: p.tasks ?? [],
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString(),
+		})),
+		createdAt: new Date().toISOString(),
+		updatedAt: new Date().toISOString(),
+	};
+}
+
+describe("no-tasks gate sub-cases — discriminating predicates", () => {
+	it("WORKTREE_STATUSES contains 'active' (activePhase truthy when a phase is active)", () => {
+		// Pins the statuses that make activePhase() return non-null so a
+		// schema change doesn't silently break the auto-advance guard.
+		expect(WORKTREE_STATUSES).toContain("active");
+	});
+
+	it("readyPhases returns planned phases with no deps (auto-advance candidates)", () => {
+		const plan = makePlan([
+			{ id: "a", status: "planned" },
+			{ id: "b", status: "planned" },
+		]);
+		const ready = readyPhases(
+			plan as unknown as Parameters<typeof readyPhases>[0],
+		);
+		expect(ready.map((p) => p.id)).toEqual(["a", "b"]);
+	});
+
+	it("readyPhases is empty when all phases are shipped (no auto-advance candidate)", () => {
+		const plan = makePlan([
+			{ id: "a", status: "shipped" },
+			{ id: "b", status: "shipped" },
+		]);
+		expect(
+			readyPhases(plan as unknown as Parameters<typeof readyPhases>[0]),
+		).toHaveLength(0);
+	});
+
+	it("readyPhases excludes an active phase (WORKTREE_STATUS) — not a candidate", () => {
+		// A phase in a WORKTREE_STATUS is already running; it must not be
+		// returned as an auto-advance candidate.
+		const plan = makePlan([
+			{ id: "a", status: "active" },
+			{ id: "b", status: "planned" },
+		]);
+		const ids = readyPhases(
+			plan as unknown as Parameters<typeof readyPhases>[0],
+		).map((p) => p.id);
+		expect(ids).not.toContain("a");
+		expect(ids).toContain("b");
+	});
+
+	it("no-tasks gate is diagnostic (not silent) — auto-advance or warning will fire", () => {
+		const d = diagnoseAgentEndCompletion({
+			...BASE_AGENT,
+			taskCount: 0,
+			deliverableCount: 0,
+		});
+		expect(d).toMatchObject({
+			proceed: false,
+			gate: "no-tasks",
+			diagnostic: true,
+		});
 	});
 });
