@@ -249,6 +249,23 @@ export function resolveImplementDefault(raw: unknown): {
 	}
 	return { mode: "auto", valid: false };
 }
+
+/**
+ * Derive the effective implement mode for a given session mode.
+ *
+ * - `ask` / `auto` → preserve as-is (user already chose a deliberate mode)
+ * - anything else (plan, hack, null) → fall back to the config default
+ *
+ * This is pure so it can be tested without a running session.
+ */
+export function resolveImplementModeForCurrentMode(
+	currentMode: string | null | undefined,
+	defaultMode: ImplementMode,
+): ImplementMode {
+	if (currentMode === "ask" || currentMode === "auto") return currentMode;
+	return defaultMode;
+}
+
 type Stage =
 	| "idle"
 	| "planning"
@@ -5238,14 +5255,23 @@ export default function (pi: ExtensionAPI) {
 			"Pass `--fanout` from plan mode to spawn a fleet of worker subagents, one per " +
 			"independent chain (Pattern X).",
 		handler: async (args, ctx) => {
-			if (modeState?.mode === "hack") {
+			// Preserve non-plan modes: ask/auto keep their current mode so that
+			// /implement from ask stays in ask (no accidental auto-flip). Hack
+			// runs as auto (ImplementMode doesn't include hack). Plan falls
+			// back to the configured implementDefault setting.
+			const { mode: settingMode, valid: settingValid } =
+				readImplementDefaultSetting(ctx);
+			if (!settingValid) {
 				notify(
 					ctx,
-					"/implement is plan/auto only — Shift+Tab back to plan first",
+					'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
 					"warning",
 				);
-				return;
 			}
+			const implementMode = resolveImplementModeForCurrentMode(
+				modeState?.mode,
+				settingMode,
+			);
 			const raw = args ?? "";
 			if (/(?:^|\s)--fanout(?:\s|$)/.test(raw)) {
 				if (isWorker()) {
@@ -5300,15 +5326,6 @@ export default function (pi: ExtensionAPI) {
 			const description = stripped.length > 0 ? stripped : null;
 
 			if (!isGitRepo(ctx.cwd)) {
-				const { mode: implementMode, valid: implementValid } =
-					readImplementDefaultSetting(ctx);
-				if (!implementValid) {
-					notify(
-						ctx,
-						'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
-						"warning",
-					);
-				}
 				if (!modeState) {
 					modeState = {
 						mode: implementMode,
@@ -5355,15 +5372,6 @@ export default function (pi: ExtensionAPI) {
 				modeState.defaultBranch = defaultBranch;
 			}
 
-			const { mode: implementMode, valid: implementValid } =
-				readImplementDefaultSetting(ctx);
-			if (!implementValid) {
-				notify(
-					ctx,
-					'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
-					"warning",
-				);
-			}
 			await doImplement(
 				ctx,
 				description,
@@ -5423,6 +5431,38 @@ export default function (pi: ExtensionAPI) {
 			return doWorktree(args, ctx);
 		},
 	});
+
+	// ---- Direct mode-flip commands (/hack, /ask, /auto) ------------------
+	// These are intentionally minimal: no picker, no plan-state mutation,
+	// no branch creation. They just call setMode() so the user can flip
+	// without reaching for Shift+Tab. Useful in scripts, skills, and from
+	// the auto-mode prompt where Shift+Tab isn't accessible.
+
+	for (const [cmd, mode, label] of [
+		["hack", "hack", "hack mode — full tools, no plan ceremony"] as const,
+		["ask", "ask", "ask mode — full tools, pauses at git boundaries"] as const,
+		[
+			"auto",
+			"auto",
+			"auto mode — autonomous commit/ship/next-phase loop",
+		] as const,
+	] as const) {
+		pi.registerCommand(cmd, {
+			description: `Switch to ${label}.`,
+			handler: async (_args, ctx) => {
+				if (!modeState) {
+					notify(ctx, "no active session — run /plan first", "warning");
+					return;
+				}
+				if (modeState.mode === mode) {
+					notify(ctx, `already in ${mode} mode`, "info");
+					return;
+				}
+				setMode(mode, ctx);
+				notify(ctx, `${mode} mode`, "info");
+			},
+		});
+	}
 
 	pi.registerCommand("modes-status", {
 		description: "Show the current mode and plan progress.",
