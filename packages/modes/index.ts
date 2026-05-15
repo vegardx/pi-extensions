@@ -3166,11 +3166,9 @@ export default function (pi: ExtensionAPI) {
 			// The push is idempotent (reports "Everything up-to-date" when in
 			// sync) so it is safe to run unconditionally.
 			if (phase.branch) {
-				const push = runCommand(
-					"git",
-					["push", "-u", "origin", phase.branch],
-					{ cwd: worktreeCwd },
-				);
+				const push = runCommand("git", ["push", "-u", "origin", phase.branch], {
+					cwd: worktreeCwd,
+				});
 				if (!push.ok) {
 					notify(
 						ctx,
