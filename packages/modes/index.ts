@@ -3162,6 +3162,23 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (existingPr) {
+			// Push any local commits that were added after the PR was opened.
+			// The push is idempotent (reports "Everything up-to-date" when in
+			// sync) so it is safe to run unconditionally.
+			if (phase.branch) {
+				const push = runCommand(
+					"git",
+					["push", "-u", "origin", phase.branch],
+					{ cwd: worktreeCwd },
+				);
+				if (!push.ok) {
+					notify(
+						ctx,
+						`push failed before reconcile: ${push.stderr.trim()} — reconciling plan state anyway`,
+						"warning",
+					);
+				}
+			}
 			const drifted =
 				phase.prNumber !== existingPr.number || phase.status !== "in-review";
 			phase.prNumber = existingPr.number;
