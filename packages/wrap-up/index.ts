@@ -48,11 +48,12 @@ export function pauseRaceWarning(inFlight: boolean): string | null {
 export default function (pi: ExtensionAPI) {
 	// Tracks whether a /pause turn is currently in-flight so /continue can
 	// warn instead of silently returning "No handover files found".
-	// Cleared on turn_end — at that point the agent has either written the
-	// file (autoSave:true) or is awaiting the user's save confirmation.
+	// Cleared on agent_end — that fires when the entire agent run (all tool
+	// calls and follow-up turns) finishes, so the flag stays true for the
+	// full duration of the /pause flow, not just until the first LLM response.
 	let pauseInFlight = false;
 
-	pi.on("turn_end", () => {
+	pi.on("agent_end", () => {
 		pauseInFlight = false;
 	});
 
