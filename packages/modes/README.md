@@ -549,6 +549,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
 | `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
+| `researchTimeoutMs` | `90000` | Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
 
 > **Autoreview is off by default.** The pipeline (`/review`, post-execution batch) runs end-to-end but the surrounding triage and feedback flow needs more design work before it's on for everyone — see the `TODO(autoreview)` block on `runBatchReview` for the open issues. Opt in per-repo by setting `extensionConfig.modes.review.enable: true`.
 
