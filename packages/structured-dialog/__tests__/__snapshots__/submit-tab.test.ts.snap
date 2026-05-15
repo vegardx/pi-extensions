@@ -1,0 +1,15 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`renderSubmitAffordance > ready — renders box-bordered Submit button 1`] = `
+[
+  "   ┌───────────┐",
+  "   │ ↵  Submit │",
+  "   └───────────┘",
+]
+`;
+
+exports[`renderSubmitAffordance > warning — renders ⚠ Required with missing labels 1`] = `
+[
+  "   ⚠ Required: Name, Email",
+]
+`;
