@@ -38,18 +38,21 @@
     "prepare": "husky || true"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.12",
-    "@mariozechner/pi-ai": "^0.73.0",
-    "@mariozechner/pi-coding-agent": "^0.73.0",
-    "@mariozechner/pi-tui": "^0.73.0",
+    "@biomejs/biome": "^2.4.15",
+    "@mariozechner/pi-ai": "^0.73.1",
+    "@mariozechner/pi-coding-agent": "^0.73.1",
+    "@mariozechner/pi-tui": "^0.73.1",
     "@sinclair/typebox": "^0.34.49",
     "@types/node": "^22",
     "@types/proper-lockfile": "^4.1.4",
     "husky": "^9.1.7",
-    "lint-staged": "^17.0.2",
+    "lint-staged": "^17.0.4",
     "proper-lockfile": "^4.1.2",
     "typescript": "^6.0.3",
     "vitest": "^3.2.4"
+  },
+  "overrides": {
+    "protobufjs": "^8.3.0"
   },
   "engines": {
     "node": ">=20.0.0"
