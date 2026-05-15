@@ -148,6 +148,19 @@ describe("classifyStatic", () => {
 			expect(classifyStatic("git commit -m 'x'")?.verdict).toBe("block");
 		});
 
+		it("blocks gh pr mutations (route through /commit and /ship)", () => {
+			expect(classifyStatic("gh pr create --title x")?.verdict).toBe("block");
+			expect(classifyStatic("gh pr edit 42 --title x")?.verdict).toBe("block");
+			expect(classifyStatic("gh pr merge 42")?.verdict).toBe("block");
+			expect(classifyStatic("gh pr close 42")?.verdict).toBe("block");
+			expect(classifyStatic("gh pr ready 42")?.verdict).toBe("block");
+			// Read-only gh pr commands stay allowed via PRIORITY_ALLOW_PREFIXES
+			expect(classifyStatic("gh pr list --head feat/x")?.verdict).toBe("allow");
+			expect(classifyStatic("gh pr view 42 --json state")?.verdict).toBe(
+				"allow",
+			);
+		});
+
 		it("blocks sed -i (in-place edit)", () => {
 			expect(classifyStatic("sed -i 's/foo/bar/' file.ts")?.verdict).toBe(
 				"block",

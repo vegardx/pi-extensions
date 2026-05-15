@@ -208,6 +208,10 @@ const DENY_PATTERNS: readonly RegExp[] = [
 	/\bgit\s+(checkout|switch)\s+-[bB]\b/, // creating branches is a mutation
 	/\bgit\s+clean\b/,
 	/\bgit\s+tag\s+-[dfa]/,
+	// gh PR mutations — modes owns these via /commit and /ship.
+	// Read-only `gh pr list/view/diff/checks/status` are allowed via
+	// PRIORITY_ALLOW_PREFIXES above; this catches the create/edit path.
+	/\bgh\s+pr\s+(create|edit|merge|close|reopen|ready)\b/,
 	// Docker/containers
 	/\bdocker\s+(run|exec|rm|stop|kill|build|push|pull)\b/,
 	/\bkubectl\s+(apply|delete|create|patch|edit|scale)\b/,
