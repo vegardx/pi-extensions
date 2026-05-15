@@ -155,13 +155,23 @@ describe("DelegateAgents.research", () => {
 		expect(outcome).toMatchObject({ ok: false, reason: "empty" });
 	});
 
-	it("forwards per-call timeoutMs and signal to runSubagent", async () => {
+	it("forwards per-call timeoutMs to runSubagent and combines caller signal", async () => {
 		const ac = new AbortController();
 		const agents = new DelegateAgents(MOCK_CTX);
 		await agents.research("q", { timeoutMs: 12345, signal: ac.signal });
+		// timeoutMs is forwarded as-is for waitForIdle
 		expect(runSubagent).toHaveBeenCalledWith(
-			expect.objectContaining({ timeoutMs: 12345, signal: ac.signal }),
+			expect.objectContaining({ timeoutMs: 12345 }),
 		);
+		// The signal passed to runSubagent must be a COMBINED signal that
+		// respects the caller's abort: aborting ac should abort the combined
+		// signal too.
+		const passedSignal: AbortSignal = (runSubagent as ReturnType<typeof vi.fn>)
+			.mock.calls[0][0].signal;
+		expect(passedSignal).not.toBe(ac.signal); // combined, not original
+		expect(passedSignal.aborted).toBe(false);
+		ac.abort();
+		expect(passedSignal.aborted).toBe(true);
 	});
 
 	it("dispose() is a no-op for research-only DelegateAgents", async () => {

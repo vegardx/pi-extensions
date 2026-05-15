@@ -4081,7 +4081,14 @@ export default function (pi: ExtensionAPI) {
 			),
 		}),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			const timeoutMs = params.timeoutMs ?? readResearchTimeoutMs(ctx);
+			// Validate model-supplied timeoutMs: 0, negative, or non-finite
+			// values would cause immediate or misleading timeouts. Fall back to
+			// the configured default when the override is unusable.
+			const rawOverride = params.timeoutMs;
+			const timeoutMs =
+				rawOverride != null && Number.isFinite(rawOverride) && rawOverride > 0
+					? rawOverride
+					: readResearchTimeoutMs(ctx);
 			const outcome = await ensureDelegateAgents(ctx).research(
 				params.question,
 				{
