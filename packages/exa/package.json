@@ -9,7 +9,7 @@
 		"skills": ["./skills/"]
 	},
 	"dependencies": {
-		"exa-js": "^2.11.0"
+		"exa-js": "^2.13.0"
 	},
 	"peerDependencies": {
 		"@mariozechner/pi-coding-agent": "*",
