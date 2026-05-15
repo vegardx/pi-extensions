@@ -253,6 +253,31 @@ describe("scoreHandover", () => {
 		);
 		expect(score).toBe(0);
 	});
+
+	// --- finding #4: pure-recency score must be < 50 so /continue shows picker ---
+	it("pure-recency score is always < 50 (no branch / repo signal)", () => {
+		const recencyScore = scoreHandover(
+			{ date: today, session_id: "x" }, // same day → max recency (+10)
+			null,
+			null,
+			today,
+		);
+		expect(recencyScore).toBeLessThan(50);
+	});
+
+	it("score with repo match is ≥ 50 (auto-select threshold)", () => {
+		const repoScore = scoreHandover(
+			{
+				date: "2025-01-01",
+				session_id: "x",
+				repo: "https://github.com/org/repo",
+			},
+			null,
+			"https://github.com/org/repo",
+			today,
+		);
+		expect(repoScore).toBeGreaterThanOrEqual(50);
+	});
 });
 
 // ---------------------------------------------------------------------------

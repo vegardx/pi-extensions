@@ -157,9 +157,11 @@ export function selectOption(state: DialogState): boolean {
 		label: opt.label,
 		text: item.textInput ? opt.label : undefined,
 	});
-	// Auto-advance to next unanswered tab or submit
+	// Auto-advance to next unanswered tab or submit.
+	// Search from index 0, not from currentTab+1, so out-of-order navigation
+	// (e.g. going back to re-answer tab 0) doesn't leave earlier tabs skipped.
 	const nextUnanswered = state.items.findIndex(
-		(it, idx) => idx > state.currentTab && !state.answers.has(it.id),
+		(it) => !state.answers.has(it.id),
 	);
 	if (nextUnanswered >= 0) {
 		state.currentTab = nextUnanswered;

@@ -315,6 +315,28 @@ describe("buildPausePrompt", () => {
 		);
 		expect(prompt).not.toContain("pi --resume");
 	});
+
+	// --- finding #1: fmSafe must not strip backslashes ---
+	it("preserves backslashes in sessionCwd frontmatter (Windows path round-trip)", () => {
+		const prompt = buildPausePrompt(
+			makeCtx({ sessionCwd: "C:\\Users\\vegard\\project" }),
+			makeHandover(),
+		);
+		// The YAML frontmatter cwd field must preserve the Windows path.
+		expect(prompt).toContain('cwd: "C:\\Users\\vegard\\project"');
+	});
+
+	// --- finding #2: Remote field must have credentials stripped ---
+	it("strips embedded token from Remote field in Step 2 snapshot", () => {
+		const credUrl =
+			"https://x-access-token:ghp_secret123@github.com/org/repo.git";
+		const prompt = buildPausePrompt(
+			makeCtx({ remoteUrl: credUrl }),
+			makeHandover(),
+		);
+		expect(prompt).not.toContain("ghp_secret123");
+		expect(prompt).toContain("https://github.com/org/repo.git");
+	});
 });
 
 // ---------------------------------------------------------------------------

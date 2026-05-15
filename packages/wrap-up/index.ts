@@ -141,8 +141,12 @@ export default function (pi: ExtensionAPI) {
 
 			// If the top candidate has no relevance signal at all, or
 			// multiple candidates tie, let the user pick explicitly.
+			// Require a non-recency signal (branch or repo match, score ≥ 50)
+			// before auto-selecting. A pure-recency hit (score 1–10) is too
+			// weak — it just means the file is recent, not that it belongs to
+			// this repo/branch. Always show the picker in that case.
 			const needsPicker =
-				candidates[0].score === 0 ||
+				candidates[0].score < 50 ||
 				(candidates.length > 1 && candidates[0].score === candidates[1].score);
 			if (needsPicker) {
 				const top = candidates.slice(0, 10);
