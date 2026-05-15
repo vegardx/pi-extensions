@@ -82,10 +82,10 @@ import {
 	releasePhase,
 } from "./plan/driver-claim.js";
 import {
-	exploreWidgetShouldHide,
 	ExploreMailbox,
 	type ExploreNotification,
 	type ExploreTask,
+	exploreWidgetShouldHide,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import {
