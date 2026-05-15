@@ -8,7 +8,11 @@
  * mailbox state machine and assert observable behaviour.
  */
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import { ExploreMailbox, type MailboxDeps } from "../plan/explore-mailbox.js";
+import {
+	exploreWidgetShouldHide,
+	ExploreMailbox,
+	type MailboxDeps,
+} from "../plan/explore-mailbox.js";
 
 // ---- Mock agent -------------------------------------------------------------
 
@@ -409,5 +413,49 @@ describe("ExploreMailbox", () => {
 
 		// At least: ask, agent_start (running), agent_end (done).
 		expect(listener.mock.calls.length).toBeGreaterThanOrEqual(3);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// exploreWidgetShouldHide — visibility gate for the explore panel
+// ---------------------------------------------------------------------------
+
+describe("exploreWidgetShouldHide", () => {
+	it("hides when mailbox is empty", () => {
+		expect(exploreWidgetShouldHide([], [])).toBe(true);
+	});
+
+	it("hides when all tasks are done and no notifications", () => {
+		const tasks = [
+			{ id: "a", question: "q", status: "done" as const, enqueuedAt: 0 },
+			{ id: "b", question: "q2", status: "error" as const, enqueuedAt: 0 },
+		];
+		expect(exploreWidgetShouldHide(tasks, [])).toBe(true);
+	});
+
+	it("hides when all tasks are timeout and no notifications", () => {
+		const tasks = [{ id: "a", question: "q", status: "timeout" as const, enqueuedAt: 0 }];
+		expect(exploreWidgetShouldHide(tasks, [])).toBe(true);
+	});
+
+	it("shows when a task is running", () => {
+		const tasks = [{ id: "a", question: "q", status: "running" as const, enqueuedAt: 0 }];
+		expect(exploreWidgetShouldHide(tasks, [])).toBe(false);
+	});
+
+	it("shows when a task is queued", () => {
+		const tasks = [{ id: "a", question: "q", status: "queued" as const, enqueuedAt: 0 }];
+		expect(exploreWidgetShouldHide(tasks, [])).toBe(false);
+	});
+
+	it("shows when no tasks but there are notifications", () => {
+		const notifications = [{ id: "n1", text: "msg", at: Date.now() }];
+		expect(exploreWidgetShouldHide([], notifications)).toBe(false);
+	});
+
+	it("shows when all tasks done but notifications pending", () => {
+		const tasks = [{ id: "a", question: "q", status: "done" as const, enqueuedAt: 0 }];
+		const notifications = [{ id: "n1", text: "result", at: Date.now() }];
+		expect(exploreWidgetShouldHide(tasks, notifications)).toBe(false);
 	});
 });

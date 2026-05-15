@@ -72,6 +72,23 @@ export interface ExploreNotification {
 	at: number;
 }
 
+/**
+ * Returns true when the explore panel should be hidden: no tasks are
+ * actively running or queued, and there are no pending notifications.
+ * Done/error/timeout tasks without active work are intentionally hidden.
+ *
+ * Exported as a pure function so it can be unit-tested independently of
+ * the extension rendering loop.
+ */
+export function exploreWidgetShouldHide(
+	tasks: ExploreTask[],
+	notifications: ExploreNotification[],
+): boolean {
+	const running = tasks.filter((t) => t.status === "running").length;
+	const queued = tasks.filter((t) => t.status === "queued").length;
+	return running === 0 && queued === 0 && notifications.length === 0;
+}
+
 export interface CheckOptions {
 	/** When set, return only this task; do not drain. */
 	id?: string;

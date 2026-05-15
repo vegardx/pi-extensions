@@ -82,6 +82,7 @@ import {
 	releasePhase,
 } from "./plan/driver-claim.js";
 import {
+	exploreWidgetShouldHide,
 	ExploreMailbox,
 	type ExploreNotification,
 	type ExploreTask,
@@ -441,12 +442,15 @@ export default function (pi: ExtensionAPI) {
 		state: { tasks: ExploreTask[]; notifications: ExploreNotification[] },
 	): void {
 		if (!ctx.hasUI) return;
-		if (state.tasks.length === 0 && state.notifications.length === 0) {
+		const running = state.tasks.filter((t) => t.status === "running").length;
+		const queued = state.tasks.filter((t) => t.status === "queued").length;
+		// Hide when no active work remains: empty mailbox, all tasks settled
+		// (done/error/timeout), and no pending notifications. Completed tasks
+		// no longer linger in the panel after the explore loop drains.
+		if (exploreWidgetShouldHide(state.tasks, state.notifications)) {
 			ctx.ui.setWidget("delegate-explore", undefined);
 			return;
 		}
-		const running = state.tasks.filter((t) => t.status === "running").length;
-		const queued = state.tasks.filter((t) => t.status === "queued").length;
 		const header = `🔍 Explore (${running} running, ${queued} queued)`;
 		const rows: string[] = [header];
 		for (const t of state.tasks) {
