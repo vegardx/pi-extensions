@@ -86,6 +86,14 @@ describe("polishReport", () => {
 		expect(capturedTask.systemPromptPath).toContain("system-prompt.md");
 	});
 
+	it("recovers JSON when model adds prose after the object", async () => {
+		const raw =
+			'Here is the issue:\n{"title":"a bug","body":"broken"}\n\nLet me know!';
+		const r = await polishReport(baseInput, fixedRunner(raw));
+		expect(r.ok).toBe(true);
+		if (r.ok) expect(r.draft.title).toBe("a bug");
+	});
+
 	it("rejects polish output missing required fields", async () => {
 		const r = await polishReport(
 			baseInput,

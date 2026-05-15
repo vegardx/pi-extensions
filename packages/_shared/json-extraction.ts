@@ -43,5 +43,14 @@ export function candidateJsonPayloads(raw: string): string[] {
 	// Prose before a bare object.
 	const braceIdx = trimmed.indexOf("{");
 	if (braceIdx > 0) push(trimmed.slice(braceIdx));
+	// Prose before AND after a bare object — first `{` to last `}`.
+	// Handles models that emit a valid object surrounded by explanation text.
+	const lastBrace = trimmed.lastIndexOf("}");
+	if (braceIdx >= 0 && lastBrace > braceIdx)
+		push(trimmed.slice(braceIdx, lastBrace + 1));
+	// Same for arrays: first `[` to last `]`.
+	const lastBracket = trimmed.lastIndexOf("]");
+	if (bracketIdx >= 0 && lastBracket > bracketIdx)
+		push(trimmed.slice(bracketIdx, lastBracket + 1));
 	return out;
 }
