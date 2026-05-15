@@ -368,7 +368,10 @@ describe("discoverHandovers", () => {
 // needsHandoverPicker — picker threshold guard (score < 50 = no signal)
 // ---------------------------------------------------------------------------
 
-function makeRanked(score: number, filePath = "f.md"): import("../discover.js").RankedHandover {
+function makeRanked(
+	score: number,
+	filePath = "f.md",
+): import("../discover.js").RankedHandover {
 	return {
 		filePath,
 		score,
@@ -398,10 +401,14 @@ describe("needsHandoverPicker", () => {
 	});
 
 	it("returns true when top two candidates are tied (ambiguous)", () => {
-		expect(needsHandoverPicker([makeRanked(100, "a.md"), makeRanked(100, "b.md")])).toBe(true);
+		expect(
+			needsHandoverPicker([makeRanked(100, "a.md"), makeRanked(100, "b.md")]),
+		).toBe(true);
 	});
 
 	it("returns false when top candidate is clear winner (score >= 50, no tie)", () => {
-		expect(needsHandoverPicker([makeRanked(105, "a.md"), makeRanked(60, "b.md")])).toBe(false);
+		expect(
+			needsHandoverPicker([makeRanked(105, "a.md"), makeRanked(60, "b.md")]),
+		).toBe(false);
 	});
 });
