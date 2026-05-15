@@ -459,18 +459,21 @@ export function registerPlanTools(
 						phase.dependsOn = dependsOn;
 					}
 					if (params.status !== undefined) {
-						if (!canTransition(phase.status, params.status as PhaseStatus)) {
-							return {
-								content: [
-									{
-										type: "text",
-										text: `Cannot transition \`${phase.id}\` from \`${phase.status}\` to \`${params.status}\``,
-									},
-								],
-								details: { error: "invalid transition" },
-							};
+						if (phase.status !== (params.status as PhaseStatus)) {
+							if (!canTransition(phase.status, params.status as PhaseStatus)) {
+								return {
+									content: [
+										{
+											type: "text",
+											text: `Cannot transition \`${phase.id}\` from \`${phase.status}\` to \`${params.status}\``,
+										},
+									],
+									details: { error: "invalid transition" },
+								};
+							}
+							phase.status = params.status as PhaseStatus;
 						}
-						phase.status = params.status as PhaseStatus;
+						// else: already in target state — idempotent, skip mutation
 					}
 					phase.updatedAt = nowIso();
 					plan.updatedAt = nowIso();

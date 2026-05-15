@@ -94,6 +94,27 @@ describe("plan_phase", () => {
 		expect(plan.phases[0].status).toBe("active");
 	});
 
+	it("update to same status is a no-op (idempotent)", async () => {
+		await call("plan_phase", { action: "add", title: "Foo" });
+		await call("plan_phase", { action: "update", id: "foo", status: "active" });
+		onChanged.mockClear();
+
+		// Re-asserting active→active should succeed, not error
+		const r = await call("plan_phase", {
+			action: "update",
+			id: "foo",
+			status: "active",
+		});
+		expect(r.details.error).toBeUndefined();
+		expect(r.details.action).toBe("update");
+
+		// Status unchanged on disk
+		const plan = loadPlan("tools-test") as Plan;
+		expect(plan.phases[0].status).toBe("active");
+		// onChanged still fires (timestamps update)
+		expect(onChanged).toHaveBeenCalledTimes(1);
+	});
+
 	it("remove deletes the phase", async () => {
 		await call("plan_phase", { action: "add", title: "Foo" });
 		await call("plan_phase", { action: "remove", id: "foo" });
