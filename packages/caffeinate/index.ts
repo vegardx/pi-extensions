@@ -17,7 +17,8 @@
  * the shared helper is a no-op when settings disable it.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -53,19 +54,53 @@ export function renderStatusLine(state: KeepAwakeState): string {
 }
 
 /**
- * Returns the pill string for the footer when the extension is enabled and
- * the platform is supported and caffeinate is active, or `undefined` to clear
- * the pill otherwise.
+ * Returns the pill string for the footer, or `undefined` to clear it.
  *
- * The pill is intentionally absent when disabled/unsupported/inactive so the
- * footer stays clean — it only appears when there is something useful to say
- * ("active (develop, review)").
+ * Visibility rules:
+ *  - unsupported (non-darwin): always hidden — no actionable signal.
+ *  - enabled + active: show "caffeinate: active (reason)".
+ *  - enabled + idle: hidden — working as intended, no noise.
+ *  - disabled + mid-hold (edge case, user toggled off live): hidden.
+ *  - disabled + idle: show "caffeinate: disabled (run /caffeinate on)"
+ *    so the feature is discoverable without needing to know the command.
  */
 export function statusPill(state: KeepAwakeState): string | undefined {
-	if (!state.supported || !state.enabled) return undefined;
-	if (!state.active) return undefined;
-	const reasons = state.reasons.length ? ` (${state.reasons.join(", ")})` : "";
-	return `caffeinate: active${reasons}`;
+	if (!state.supported) return undefined;
+	if (state.active && state.enabled) {
+		const reasons = state.reasons.length ? ` (${state.reasons.join(", ")})` : "";
+		return `caffeinate: active${reasons}`;
+	}
+	// Supported but opt-in not taken: discoverability pill.
+	if (!state.enabled && !state.active) {
+		return "caffeinate: disabled (run /caffeinate on)";
+	}
+	return undefined;
+}
+
+/**
+ * Absolute path to the per-machine flag file that suppresses the one-time
+ * first-run hint after it has been shown once.
+ *
+ * Exported so tests can override the path via the `hintShown` argument to
+ * `shouldShowFirstRunHint` rather than poking the real filesystem.
+ */
+export function hintFlagPath(): string {
+	return join(homedir(), ".pi", "agent", ".caffeinate-hinted");
+}
+
+/**
+ * Returns true when the first-run discoverability hint should fire:
+ * the platform is supported, the user hasn't opted in yet, and the hint
+ * hasn't been shown before.
+ *
+ * Exported as a pure function so it can be unit-tested without touching
+ * the real filesystem.
+ */
+export function shouldShowFirstRunHint(
+	state: KeepAwakeState,
+	hintAlreadyShown: boolean,
+): boolean {
+	return state.supported && !state.enabled && !hintAlreadyShown;
 }
 
 /**
@@ -183,6 +218,25 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.setStatus(EXT_ID, statusPill(getKeepAwakeState(ctx)));
 		});
 		refresh(ctx);
+
+		// First-run discoverability hint: fire once per machine when the
+		// feature is supported but the user hasn't opted in yet. A flag
+		// file in ~/.pi/agent/ gates it so it never repeats.
+		const hintShown = existsSync(hintFlagPath());
+		if (shouldShowFirstRunHint(getKeepAwakeState(ctx), hintShown)) {
+			try {
+				mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+				writeFileSync(hintFlagPath(), "1");
+			} catch {
+				// Non-fatal: hint fires but flag write failed. It will
+				// show again next session, which is acceptable.
+			}
+			ctx.ui.notify(
+				"caffeinate is supported on this Mac but not yet enabled — " +
+					"run /caffeinate on to prevent sleep during long sessions.",
+				"info",
+			);
+		}
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
