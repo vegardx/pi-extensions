@@ -1,8 +1,8 @@
-name: update-prs
+name: Rebase PRs
 
-# Runs whenever main moves forward. Finds open PRs that are BEHIND
-# main and tells GitHub to rebase them. This re-triggers CI on each
-# PR so auto-merge can fire once the checks go green.
+# Runs whenever main moves forward, and can be triggered manually.
+# Finds open PRs that are BEHIND main and rebases them, which
+# re-triggers CI so auto-merge can fire once checks go green.
 #
 # Note: gh pr update-branch calls the GitHub API server-side, so the
 # resulting push DOES trigger the PR's CI workflow (unlike direct
@@ -11,13 +11,14 @@ name: update-prs
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: update-prs
+  group: rebase-prs
   cancel-in-progress: true
 
 jobs:
