@@ -1136,7 +1136,7 @@ export default function (pi: ExtensionAPI) {
 		// pi-tui re-invokes render(width) on resize automatically.
 		ctx.ui.setWidget("modes-steps", (_tui, _theme) => ({
 			render(width) {
-				const maxLine = Math.min(60, width);
+				const maxLine = width;
 				const result: string[] = [];
 				for (const phase of plan.phases) {
 					const statusGlyph = STATUS_GLYPH[phase.status] ?? "○";
