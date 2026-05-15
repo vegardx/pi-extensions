@@ -45,6 +45,10 @@ describe("renderPlanSeed", () => {
 				"You are working on Phase `p-1`. Only execute its deliverables. When",
 				"all deliverables are done, run `/ship` — do NOT start the next phase.",
 				"Notes are reviewer-facing and surface in the PR body; do not tick them.",
+				"",
+				"Route commit/push/PR work through `/commit` and `/ship` so plan state stays in sync.",
+				"Don't shell out to `git commit`, `git push`, or `gh pr create` directly while a phase is active —",
+				"those bypass the plan's prNumber/status tracking. If you already did, run `/sync` to reconcile.",
 			].join("\n"),
 		);
 	});

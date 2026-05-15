@@ -40,6 +40,95 @@ export interface ShipResult {
 	prNumber?: number;
 	prUrl?: string;
 	error?: string;
+	/**
+	 * Set when /ship found an already-open PR for `phase.branch` and
+	 * skipped the push + create steps. Used by callers to surface a
+	 * "reconciled, nothing new shipped" notify rather than the usual
+	 * "shipped" message.
+	 */
+	reconciled?: boolean;
+}
+
+export type RunShell = (
+	command: string,
+	args: readonly string[],
+	opts?: { cwd?: string; stdin?: string },
+) => ShellResult;
+
+/**
+ * Probe `gh` for an open PR whose head ref matches `branch`. Returns
+ * the first match (or null). Soft-fail: any `gh` error or unparseable
+ * stdout returns null so callers fall through to the normal create
+ * path rather than masking unrelated failures.
+ */
+export function probeOpenPrForBranch(
+	branch: string,
+	cwd: string,
+	run: RunShell = defaultRunCommand,
+): { number: number; url: string } | null {
+	const r = run(
+		"gh",
+		[
+			"pr",
+			"list",
+			"--head",
+			branch,
+			"--state",
+			"open",
+			"--json",
+			"number,url",
+			"--limit",
+			"1",
+		],
+		{ cwd },
+	);
+	if (!r.ok) return null;
+	try {
+		const list = JSON.parse(r.stdout) as Array<{
+			number?: number;
+			url?: string;
+		}>;
+		const first = list[0];
+		if (first && typeof first.number === "number") {
+			return { number: first.number, url: first.url ?? "" };
+		}
+	} catch {
+		// fall through
+	}
+	return null;
+}
+
+export type ProbedPrState = "open" | "merged" | "closed" | "unknown";
+
+/**
+ * Probe `gh pr view <number>` for the PR's current state. Returns
+ * null on `gh` error so callers can decide whether to fall back to
+ * a branch probe.
+ */
+export function probePrByNumber(
+	prNumber: number,
+	cwd: string,
+	run: RunShell = defaultRunCommand,
+): { state: ProbedPrState; url: string } | null {
+	const r = run("gh", ["pr", "view", String(prNumber), "--json", "state,url"], {
+		cwd,
+	});
+	if (!r.ok) return null;
+	try {
+		const data = JSON.parse(r.stdout) as { state?: string; url?: string };
+		const raw = (data.state ?? "").toUpperCase();
+		const state: ProbedPrState =
+			raw === "OPEN"
+				? "open"
+				: raw === "MERGED"
+					? "merged"
+					: raw === "CLOSED"
+						? "closed"
+						: "unknown";
+		return { state, url: data.url ?? "" };
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -88,6 +177,20 @@ export async function shipPhase(
 	});
 	if (!push.ok) {
 		return { ok: false, error: `git push failed: ${push.stderr.trim()}` };
+	}
+
+	// Idempotency: if an open PR already exists for this branch, return
+	// it instead of erroring with a duplicate `gh pr create` failure.
+	// Covers the case where /ship is retried after a partial failure or
+	// where the user shelled out to `gh pr create` directly mid-phase.
+	const existing = probeOpenPrForBranch(phase.branch, path, run);
+	if (existing) {
+		return {
+			ok: true,
+			prNumber: existing.number,
+			prUrl: existing.url,
+			reconciled: true,
+		};
 	}
 
 	const prArgs = [

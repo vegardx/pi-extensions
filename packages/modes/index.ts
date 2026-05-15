@@ -125,7 +125,11 @@ import {
 } from "./plan/schema.js";
 import { type ScrutinyFinding, scrutinizePlan } from "./plan/scrutinize.js";
 import { PLAN_SEED_CUSTOM_TYPE, seedPlanDoc } from "./plan/seed.js";
-import { shipPhase } from "./plan/ship.js";
+import {
+	probeOpenPrForBranch,
+	probePrByNumber,
+	shipPhase,
+} from "./plan/ship.js";
 import {
 	STEERING_CLASSIFIER,
 	shouldInjectSteeringClassifier,
@@ -140,6 +144,7 @@ import {
 import { isWorker } from "./plan/worker-protocol.js";
 import {
 	createWorktree,
+	effectiveWorktreePath,
 	removeWorktree,
 	worktreeExists,
 	worktreePath,
@@ -3092,6 +3097,94 @@ export default function (pi: ExtensionAPI) {
 			);
 			return;
 		}
+		// /ship is idempotent: if the phase already has an open PR (either
+		// because /ship was retried, or because the user shelled out to
+		// raw `git push` + `gh pr create` mid-phase), reconcile plan state
+		// to match reality and exit success rather than refusing or
+		// double-creating. Cases covered:
+		//   - status=shipped (already merged) → notify and exit
+		//   - status=abandoned                → refuse (cannot ship a closed PR)
+		//   - status=in-review with prNumber  → confirm PR still open; if
+		//     merged, flip to shipped; if closed, refuse
+		//   - status=active with existing PR  → reconcile to in-review and exit
+		//   - status=active without PR        → ship as before
+		if (phase.status === "shipped") {
+			notify(
+				ctx,
+				`phase ${phase.id} is already shipped (merged)${phase.prNumber ? ` — PR #${phase.prNumber}` : ""}`,
+				"info",
+			);
+			return;
+		}
+		if (phase.status === "abandoned") {
+			notify(ctx, `phase ${phase.id} is abandoned; cannot ship`, "warning");
+			return;
+		}
+
+		// Probe for an existing PR before deciding to ship. This is the
+		// reconcile-when-work-already-done path (#150). We probe by
+		// prNumber when set, then fall back to branch lookup so we
+		// recover from manually-created PRs the agent never recorded.
+		const worktreeCwd = effectiveWorktreePath(plan, phase);
+		let existingPr: { number: number; url: string } | null = null;
+		if (phase.prNumber) {
+			const probed = probePrByNumber(phase.prNumber, worktreeCwd);
+			if (probed) {
+				if (probed.state === "merged") {
+					phase.status = "shipped";
+					phase.updatedAt = new Date().toISOString();
+					plan.updatedAt = phase.updatedAt;
+					savePlan(plan);
+					if (reconcileWorktrees(plan, ctx)) savePlan(plan);
+					updateWidget(ctx);
+					notify(
+						ctx,
+						`phase ${phase.id} ➜ shipped (PR #${phase.prNumber} merged; reconciled from remote)`,
+						"info",
+					);
+					return;
+				}
+				if (probed.state === "closed") {
+					notify(
+						ctx,
+						`phase ${phase.id} PR #${phase.prNumber} is closed (not merged); resolve manually before re-shipping`,
+						"warning",
+					);
+					return;
+				}
+				if (probed.state === "open") {
+					existingPr = { number: phase.prNumber, url: probed.url };
+				}
+			}
+		}
+		if (!existingPr && phase.branch) {
+			existingPr = probeOpenPrForBranch(phase.branch, worktreeCwd);
+		}
+
+		if (existingPr) {
+			const drifted =
+				phase.prNumber !== existingPr.number || phase.status !== "in-review";
+			phase.prNumber = existingPr.number;
+			phase.status = "in-review";
+			phase.updatedAt = new Date().toISOString();
+			plan.updatedAt = phase.updatedAt;
+			savePlan(plan);
+			if (reconcileWorktrees(plan, ctx)) savePlan(plan);
+			updateWidget(ctx);
+			notify(
+				ctx,
+				drifted
+					? `phase ${phase.id} ➜ in-review (reconciled from existing PR #${existingPr.number}${existingPr.url ? ` ${existingPr.url}` : ""})`
+					: `phase ${phase.id} already in-review (PR #${existingPr.number}${existingPr.url ? ` ${existingPr.url}` : ""}; nothing to do)`,
+				"info",
+			);
+			// Still run the post-ship summary + completion prompt so the
+			// per-phase summary lands and the auto-loop continues.
+			await writePhaseSummary(ctx, plan, phase);
+			await runCompletionPromptIfDone(ctx, plan);
+			return;
+		}
+
 		if (phase.status !== "active") {
 			notify(
 				ctx,
@@ -3117,7 +3210,9 @@ export default function (pi: ExtensionAPI) {
 		updateWidget(ctx);
 		notify(
 			ctx,
-			`phase ${phase.id} ➜ in-review (PR #${result.prNumber}${result.prUrl ? ` ${result.prUrl}` : ""})`,
+			result.reconciled
+				? `phase ${phase.id} ➜ in-review (existing PR #${result.prNumber}${result.prUrl ? ` ${result.prUrl}` : ""}; nothing new pushed)`
+				: `phase ${phase.id} ➜ in-review (PR #${result.prNumber}${result.prUrl ? ` ${result.prUrl}` : ""})`,
 			"info",
 		);
 
@@ -3558,9 +3653,30 @@ export default function (pi: ExtensionAPI) {
 	): { checked: number; failed: number } {
 		let checked = 0;
 		let failed = 0;
+		const now = () => new Date().toISOString();
 		for (const phase of plan.phases) {
-			if (!phase.prNumber) continue;
 			if (TERMINAL_STATUSES.includes(phase.status)) continue;
+
+			// Recovery path (#150): an `active` phase with a branch but no
+			// recorded PR is the symptom of the user shelling out to raw
+			// `git push` + `gh pr create` mid-phase. Probe by branch and
+			// reconcile so /sync brings plan state back in line with remote.
+			if (!phase.prNumber) {
+				if (phase.status !== "active" || !phase.branch) continue;
+				checked++;
+				const found = probeOpenPrForBranch(phase.branch, ctx.cwd);
+				if (!found) {
+					// Soft-skip — no open PR for this branch is the normal
+					// case; don't count as a failure.
+					checked--;
+					continue;
+				}
+				phase.prNumber = found.number;
+				phase.status = "in-review";
+				phase.updatedAt = now();
+				plan.updatedAt = phase.updatedAt;
+				continue;
+			}
 
 			checked++;
 			const r = runCommand(
@@ -4376,6 +4492,7 @@ export default function (pi: ExtensionAPI) {
 				"",
 				`Active phase: \`${phase?.id ?? "(unknown)"}\` — only this phase's tasks are in scope.`,
 				"Do NOT start work on other phases. When all of this phase's deliverables are done, run /ship.",
+				"Route commit/push/PR work through /commit and /ship — don't shell out to `git commit`, `git push`, or `gh pr create` directly. If you already did, /sync will reconcile.",
 				"",
 			];
 			if (remainingDeliverables.length > 0) {

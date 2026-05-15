@@ -1,7 +1,13 @@
 import { vi } from "vitest";
 import type { ShellResult } from "../git.js";
 import type { Phase, Plan } from "../plan/schema.js";
-import { parsePrCreateOutput, renderPrBody, shipPhase } from "../plan/ship.js";
+import {
+	parsePrCreateOutput,
+	probeOpenPrForBranch,
+	probePrByNumber,
+	renderPrBody,
+	shipPhase,
+} from "../plan/ship.js";
 
 const now = new Date().toISOString();
 
@@ -246,6 +252,7 @@ describe("shipPhase", () => {
 		const calls: Array<{ cmd: string; args: readonly string[] }> = [];
 		const run = vi.fn((cmd: string, args: readonly string[]): ShellResult => {
 			calls.push({ cmd, args });
+			if (cmd === "gh" && args[1] === "list") return ok("[]\n");
 			if (cmd === "gh") {
 				return ok("https://github.com/o/r/pull/55\n");
 			}
@@ -268,6 +275,7 @@ describe("shipPhase", () => {
 			"git add -A",
 			"git commit -m",
 			"git push -u",
+			"gh pr list",
 			"gh pr create",
 		]);
 	});
@@ -351,6 +359,7 @@ describe("shipPhase", () => {
 		const seenArgs: string[][] = [];
 		const run = vi.fn((cmd: string, args: readonly string[]): ShellResult => {
 			seenArgs.push([...args]);
+			if (cmd === "gh" && args[1] === "list") return ok("[]\n");
 			if (cmd === "gh") return ok("https://github.com/o/r/pull/1\n");
 			return ok();
 		});
@@ -359,7 +368,119 @@ describe("shipPhase", () => {
 			draft: true,
 			run,
 		});
-		const ghCall = seenArgs.find((a) => a[0] === "pr");
-		expect(ghCall).toContain("--draft");
+		const createCall = seenArgs.find((a) => a[0] === "pr" && a[1] === "create");
+		expect(createCall).toContain("--draft");
+	});
+});
+
+describe("probeOpenPrForBranch", () => {
+	it("returns first open PR for the branch", () => {
+		const run = vi.fn(() =>
+			ok('[{"number":42,"url":"https://github.com/o/r/pull/42"}]\n'),
+		);
+		const result = probeOpenPrForBranch("feat/x", "/tmp/repo", run);
+		expect(result).toEqual({
+			number: 42,
+			url: "https://github.com/o/r/pull/42",
+		});
+		expect(run).toHaveBeenCalledWith(
+			"gh",
+			expect.arrayContaining(["pr", "list", "--head", "feat/x"]),
+			{ cwd: "/tmp/repo" },
+		);
+	});
+
+	it("returns null on empty list", () => {
+		const run = vi.fn(() => ok("[]\n"));
+		expect(probeOpenPrForBranch("feat/x", "/tmp/repo", run)).toBeNull();
+	});
+
+	it("returns null on gh error (soft-fail)", () => {
+		const run = vi.fn(() => fail("not authenticated"));
+		expect(probeOpenPrForBranch("feat/x", "/tmp/repo", run)).toBeNull();
+	});
+
+	it("returns null on unparseable stdout", () => {
+		const run = vi.fn(() => ok("not json"));
+		expect(probeOpenPrForBranch("feat/x", "/tmp/repo", run)).toBeNull();
+	});
+});
+
+describe("probePrByNumber", () => {
+	it("maps gh state to discriminated union", () => {
+		const run = vi.fn(() =>
+			ok('{"state":"OPEN","url":"https://github.com/o/r/pull/9"}'),
+		);
+		expect(probePrByNumber(9, "/tmp/repo", run)).toEqual({
+			state: "open",
+			url: "https://github.com/o/r/pull/9",
+		});
+	});
+
+	it("recognises merged", () => {
+		const run = vi.fn(() => ok('{"state":"MERGED","url":""}'));
+		expect(probePrByNumber(9, "/tmp/repo", run)?.state).toBe("merged");
+	});
+
+	it("recognises closed", () => {
+		const run = vi.fn(() => ok('{"state":"CLOSED","url":""}'));
+		expect(probePrByNumber(9, "/tmp/repo", run)?.state).toBe("closed");
+	});
+
+	it("returns null on gh error", () => {
+		const run = vi.fn(() => fail());
+		expect(probePrByNumber(9, "/tmp/repo", run)).toBeNull();
+	});
+});
+
+describe("shipPhase idempotency", () => {
+	it("short-circuits gh pr create when an open PR exists for the branch", async () => {
+		const sequence: string[] = [];
+		const run = vi.fn((cmd: string, args: readonly string[]): ShellResult => {
+			sequence.push(`${cmd} ${args.slice(0, 2).join(" ")}`);
+			if (cmd === "git" && args[0] === "push") return ok();
+			if (cmd === "gh" && args[0] === "pr" && args[1] === "list") {
+				return ok('[{"number":99,"url":"https://github.com/o/r/pull/99"}]\n');
+			}
+			if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+				throw new Error("gh pr create should not run when PR exists");
+			}
+			return ok();
+		});
+		const r = await shipPhase(makePlan(), makePhase(), {
+			isClean: () => true,
+			run,
+		});
+		expect(r).toEqual({
+			ok: true,
+			prNumber: 99,
+			prUrl: "https://github.com/o/r/pull/99",
+			reconciled: true,
+		});
+		expect(sequence).toContain("git push -u");
+		expect(sequence).toContain("gh pr list");
+		expect(sequence).not.toContain("gh pr create");
+	});
+
+	it("falls through to gh pr create when no open PR exists", async () => {
+		const run = vi.fn((cmd: string, args: readonly string[]): ShellResult => {
+			if (cmd === "gh" && args[0] === "pr" && args[1] === "list") {
+				return ok("[]\n");
+			}
+			if (cmd === "gh" && args[0] === "pr" && args[1] === "create") {
+				return ok("https://github.com/o/r/pull/7\n");
+			}
+			return ok();
+		});
+		const r = await shipPhase(makePlan(), makePhase(), {
+			isClean: () => true,
+			run,
+		});
+		expect(r).toEqual({
+			ok: true,
+			prNumber: 7,
+			prUrl: "https://github.com/o/r/pull/7",
+		});
+		expect(r.reconciled).toBeUndefined();
 	});
 });

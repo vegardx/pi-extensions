@@ -261,6 +261,31 @@ through the lockfile-protected plan file; the widget shows a `[peer]`
 marker on phases driven by another session, and `plan_view` annotates
 the header with `driver: \`<id-prefix>\``.
 
+#### Recovery from raw `git` / `gh`
+
+Modes drives commit and PR state through `/commit` and `/ship`. If
+you (or the agent) shells out to `git commit`, `git push`, or
+`gh pr create` directly while a phase is `active`, plan state drifts
+out of sync with the remote — `phase.prNumber` stays unset, status
+stays `active`, and the next `/ship` would normally try to push and
+create the PR a second time.
+
+Two paths recover the drift:
+
+- **`/ship`** is idempotent. Before pushing it probes
+  `gh pr list --head <phase.branch> --state open`. If an open PR
+  already exists it skips push + `gh pr create` and reconciles
+  `phase.prNumber` + `status: in-review` to match the remote. A
+  drifted-but-merged PR (`gh pr view <prNumber>` returns
+  `state: MERGED`) flips the phase straight to `shipped`.
+- **`/sync`** does the same probe for every active phase whose
+  branch is set but `prNumber` is unset, in addition to refreshing
+  status for phases that already have a recorded PR.
+
+Either command is safe to run any number of times. Prefer `/sync`
+when the only thing that needs fixing is plan state; prefer `/ship`
+when the worktree still has work to push.
+
 #### Conflict recovery
 
 - **Adoption refused**: another live session owns the phase. Either
