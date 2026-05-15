@@ -19,6 +19,25 @@ export interface RankedHandover {
 }
 
 /**
+ * Returns true when the caller must show a picker rather than auto-selecting
+ * the top candidate.
+ *
+ * Rules:
+ *  - Score < 50: no branch/repo signal matched — recency alone is too weak.
+ *  - Tie at the top: two candidates are equally relevant; the user must choose.
+ *
+ * Exported as a pure function so the picker threshold is directly testable
+ * without spinning up a session or touching the filesystem.
+ */
+export function needsHandoverPicker(candidates: RankedHandover[]): boolean {
+	if (candidates.length === 0) return false;
+	return (
+		candidates[0].score < 50 ||
+		(candidates.length > 1 && candidates[0].score === candidates[1].score)
+	);
+}
+
+/**
  * Get the current git remote URL for the given cwd (best-effort).
  */
 function getRemoteUrl(cwd: string): string | null {

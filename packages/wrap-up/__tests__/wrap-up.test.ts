@@ -316,14 +316,16 @@ describe("buildPausePrompt", () => {
 		expect(prompt).not.toContain("pi --resume");
 	});
 
-	// --- finding #1: fmSafe must not strip backslashes ---
-	it("preserves backslashes in sessionCwd frontmatter (Windows path round-trip)", () => {
+	// --- finding #1: fmSafe must produce valid YAML double-quoted scalars ---
+	it("escapes backslashes in sessionCwd frontmatter so YAML stays valid (Windows path)", () => {
 		const prompt = buildPausePrompt(
 			makeCtx({ sessionCwd: "C:\\Users\\vegard\\project" }),
 			makeHandover(),
 		);
-		// The YAML frontmatter cwd field must preserve the Windows path.
-		expect(prompt).toContain('cwd: "C:\\Users\\vegard\\project"');
+		// In YAML double-quoted scalars, backslashes are escape characters.
+		// C:\Users\ must be encoded as C:\\Users\\ so parsers read it
+		// back as C:\Users\.
+		expect(prompt).toContain('cwd: "C:\\\\Users\\\\vegard\\\\project"');
 	});
 
 	// --- finding #2: Remote field must have credentials stripped ---

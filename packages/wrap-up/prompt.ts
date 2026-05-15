@@ -17,14 +17,17 @@ function fence(lang: string, content: string): string {
 }
 
 /**
- * Sanitize a value for our simple YAML frontmatter format.
- * Strips characters that would break the naive parser in frontmatter.ts:
- * double quotes, backslashes, and newlines.
+ * Sanitize a value for YAML frontmatter emitted in double-quoted scalars.
+ * In YAML double-quoted strings, backslashes introduce escape sequences
+ * (e.g. `\n`, `\UHHHHHHHH`), so raw backslashes must be escaped as `\\`.
+ * Double-quotes and newlines are stripped entirely to avoid breaking the
+ * scalar framing.
  */
 function fmSafe(value: string): string {
-	// Strips double-quotes and newlines only — NOT backslashes.
-	// Removing backslashes corrupted Windows paths (e.g. C:\Users\... → CUsers).
-	return value.replace(/["\n\r]/g, "");
+	// Escape backslashes first (must come before the quote/newline strip so
+	// we don't double-escape), then remove chars that would break the YAML
+	// double-quoted scalar.
+	return value.replace(/\\/g, "\\\\").replace(/["\n\r]/g, "");
 }
 
 /**
