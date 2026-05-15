@@ -96,9 +96,9 @@ describe("statusPill", () => {
 	});
 
 	it("returns discoverability text when supported but not enabled", () => {
-		expect(
-			statusPill(state({ supported: true, enabled: false })),
-		).toBe("caffeinate: disabled (run /caffeinate on)");
+		expect(statusPill(state({ supported: true, enabled: false }))).toBe(
+			"caffeinate: disabled (run /caffeinate on)",
+		);
 	});
 
 	it("returns undefined when enabled but idle (no noise in footer)", () => {
