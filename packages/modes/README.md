@@ -100,7 +100,7 @@ If any PR needs attention, the completion picker adds an extra option "Open PR #
 | `/plan resume <slug>` | Bind this session to a specific plan. Confirms before adopting a plan owned by another session. |
 | `/plan archive <slug>` | Soft-archive: mark all non-terminal phases as `abandoned`, tear down their worktrees, keep branches and the plan file on disk. |
 | `/plan delete <slug>` | Hard-delete: remove `~/.pi/plans/<slug>/` permanently. Refuses if any worktree is dirty; worktrees and branches are not touched. |
-| `/implement [desc]` | Sync, create a feature branch, start executing. Preserves current mode (ask/auto/hack → keep; plan → use `implementDefault` config) |
+| `/implement [desc]` | Sync, create a feature branch, start executing. Preserves current mode (ask/auto → keep; hack → auto; plan → use `implementDefault` config) |
 | `/hack` | Flip to hack mode (direct tool access, no plan ceremony) |
 | `/ask` | Flip to ask mode (pauses at commit/ship boundaries) |
 | `/auto` | Flip to auto mode (autonomous commit/ship/next-phase loop) |

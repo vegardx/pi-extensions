@@ -21,9 +21,10 @@ describe("resolveImplementModeForCurrentMode", () => {
 		expect(resolveImplementModeForCurrentMode("plan", "ask")).toBe("ask");
 	});
 
-	it("falls back to default when mode is hack (ImplementMode excludes hack)", () => {
+	it("maps hack to auto regardless of default (ImplementMode excludes hack)", () => {
 		expect(resolveImplementModeForCurrentMode("hack", "auto")).toBe("auto");
-		expect(resolveImplementModeForCurrentMode("hack", "ask")).toBe("ask");
+		// hack always maps to auto, even when implementDefault is ask
+		expect(resolveImplementModeForCurrentMode("hack", "ask")).toBe("auto");
 	});
 
 	it("falls back to default when mode is null", () => {
