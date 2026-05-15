@@ -54,18 +54,20 @@ have no thread to resolve — just fix them.
 For **every** finding (review summary items and inline comments), read the
 referenced file and surrounding context, then classify:
 
-| Classification | Meaning |
-|---|---|
-| **Valid** | The issue is real. Fix it. |
-| **Partially valid** | The concern is real but Copilot's suggested fix is wrong or incomplete. Apply a corrected fix. |
-| **Invalid** | Copilot misread the code, the concern doesn't apply, or it's already handled. Leave the thread open. |
-| **Needs human** | Touches business logic, a public API contract, or requires context you don't have. Leave the thread open. |
+| Classification | Meaning | Thread outcome |
+|---|---|---|
+| **Agree** | The issue is real and Copilot's suggestion is correct. | Apply suggestion, resolve thread. |
+| **Partial** | The concern is real but Copilot's fix is wrong or incomplete. | Apply a corrected fix, comment explaining the difference, resolve thread. |
+| **Disagree** | Copilot misread the code, the concern doesn't apply, or it's already handled. | Comment explaining why, resolve thread. |
+| **Needs human** | Touches business logic, a public API contract, or requires context you don't have. | Comment that human review is needed, resolve thread. |
 
-Be conservative — prefer **needs-human** over **valid** when in doubt.
+**Every thread must be resolved.** Leaving threads open blocks auto-merge.
+The difference between outcomes is whether a fix is applied and what
+explanation is left — not whether the thread is resolved.
 
 ### 3. Apply fixes
 
-For each **Valid** or **Partially valid** finding:
+For each **Agree** or **Partial** finding:
 
 - Use the `edit` tool for targeted code changes.
 - Use `bash` when shell is more appropriate (renaming a file, running a
@@ -74,8 +76,8 @@ For each **Valid** or **Partially valid** finding:
   anything your changes break; don't block on pre-existing failures.
 - Keep changes minimal — don't refactor unrelated code.
 
-If a fix turns out riskier than it appeared, reclassify to **needs-human**
-and revert any partial edits before moving on.
+If a fix turns out riskier than it appeared, reclassify to **needs-human**,
+revert any partial edits, leave a comment, and resolve the thread.
 
 ### 4. Commit and push
 
@@ -84,39 +86,23 @@ After applying all fixes:
 ```bash
 git add -A
 git diff --cached --stat   # confirm staged changes
-
-git commit -m "fix: address Copilot review findings
-
-Co-authored-by: pi-triage-agent <triage@pi.local>"
-
+git commit -m "fix: address Copilot review findings"
 git push
 ```
 
-If nothing changed (all findings Invalid or Needs-human), skip the
+If nothing changed (all findings Disagree or Needs-human), skip the
 commit entirely.
 
-### 5. Resolve addressed threads
+### 5. Resolve all threads
 
-For each finding you **fixed** (Valid or Partially valid), resolve its
-review thread using the `PRRT_xxx` ID collected in step 1:
+Every thread must be resolved — unresolved threads block auto-merge.
+For thread operations (fetch IDs, reply, resolve) see
+[/skill:gh → reference/pr.md#review-thread-operations](../../../../../gh/skills/gh/reference/pr.md).
 
-```bash
-gh api graphql -f query='
-  mutation($id:ID!) {
-    resolveReviewThread(input:{threadId:$id}) {
-      thread { id isResolved }
-    }
-  }' -F id=PRRT_xxx
-```
-
-Leave **Invalid** and **Needs human** threads open.
-
-For **Needs human** findings, optionally add a comment explaining why
-you skipped it:
-
-```bash
-gh pr comment PR_NUMBER --body "Skipping: REASON — needs human review."
-```
+- **Agree** — resolve silently.
+- **Partial** — reply explaining what was done differently, then resolve.
+- **Disagree** — reply explaining why it was not applied, then resolve.
+- **Needs human** — reply flagging it for human review, then resolve.
 
 ### 6. Record the commit SHA
 
@@ -138,13 +124,15 @@ else after it.
 
 **Commit:** <sha> (or "no commit — nothing changed")
 
-### Fixed (N)
+### Agreed & fixed (N)
 - `path/to/file` line X: <one-line description of fix>; thread resolved
-- (repeat)
 
-### Skipped — Invalid (N)
-- <finding description>: <one-sentence reason>
+### Partial — fixed differently (N)
+- `path/to/file` line X: <what Copilot suggested vs what was done>; thread resolved
 
-### Skipped — Needs Human (N)
-- <finding description>: <one-sentence reason>
+### Disagreed (N)
+- <finding description>: <one-sentence reason>; thread resolved
+
+### Needs human (N)
+- <finding description>: <one-sentence reason>; thread resolved
 ```
