@@ -200,6 +200,21 @@ export function computeActiveTools(mode: Mode, priorTools: string[]): string[] {
 	);
 }
 
+/**
+ * Transitions `state.mode` to `implementMode` and immediately applies the
+ * resulting tool set via `setActiveTools`. Extracted from `launchExecution`
+ * so the plan→executing tool-restoration step is unit-testable without a
+ * live pi host.
+ */
+export function applyExecutionMode(
+	state: { mode: string; priorTools: string[] },
+	implementMode: ImplementMode,
+	setActiveTools: (tools: string[]) => void,
+): void {
+	state.mode = implementMode;
+	setActiveTools(computeActiveTools(implementMode, state.priorTools));
+}
+
 /** Glyphs shown next to a phase in the widget for each status. */
 const STATUS_GLYPH: Record<string, string> = {
 	planned: "○",
@@ -3138,8 +3153,9 @@ export default function (pi: ExtensionAPI) {
 			clearPlanTurnSnapshot();
 			disposeDelegateAgents(ctx);
 		}
-		modeState.mode = implementMode;
-		applyModeTools();
+		applyExecutionMode(modeState, implementMode, (tools) =>
+			pi.setActiveTools(tools),
+		);
 		sm.appendCustomEntry(STATE_ENTRY, modeState satisfies ModeState);
 		updateWidget(ctx);
 

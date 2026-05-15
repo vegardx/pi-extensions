@@ -1,4 +1,5 @@
 import {
+	applyExecutionMode,
 	computeActiveTools,
 	EXPLORE_TOOLS,
 	PLAN_ONLY_TOOLS,
@@ -100,6 +101,71 @@ describe("plan → executing transition (regression)", () => {
 			"research",
 		];
 		const tools = computeActiveTools("auto", priorToolsCapturedBeforePlanMode);
+		expect(tools).toContain("write");
+		expect(tools).toContain("edit");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// applyExecutionMode — plan → executing transition
+// ---------------------------------------------------------------------------
+
+const FULL_TOOLS_FOR_EXEC = [
+	"read",
+	"bash",
+	"write",
+	"edit",
+	"grep",
+	"find",
+	"ls",
+	"websearch",
+	"ask",
+	"research",
+	...EXPLORE_TOOLS,
+];
+
+describe("applyExecutionMode", () => {
+	it("mutates state.mode to the given implementMode", () => {
+		const state = { mode: "plan", priorTools: FULL_TOOLS_FOR_EXEC };
+		applyExecutionMode(state, "auto", vi.fn());
+		expect(state.mode).toBe("auto");
+	});
+
+	it("calls setActiveTools exactly once with write and edit (auto)", () => {
+		const state = { mode: "plan", priorTools: FULL_TOOLS_FOR_EXEC };
+		const spy = vi.fn();
+		applyExecutionMode(state, "auto", spy);
+		expect(spy).toHaveBeenCalledOnce();
+		const [tools] = spy.mock.calls[0] as [string[]];
+		expect(tools).toContain("write");
+		expect(tools).toContain("edit");
+	});
+
+	it("calls setActiveTools with write and edit (ask)", () => {
+		const state = { mode: "plan", priorTools: FULL_TOOLS_FOR_EXEC };
+		const spy = vi.fn();
+		applyExecutionMode(state, "ask", spy);
+		const [tools] = spy.mock.calls[0] as [string[]];
+		expect(tools).toContain("write");
+		expect(tools).toContain("edit");
+		expect(state.mode).toBe("ask");
+	});
+
+	it("strips explore_* tools from the active set", () => {
+		const state = { mode: "plan", priorTools: FULL_TOOLS_FOR_EXEC };
+		const spy = vi.fn();
+		applyExecutionMode(state, "auto", spy);
+		const [tools] = spy.mock.calls[0] as [string[]];
+		for (const t of EXPLORE_TOOLS) {
+			expect(tools).not.toContain(t);
+		}
+	});
+
+	it("works when transitioning from a non-plan mode (e.g. /implement from ask)", () => {
+		const state = { mode: "ask", priorTools: FULL_TOOLS_FOR_EXEC };
+		const spy = vi.fn();
+		applyExecutionMode(state, "auto", spy);
+		const [tools] = spy.mock.calls[0] as [string[]];
 		expect(tools).toContain("write");
 		expect(tools).toContain("edit");
 	});
