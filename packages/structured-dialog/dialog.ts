@@ -36,6 +36,22 @@ import {
 import type { DialogResult, StructuredDialogConfig } from "./types.js";
 
 /**
+ * Returns true when the cached render output is still valid for the
+ * requested width. Extracted as a pure function so the resize-invalidation
+ * logic is directly testable without a TUI context.
+ *
+ * The cache is a hit when lines have been rendered at least once AND the
+ * terminal width hasn't changed since the last render.
+ */
+export function renderCacheIsValid(
+	cachedLines: string[] | undefined,
+	cachedWidth: number,
+	requestedWidth: number,
+): boolean {
+	return cachedLines !== undefined && requestedWidth === cachedWidth;
+}
+
+/**
  * Show the structured dialog and return the user's decisions.
  * Blocks until the user submits or cancels.
  */
@@ -264,8 +280,8 @@ export async function showStructuredDialog(
 			}
 
 			function render(width: number): string[] {
-				if (cachedLines !== undefined && width === cachedWidth)
-					return cachedLines;
+				if (renderCacheIsValid(cachedLines, cachedWidth, width))
+					return cachedLines as string[]; // renderCacheIsValid checks undefined
 				const lines: string[] = [];
 				const add = (s: string) => lines.push(truncateToWidth(s, width));
 

@@ -24,7 +24,7 @@ import {
 	readRelevantSettings,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { gatherContext, resolveHandoverConfig } from "./context.js";
-import { discoverHandovers } from "./discover.js";
+import { discoverHandovers, needsHandoverPicker } from "./discover.js";
 import { buildContinuePrompt, buildPausePrompt } from "./prompt.js";
 
 const EXT_ID = "wrap-up";
@@ -145,9 +145,7 @@ export default function (pi: ExtensionAPI) {
 			// before auto-selecting. A pure-recency hit (score 1–10) is too
 			// weak — it just means the file is recent, not that it belongs to
 			// this repo/branch. Always show the picker in that case.
-			const needsPicker =
-				candidates[0].score < 50 ||
-				(candidates.length > 1 && candidates[0].score === candidates[1].score);
+			const needsPicker = needsHandoverPicker(candidates);
 			if (needsPicker) {
 				const top = candidates.slice(0, 10);
 				const labels = top.map((c) => {

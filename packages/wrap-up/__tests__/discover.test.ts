@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	discoverHandovers,
+	needsHandoverPicker,
 	normalizeRemote,
 	scoreHandover,
 } from "../discover.js";
@@ -360,5 +361,47 @@ describe("discoverHandovers", () => {
 		const result = discoverHandovers("/tmp", { configuredDir: tmp });
 		expect(result.length).toBe(2);
 		expect(result[0].meta.session_id).toBe("high0000");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// needsHandoverPicker — picker threshold guard (score < 50 = no signal)
+// ---------------------------------------------------------------------------
+
+function makeRanked(score: number, filePath = "f.md"): import("../discover.js").RankedHandover {
+	return {
+		filePath,
+		score,
+		meta: { session_id: "x", date: "2026-01-01" },
+		body: "",
+	};
+}
+
+describe("needsHandoverPicker", () => {
+	it("returns false for empty candidates", () => {
+		expect(needsHandoverPicker([])).toBe(false);
+	});
+
+	it("returns false for a single candidate with score >= 50 (branch match)", () => {
+		// Branch match contributes +100; recency adds 1-10. Total well above 50.
+		expect(needsHandoverPicker([makeRanked(105)])).toBe(false);
+	});
+
+	it("returns true for a single candidate with score < 50 (recency only)", () => {
+		// Recency alone is 1-10. No branch/repo signal.
+		expect(needsHandoverPicker([makeRanked(7)])).toBe(true);
+	});
+
+	it("returns true exactly at the boundary: score 49 needs picker, 50 does not", () => {
+		expect(needsHandoverPicker([makeRanked(49)])).toBe(true);
+		expect(needsHandoverPicker([makeRanked(50)])).toBe(false);
+	});
+
+	it("returns true when top two candidates are tied (ambiguous)", () => {
+		expect(needsHandoverPicker([makeRanked(100, "a.md"), makeRanked(100, "b.md")])).toBe(true);
+	});
+
+	it("returns false when top candidate is clear winner (score >= 50, no tie)", () => {
+		expect(needsHandoverPicker([makeRanked(105, "a.md"), makeRanked(60, "b.md")])).toBe(false);
 	});
 });
