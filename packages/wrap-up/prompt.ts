@@ -252,6 +252,10 @@ export function buildPausePrompt(
 	lines.push(
 		"## Rules",
 		"",
+		"- NEVER run any git command (git add, git commit, git push, etc.).",
+		"  The handover document is NOT part of the repository and must NOT be committed.",
+		`- Write the handover ONLY to \`${handover.fullPath}\`. Do NOT write`,
+		"  SESSION_NOTES.md or any other file to the project working directory.",
 		"- The YAML frontmatter MUST be the very first thing in the file, exactly",
 		"  as shown above. Do not change the keys or values.",
 		"- Write the handover document first, then ask about resources, then save.",
