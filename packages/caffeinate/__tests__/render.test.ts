@@ -12,6 +12,7 @@ import {
 	renderStatusLine,
 	renderStatusReport,
 	setEnabledInProjectSettings,
+	shouldShowFirstRunHint,
 	statusPill,
 } from "../index.js";
 
@@ -94,13 +95,13 @@ describe("statusPill", () => {
 		expect(statusPill(state({ supported: false }))).toBeUndefined();
 	});
 
-	it("returns undefined when supported but not enabled", () => {
+	it("returns discoverability text when supported but not enabled", () => {
 		expect(
 			statusPill(state({ supported: true, enabled: false })),
-		).toBeUndefined();
+		).toBe("caffeinate: disabled (run /caffeinate on)");
 	});
 
-	it("returns undefined when enabled but idle", () => {
+	it("returns undefined when enabled but idle (no noise in footer)", () => {
 		expect(
 			statusPill(
 				state({ supported: true, enabled: true, active: false, holders: 0 }),
@@ -122,10 +123,9 @@ describe("statusPill", () => {
 		).toBe("caffeinate: active (develop)");
 	});
 
-	it("returns undefined when enabled flipped off mid-hold (treats !enabled as hide)", () => {
-		// Unlike renderStatusLine (used by /caffeinate status), the pill
-		// respects the settings toggle: if the user just ran `/caffeinate off`
-		// the pill disappears even if holders haven't released yet.
+	it("returns undefined when enabled flipped off mid-hold (pill drains silently)", () => {
+		// `active=true` but `enabled=false` — user toggled off while a lock was
+		// live. The pill hides immediately rather than showing conflicting state.
 		expect(
 			statusPill(
 				state({
@@ -246,5 +246,45 @@ describe("setEnabledInProjectSettings", () => {
 		// handler. Silently overwriting could clobber a partially-written
 		// edit the user is mid-rescue on.
 		expect(() => setEnabledInProjectSettings(cwd, true)).toThrow();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// shouldShowFirstRunHint
+// ---------------------------------------------------------------------------
+
+describe("shouldShowFirstRunHint", () => {
+	function s(over: Partial<KeepAwakeState>): KeepAwakeState {
+		return state(over);
+	}
+
+	it("returns true when supported, not enabled, and hint not yet shown", () => {
+		expect(
+			shouldShowFirstRunHint(s({ supported: true, enabled: false }), false),
+		).toBe(true);
+	});
+
+	it("returns false when hint has already been shown", () => {
+		expect(
+			shouldShowFirstRunHint(s({ supported: true, enabled: false }), true),
+		).toBe(false);
+	});
+
+	it("returns false when not supported (non-darwin)", () => {
+		expect(
+			shouldShowFirstRunHint(s({ supported: false, enabled: false }), false),
+		).toBe(false);
+	});
+
+	it("returns false when already enabled (user opted in)", () => {
+		expect(
+			shouldShowFirstRunHint(s({ supported: true, enabled: true }), false),
+		).toBe(false);
+	});
+
+	it("returns false when supported + enabled + hint shown", () => {
+		expect(
+			shouldShowFirstRunHint(s({ supported: true, enabled: true }), true),
+		).toBe(false);
 	});
 });
