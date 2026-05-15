@@ -2660,11 +2660,25 @@ export default function (pi: ExtensionAPI) {
 					try {
 						try {
 							await runBatchReview(ctx);
-						} catch {
-							// soft-fail: review error must not block re-entry
+						} catch (err) {
+							// Mirror the primary post-exec path: surface review
+							// failures so the user knows before auto-advancing.
+							notify(
+								ctx,
+								`review failed: ${err instanceof Error ? err.message : String(err)}`,
+								"warning",
+							);
 						}
 						await new Promise<void>((resolve) => setImmediate(resolve));
-						if (modeState?.mode === "auto" && planNow) {
+						// Guard: re-check stage in case the primary post-exec path
+						// already ran to completion while this fallback was queued.
+						// If stage advanced past exec-complete the auto-loop already
+						// ran and we must not fire it a second time.
+						if (
+							modeState?.mode === "auto" &&
+							modeState.stage === "exec-complete" &&
+							planNow
+						) {
 							try {
 								await runAutoPhaseLoop(ctx, planNow, activePhase(planNow));
 								return;
