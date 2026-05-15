@@ -1,0 +1,51 @@
+name: update-prs
+
+# Runs whenever main moves forward. Finds open PRs that are BEHIND
+# main and tells GitHub to rebase them. This re-triggers CI on each
+# PR so auto-merge can fire once the checks go green.
+#
+# Note: gh pr update-branch calls the GitHub API server-side, so the
+# resulting push DOES trigger the PR's CI workflow (unlike direct
+# GITHUB_TOKEN pushes which are suppressed).
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: update-prs
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Rebase behind PRs on main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rebase behind PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          behind=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base main \
+            --state open \
+            --json number,mergeStateStatus,isDraft \
+            --jq '[.[] | select(.mergeStateStatus == "BEHIND" and .isDraft == false) | .number] | .[]')
+
+          if [ -z "$behind" ]; then
+            echo "All open PRs are up to date."
+            exit 0
+          fi
+
+          for n in $behind; do
+            echo "Rebasing PR #$n on main..."
+            gh pr update-branch "$n" \
+              --repo "$GITHUB_REPOSITORY" \
+              --rebase \
+              && echo "PR #$n rebased." \
+              || echo "PR #$n: rebase failed (conflict?), skipping."
+          done
