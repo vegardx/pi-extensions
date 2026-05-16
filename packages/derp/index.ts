@@ -37,10 +37,14 @@ import {
 	readRelevantSettings,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import {
+	type RedactHit,
+	redactFull,
+	summariseHitKinds,
+} from "@vegardx/pi-extensions-shared/redact.js";
 import { type DerpContext, gatherDerpContext } from "./context.js";
 import { createIssue, writePendingReport } from "./gh.js";
 import { polishReport } from "./polish.js";
-import { type RedactHit, redactFull, summariseHitKinds } from "./redact.js";
 import {
 	applyTitlePrefix,
 	buildFallbackIssue,
