@@ -1,0 +1,18 @@
+{
+	"name": "pi-ext-idea",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Low-friction GitHub idea capture — `/idea <text>` files an issue against the current repo's origin without interrupting the active session.",
+	"pi": {
+		"extensions": ["./index.ts"]
+	},
+	"peerDependencies": {
+		"@mariozechner/pi-coding-agent": "*",
+		"@vegardx/pi-extensions-shared": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-coding-agent": { "optional": true },
+		"@vegardx/pi-extensions-shared": { "optional": true }
+	}
+}
