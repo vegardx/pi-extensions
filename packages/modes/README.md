@@ -672,3 +672,19 @@ Manual `/compact` still works (uses pi's default summary) as an escape hatch.
   (`/plan resume <slug>` or `/implement` on an in-flight phase) a
   fresh session is started — a one-time loss of prior chat context,
   not a crash. The plan doc on disk is unchanged.
+
+## Crash reports
+
+When a phase-execution turn throws an `uncaughtException` or
+`unhandledRejection`, modes writes a redacted JSON snapshot to
+`~/.pi/agent/modes/crash-reports/<iso-ts>-<sessionId>.json`. The
+snapshot captures the error + stack, mode/branch/phase, last six
+session entries, and the redaction-hit summary.
+
+Listeners are monitor-only (`uncaughtExceptionMonitor` plus a
+non-handling `unhandledRejection` listener) so pi's own crash and
+exit behaviour is undisturbed. Reports are only written when the
+stage is `executing` — plan/ask/hack turns are skipped.
+
+`/derp` (see `packages/derp/`) auto-attaches matching crash reports
+for the active session id when filing an issue.
