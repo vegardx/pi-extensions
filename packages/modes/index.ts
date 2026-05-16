@@ -88,6 +88,8 @@ import {
 	releasePhase,
 } from "./plan/driver-claim.js";
 import {
+	DEFAULT_PARALLELISM,
+	DEFAULT_QUEUE_DEPTH_THRESHOLD,
 	ExploreMailbox,
 	type ExploreNotification,
 	type ExploreTask,
@@ -454,7 +456,8 @@ export default function (pi: ExtensionAPI) {
 
 	function ensureExploreMailbox(ctx: ExtensionContext): ExploreMailbox {
 		if (!exploreMailbox) {
-			exploreMailbox = new ExploreMailbox(ctx);
+			const opts = readExploreSettings(ctx);
+			exploreMailbox = new ExploreMailbox(ctx, undefined, opts);
 			exploreMailbox.onChange((state) => renderExploreWidget(ctx, state));
 		}
 		return exploreMailbox;
@@ -2575,6 +2578,62 @@ export default function (pi: ExtensionAPI) {
 			return Math.floor(raw);
 		}
 		return DEFAULT_RESEARCH_TIMEOUT_MS;
+	}
+
+	/**
+	 * Read `extensionConfig.modes.explore.{parallelism,queueDepthThreshold}`.
+	 *
+	 * Both values must be finite positive integers; anything else falls
+	 * back to the default and emits a one-line warning so the user knows
+	 * the setting was ignored. The mailbox itself re-validates the same
+	 * way — this layer exists so the warning fires before the mailbox is
+	 * constructed and silently ignores junk.
+	 */
+	function readExploreSettings(ctx: ExtensionContext): {
+		parallelism: number;
+		queueDepthThreshold: number;
+	} {
+		const settings = readRelevantSettings(ctx.cwd);
+		const extCfg = settings.extensionConfig?.[EXT_ID] as
+			| Record<string, unknown>
+			| undefined;
+		const explore = extCfg?.explore as Record<string, unknown> | undefined;
+		const parallelism = validatePositiveInt(
+			ctx,
+			explore?.parallelism,
+			"extensionConfig.modes.explore.parallelism",
+			DEFAULT_PARALLELISM,
+		);
+		const queueDepthThreshold = validatePositiveInt(
+			ctx,
+			explore?.queueDepthThreshold,
+			"extensionConfig.modes.explore.queueDepthThreshold",
+			DEFAULT_QUEUE_DEPTH_THRESHOLD,
+		);
+		return { parallelism, queueDepthThreshold };
+	}
+
+	function validatePositiveInt(
+		ctx: ExtensionContext,
+		raw: unknown,
+		key: string,
+		fallback: number,
+	): number {
+		if (raw === undefined) return fallback;
+		if (
+			typeof raw === "number" &&
+			Number.isFinite(raw) &&
+			raw >= 1 &&
+			Number.isInteger(raw)
+		) {
+			return raw;
+		}
+		notify(
+			ctx,
+			`${key}: expected positive integer, got ${JSON.stringify(raw)}; using default ${fallback}`,
+			"warning",
+		);
+		return fallback;
 	}
 
 	/**

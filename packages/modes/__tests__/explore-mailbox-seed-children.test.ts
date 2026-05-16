@@ -129,7 +129,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 	describe("seed reuse — default related and explicit related: true", () => {
 		it("default ask routes to seed (no child spawn)", async () => {
 			const h = makeHarness();
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			const { id } = await mailbox.ask("first");
 
@@ -139,7 +139,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 
 		it("related: true uses seed even when seed is busy", async () => {
 			const h = makeHarness();
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			const { id: id1 } = await mailbox.ask("first", { related: true });
 			expect(id1).toMatch(/^q/);
@@ -158,7 +158,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 
 		it("related: false while seed idle still routes to seed", async () => {
 			const h = makeHarness();
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			const { id } = await mailbox.ask("orthogonal but seed is idle", {
 				related: false,
@@ -175,7 +175,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			// Get seed busy.
 			const { id: seedId } = await mailbox.ask("seed work");
@@ -200,7 +200,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			h.queueChild(makeMockAgent());
 			h.queueChild(makeMockAgent());
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -220,7 +220,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -251,7 +251,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -314,7 +314,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			// Seed a completed exchange so journal has an entry.
 			await mailbox.ask("where is auth?");
@@ -343,7 +343,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			// Seed task running but never completed.
 			await mailbox.ask("seed q");
@@ -362,7 +362,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 	describe("graceful degradation", () => {
 		it("falls back to seed when spawnChildAgent is undefined", async () => {
 			const h = makeHarness({ withChild: false });
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -385,7 +385,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 				spawnAgent: spawnAgentSpy,
 				spawnChildAgent: spawnChildAgentSpy,
 			};
-			const mailbox = new ExploreMailbox(CTX, deps);
+			const mailbox = new ExploreMailbox(CTX, deps, { parallelism: 3 });
 
 			// Get seed busy.
 			await mailbox.ask("seed");
@@ -415,7 +415,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const h = makeHarness();
 			h.queueChild(makeMockAgent());
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -435,7 +435,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -458,7 +458,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
@@ -477,7 +477,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const h = makeHarness();
 			h.queueChild(makeMockAgent());
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 			expect(mailbox.hasInFlight).toBe(false);
 
 			await mailbox.ask("seed q");
@@ -496,7 +496,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 			const listener = vi.fn();
 			mailbox.onChange(listener);
 
@@ -518,7 +518,7 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			const h = makeHarness();
 			h.queueChild(makeMockAgent());
 
-			const mailbox = new ExploreMailbox(CTX, h.deps);
+			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
 			await mailbox.ask("seed q");
 			await flush();
