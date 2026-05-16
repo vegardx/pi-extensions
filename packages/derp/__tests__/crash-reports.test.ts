@@ -59,7 +59,7 @@ describe("loadCrashReportsForSession", () => {
 		);
 		const r = loadCrashReportsForSession("sess-1", dir);
 		expect(r).toHaveLength(2);
-		// newest first by mtime
+		// newest first by filename (ISO timestamp embedded — see source)
 		expect(r[0]?.sourcePath).toContain("17-30");
 	});
 

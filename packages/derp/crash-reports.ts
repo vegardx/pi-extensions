@@ -85,20 +85,23 @@ export function loadCrashReportsForSession(
 		return [];
 	}
 
-	const candidates: { path: string; mtimeMs: number }[] = [];
+	const candidates: { path: string; name: string }[] = [];
 	for (const name of names) {
 		if (!name.endsWith(".json")) continue;
 		if (!name.includes(sessionId)) continue;
 		const path = join(dir, name);
-		let mtimeMs = 0;
 		try {
-			mtimeMs = statSync(path).mtimeMs;
+			statSync(path);
 		} catch {
 			continue;
 		}
-		candidates.push({ path, mtimeMs });
+		candidates.push({ path, name });
 	}
-	candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	// Sort by filename descending. Filenames embed the ISO timestamp
+	// (`<iso-ts>-<sessionId>.json`), so lexicographic-reverse equals
+	// chronological-reverse without depending on filesystem mtime
+	// resolution — mtime can be the same millisecond on fast CI.
+	candidates.sort((a, b) => b.name.localeCompare(a.name));
 
 	const out: CrashReportSummary[] = [];
 	for (const { path } of candidates) {
