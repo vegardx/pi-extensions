@@ -104,7 +104,11 @@ function agentMsg(content: string) {
 	};
 }
 
-function buildPlanPrompt(
+/**
+ * Exported for unit tests. Internal API; the public surface is
+ * `runCommit`.
+ */
+export function buildPlanPrompt(
 	guidance: string | undefined,
 	diffSummary: string,
 	mode?: string,
@@ -153,7 +157,11 @@ function buildPlanPrompt(
 	].join("\n");
 }
 
-function buildExecutePrompt(
+/**
+ * Exported for unit tests. Internal API; the public surface is
+ * `runCommit`.
+ */
+export function buildExecutePrompt(
 	overrideInstructions: string | null,
 	mode?: string,
 ): string {

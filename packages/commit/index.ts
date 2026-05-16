@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { getActiveMode } from "@vegardx/pi-extensions-shared/active-mode.js";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { EXT_ID, runCommit } from "./core.js";
 
@@ -28,7 +29,12 @@ export default function (pi: ExtensionAPI) {
 			"Analyze changes, propose a conventional-commit plan, execute, and optionally push + open/update a PR. " +
 			"Auto-appends `Closes #N` when the branch has a `tracking-issue` git config (set by `/develop`'s park path).",
 		handler: async (args, ctx) => {
-			await runCommit({ ctx, pi, guidance: args ?? "" });
+			await runCommit({
+				ctx,
+				pi,
+				guidance: args ?? "",
+				mode: getActiveMode() ?? undefined,
+			});
 		},
 	});
 }
