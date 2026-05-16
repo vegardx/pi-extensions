@@ -17,23 +17,27 @@
  * fire several questions at once, keep planning, then drain answers
  * when ready.
  *
+ * #159a: this file is now a thin specialisation over the generic
+ * {@link AsyncJobMailbox}. The queue / waiter / drain machinery lives
+ * there; this file owns the explore-specific dispatcher (persistent
+ * agent + agent-event correlation + `notify()` tool capture).
+ *
  * Correlation rule: each task is dispatched via a fresh
  * `agent.prompt(question)` once the agent is idle. Each prompt
- * produces exactly one `agent_start` … `agent_end` cycle. We track
- * tasks in FIFO order; `agent_start` advances the head to "running",
- * `agent_end` resolves it with the agent's last assistant text and
- * triggers dispatch of the next queued task. We deliberately do not
- * use `agent.followUp()` for orchestrator-level FIFO: real pi only
- * drains follow-ups inside an active run, so queued follow-ups on an
- * idle agent are silently dropped, and multiple follow-ups within a
+ * produces exactly one `agent_start` … `agent_end` cycle. The
+ * dispatcher subscribes to those events and to `tool_execution_start`
+ * for live status + notify capture. We deliberately do not use
+ * `agent.followUp()` for orchestrator-level FIFO: real pi only drains
+ * follow-ups inside an active run, so queued follow-ups on an idle
+ * agent are silently dropped, and multiple follow-ups within a
  * single run share one `agent_start`/`agent_end` pair (which would
  * break correlation).
  *
  * `notify()` channel: a tiny extension shipped via `--extension`
  * registers a `notify({ text, kind? })` tool inside the sub-agent
  * process. The handler is a no-op; we observe the call via the
- * `tool_execution_start` event on the parent side and surface the
- * args on the next `check()`.
+ * `tool_execution_start` event and surface the args via the generic
+ * mailbox's notification queue.
  */
 
 import { dirname, join } from "node:path";
@@ -45,31 +49,31 @@ import {
 	type PersistentAgent,
 	SubagentPool,
 } from "@vegardx/pi-extensions-shared/subagent-pool.js";
+import {
+	AsyncJobMailbox,
+	type BaseJob,
+	type BaseNotification,
+	type CheckOptions,
+	type CheckResult,
+	type DispatchHandle,
+	type MailboxState,
+	type TaskStatus,
+} from "./async-job-mailbox.js";
 
 // ---- Public types -----------------------------------------------------------
 
-export type TaskStatus = "queued" | "running" | "done" | "error" | "timeout";
+// Re-export TaskStatus so existing imports keep working.
+export type { TaskStatus } from "./async-job-mailbox.js";
 
-export interface ExploreTask {
-	id: string;
+export interface ExploreTask extends BaseJob {
 	question: string;
-	status: TaskStatus;
-	text?: string;
-	error?: string;
-	enqueuedAt: number;
-	startedAt?: number;
-	endedAt?: number;
 	/** Last tool the sub-agent invoked; for the live status widget. */
 	lastToolSummary?: string;
 }
 
-export interface ExploreNotification {
-	id: string;
-	text: string;
-	kind?: string;
+export interface ExploreNotification extends BaseNotification {
 	/** Task that was running when the sub-agent emitted the notify. */
 	taskId?: string;
-	at: number;
 }
 
 /**
@@ -89,22 +93,12 @@ export function exploreWidgetShouldHide(
 	return running === 0 && queued === 0 && notifications.length === 0;
 }
 
-export interface CheckOptions {
-	/** When set, return only this task; do not drain. */
-	id?: string;
-	/** Default true — remove returned terminal tasks/notifications. */
-	drain?: boolean;
-}
-
-export interface CheckResult {
-	tasks: ExploreTask[];
-	notifications: ExploreNotification[];
-}
-
-export interface MailboxState {
-	tasks: ExploreTask[];
-	notifications: ExploreNotification[];
-}
+// Re-export from the generic so callers can import locally.
+export type {
+	CheckOptions,
+	CheckResult,
+	MailboxState,
+} from "./async-job-mailbox.js";
 
 export interface MailboxDeps {
 	/**
@@ -198,49 +192,52 @@ export function defaultMailboxDeps(): MailboxDeps {
 
 // ---- Mailbox ----------------------------------------------------------------
 
-interface Waiter {
-	resolve: (task: ExploreTask) => void;
-	timer?: NodeJS.Timeout;
+interface CurrentDispatch {
+	handle: DispatchHandle<ExploreTask, ExploreNotification>;
+	resolveEnded: () => void;
+	rejectEnded: (err: Error) => void;
 }
 
 export class ExploreMailbox {
 	private readonly ctx: ExtensionContext;
 	private readonly deps: MailboxDeps;
-
-	private tasks: ExploreTask[] = [];
-	private taskById = new Map<string, ExploreTask>();
-	private notifications: ExploreNotification[] = [];
+	private readonly inner: AsyncJobMailbox<ExploreTask, ExploreNotification>;
 
 	private agent: PersistentAgent | null = null;
 	private agentDispose: (() => Promise<void>) | null = null;
 	private spawning: Promise<PersistentAgent> | null = null;
 	private spawnError: string | null = null;
 	private unsubscribe: (() => void) | null = null;
-
-	private nextTaskNum = 1;
-	private nextNotifyNum = 1;
 	/**
-	 * True between calling `agent.prompt()` and observing the matching
-	 * `agent_end`. Prevents double-dispatch while a run is in flight.
+	 * The currently in-flight dispatch's handle + barrier. Set when
+	 * `dispatchExplore` enters its prompt phase, cleared on agent_end
+	 * (or abort). The eager listener installed in {@link ensureAgent}
+	 * routes incoming agent events through whichever dispatch is
+	 * active. Single-slot is sufficient because the inner mailbox runs
+	 * with `maxConcurrent: 1`.
 	 */
-	private dispatching = false;
-	/** Head of the queued FIFO that the next `agent_start` will activate. */
-	private runningTaskId: string | null = null;
-	private waiters = new Map<string, Waiter[]>();
-	private listeners = new Set<(state: MailboxState) => void>();
-	private disposed = false;
+	private currentDispatch: CurrentDispatch | null = null;
 
 	constructor(ctx: ExtensionContext, deps: MailboxDeps = defaultMailboxDeps()) {
 		this.ctx = ctx;
 		this.deps = deps;
+		this.inner = new AsyncJobMailbox<ExploreTask, ExploreNotification>({
+			kind: "explore",
+			// Preserve the pre-#159a id scheme (`q1`, `q2`, ...) so existing
+			// tests + log scrapers keep working.
+			idPrefix: "q",
+			maxConcurrent: 1,
+			defaultWaitTimeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
+			dispatch: (handle) => this.dispatchExplore(handle),
+			onDispose: () => this.disposeAgent(),
+		});
 	}
 
 	/** Subscribe to mailbox state changes. Returns an unsubscribe fn. */
-	onChange(listener: (state: MailboxState) => void): () => void {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
+	onChange(
+		listener: (state: MailboxState<ExploreTask, ExploreNotification>) => void,
+	): () => void {
+		return this.inner.onChange(listener);
 	}
 
 	/**
@@ -248,157 +245,136 @@ export class ExploreMailbox {
 	 * immediately with a task id — never blocks on the answer.
 	 */
 	async ask(question: string): Promise<{ id: string }> {
-		if (this.disposed) throw new Error("ExploreMailbox is disposed");
-
-		const id = `q${this.nextTaskNum++}`;
-		const task: ExploreTask = {
+		return this.inner.enqueue((id, enqueuedAt) => ({
 			id,
 			question,
-			status: "queued",
-			enqueuedAt: Date.now(),
-		};
-		this.tasks.push(task);
-		this.taskById.set(id, task);
-		this.emit();
-
-		void this.dispatchNext();
-		return { id };
+			status: "queued" as TaskStatus,
+			enqueuedAt,
+		}));
 	}
 
-	/**
-	 * Drain the mailbox. With no `id`, returns all terminal tasks plus
-	 * any pending tasks (so the caller sees status), and drains
-	 * notifications. With `id`, returns just that one and never drains.
-	 */
-	check(opts: CheckOptions = {}): CheckResult {
-		const drain = opts.drain ?? true;
-
-		if (opts.id) {
-			const task = this.taskById.get(opts.id);
-			return {
-				tasks: task ? [snapshot(task)] : [],
-				notifications: [],
-			};
-		}
-
-		const taskSnapshots = this.tasks.map(snapshot);
-		const notificationSnapshots = this.notifications.map((n) => ({ ...n }));
-
-		if (drain) {
-			// Remove only terminal tasks; keep queued/running so the next
-			// check can observe the rest of their lifecycle.
-			const terminal = new Set(["done", "error", "timeout"]);
-			this.tasks = this.tasks.filter((t) => {
-				if (terminal.has(t.status)) {
-					this.taskById.delete(t.id);
-					return false;
-				}
-				return true;
-			});
-			this.notifications = [];
-			this.emit();
-		}
-
-		return { tasks: taskSnapshots, notifications: notificationSnapshots };
+	check(
+		opts: CheckOptions = {},
+	): CheckResult<ExploreTask, ExploreNotification> {
+		return this.inner.check(opts);
 	}
 
-	/**
-	 * Block until the named task reaches a terminal state, or the
-	 * timeout fires. On timeout, the task is marked `timeout` but the
-	 * underlying agent keeps running — the next `check`/`wait` may
-	 * still observe the eventual completion.
-	 */
 	async wait(
 		id: string,
 		timeoutMs: number = DEFAULT_WAIT_TIMEOUT_MS,
 	): Promise<ExploreTask> {
-		if (this.disposed) throw new Error("ExploreMailbox is disposed");
-
-		const task = this.taskById.get(id);
-		if (!task) {
-			return {
-				id,
-				question: "",
-				status: "error",
-				error: `unknown task id: ${id}`,
-				enqueuedAt: Date.now(),
-				endedAt: Date.now(),
-			};
-		}
-		if (isTerminal(task.status)) return snapshot(task);
-
-		return new Promise<ExploreTask>((resolve) => {
-			let settled = false;
-			const settle = (t: ExploreTask) => {
-				if (settled) return;
-				settled = true;
-				if (waiter.timer) clearTimeout(waiter.timer);
-				resolve(t);
-			};
-			const waiter: Waiter = {
-				resolve: (t) => settle(snapshot(t)),
-			};
-			waiter.timer = setTimeout(() => {
-				// Don't mutate the task itself — it may still complete.
-				// Surface the timeout to the caller as a synthetic
-				// terminal record; future `check` calls will still see
-				// the real outcome.
-				settle({
-					...snapshot(task),
-					status: "timeout",
-					error: `wait(${id}) timed out after ${timeoutMs}ms`,
-					endedAt: Date.now(),
-				});
-				const arr = this.waiters.get(id);
-				if (arr) {
-					const idx = arr.indexOf(waiter);
-					if (idx >= 0) arr.splice(idx, 1);
-				}
-			}, timeoutMs);
-			const arr = this.waiters.get(id) ?? [];
-			arr.push(waiter);
-			this.waiters.set(id, arr);
-		});
+		return this.inner.wait(id, timeoutMs);
 	}
 
-	/** True if any task is currently queued or running. */
 	get hasInFlight(): boolean {
-		return this.tasks.some((t) => !isTerminal(t.status));
+		return this.inner.hasInFlight;
 	}
 
-	/** Read-only snapshot of the mailbox state. */
-	getState(): MailboxState {
-		return {
-			tasks: this.tasks.map(snapshot),
-			notifications: this.notifications.map((n) => ({ ...n })),
-		};
+	getState(): MailboxState<ExploreTask, ExploreNotification> {
+		return this.inner.getState();
 	}
 
-	/** Tear down. Best-effort. */
 	async dispose(): Promise<void> {
-		if (this.disposed) return;
-		this.disposed = true;
-		this.unsubscribe?.();
-		this.unsubscribe = null;
-		for (const arr of this.waiters.values()) {
-			for (const w of arr) {
-				if (w.timer) clearTimeout(w.timer);
-			}
-		}
-		this.waiters.clear();
-		const dispose = this.agentDispose;
-		this.agentDispose = null;
-		this.agent = null;
-		if (dispose) {
-			try {
-				await dispose();
-			} catch {
-				/* best-effort */
-			}
-		}
+		await this.inner.dispose();
 	}
 
 	// ---- internals --------------------------------------------------------
+
+	/**
+	 * The dispatcher. Spawn the agent on first use (eager-registers a
+	 * permanent agent-event listener via {@link ensureAgent}), set up a
+	 * per-dispatch barrier, fire `prompt(question)`, and resolve when
+	 * the agent emits `agent_end`. The listener routes intermediate
+	 * events (agent_start, tool_execution_start, notify capture)
+	 * through the live handle.
+	 */
+	private async dispatchExplore(
+		handle: DispatchHandle<ExploreTask, ExploreNotification>,
+	): Promise<{ text: string }> {
+		let resolveEnded!: () => void;
+		let rejectEnded!: (err: Error) => void;
+		const ended = new Promise<void>((resolve, reject) => {
+			resolveEnded = resolve;
+			rejectEnded = reject;
+		});
+		// Suppress "unhandled rejection" if the abort handler rejects
+		// `ended` while we're still awaiting `agent.prompt()` (rather
+		// than `ended` itself). The same Promise is awaited later, so
+		// the rejection still surfaces — this just declares an explicit
+		// handler to keep Vitest's unhandled-rejection guard quiet.
+		ended.catch(() => {});
+		// Set currentDispatch synchronously — BEFORE awaiting ensureAgent —
+		// so the eager agent-event listener installed by ensureAgent on its
+		// first invocation finds a non-null dispatch context the moment
+		// `agent_start` fires. Without this, microtask ordering can deliver
+		// agent_start before dispatchExplore's continuation resumes, and
+		// the FIFO head never advances to "running".
+		this.currentDispatch = { handle, resolveEnded, rejectEnded };
+
+		const onAbort = () => {
+			rejectEnded(new Error("explore dispatch aborted"));
+		};
+		handle.signal.addEventListener("abort", onAbort);
+
+		try {
+			const agent = await this.ensureAgent();
+			if (handle.signal.aborted) {
+				throw new Error("aborted before dispatch");
+			}
+			await agent.prompt(handle.job.question);
+			await ended;
+
+			// `getLastText()` is RPC; read after agent_end so the just-
+			// finished turn's last text is what comes back.
+			const text = (await agent.getLastText()) ?? "";
+			// Clear live tool summary now that the turn is done — the
+			// generic mailbox doesn't know about our kind-specific field.
+			handle.update({ lastToolSummary: undefined });
+			return { text };
+		} finally {
+			handle.signal.removeEventListener("abort", onAbort);
+			this.currentDispatch = null;
+		}
+	}
+
+	private handleEvent(event: AgentEvent): void {
+		const cd = this.currentDispatch;
+		if (!cd) return;
+		switch (event.type) {
+			case "agent_start": {
+				cd.handle.setRunning();
+				break;
+			}
+			case "tool_execution_start": {
+				const args = (event.args ?? {}) as Record<string, unknown>;
+				cd.handle.update({
+					lastToolSummary: summariseToolCall(event.toolName, args),
+				});
+				if (event.toolName === "notify") {
+					const text = typeof args.text === "string" ? args.text : "";
+					if (text.length > 0) {
+						const kind = typeof args.kind === "string" ? args.kind : undefined;
+						cd.handle.notify({
+							text,
+							// Keep the legacy `taskId` field on the notification
+							// alongside the generic `jobId`. Existing consumers
+							// (widgets, tests) read `taskId`; the generic
+							// AsyncJobMailbox always populates `jobId`.
+							taskId: cd.handle.job.id,
+							...(kind !== undefined ? { kind } : {}),
+						});
+					}
+				}
+				break;
+			}
+			case "agent_end": {
+				cd.resolveEnded();
+				break;
+			}
+			default:
+				break;
+		}
+	}
 
 	private async ensureAgent(): Promise<PersistentAgent> {
 		if (this.agent) return this.agent;
@@ -423,151 +399,18 @@ export class ExploreMailbox {
 		return this.spawning;
 	}
 
-	private handleEvent(event: AgentEvent): void {
-		switch (event.type) {
-			case "agent_start": {
-				const next = this.tasks.find((t) => t.status === "queued");
-				if (next) {
-					next.status = "running";
-					next.startedAt = Date.now();
-					this.runningTaskId = next.id;
-					this.emit();
-				}
-				break;
-			}
-			case "agent_end": {
-				const runningId = this.runningTaskId;
-				this.runningTaskId = null;
-				this.dispatching = false;
-				const task = runningId ? this.taskById.get(runningId) : undefined;
-				if (task) {
-					// `completeTask()` reads `agent.getLastText()` (RPC). Starting
-					// the next prompt before that read resolves can race — the
-					// new turn's first assistant message could become the "last
-					// text" attributed to the just-finished task. Sequence them.
-					void this.completeTask(task).then(() => {
-						void this.dispatchNext();
-					});
-				} else {
-					void this.dispatchNext();
-				}
-				break;
-			}
-			case "tool_execution_start": {
-				const args = (event.args ?? {}) as Record<string, unknown>;
-				const running = this.runningTaskId
-					? this.taskById.get(this.runningTaskId)
-					: undefined;
-				if (running) {
-					running.lastToolSummary = summariseToolCall(event.toolName, args);
-					this.emit();
-				}
-				if (event.toolName === "notify") {
-					const text = typeof args.text === "string" ? args.text : "";
-					if (text.length > 0) {
-						const kind = typeof args.kind === "string" ? args.kind : undefined;
-						const note: ExploreNotification = {
-							id: `n${this.nextNotifyNum++}`,
-							text,
-							at: Date.now(),
-							...(kind !== undefined ? { kind } : {}),
-							...(running ? { taskId: running.id } : {}),
-						};
-						this.notifications.push(note);
-						this.emit();
-					}
-				}
-				break;
-			}
-			default:
-				break;
-		}
-	}
-
-	private async dispatchNext(): Promise<void> {
-		if (this.disposed) return;
-		if (this.dispatching) return;
-		if (this.runningTaskId !== null) return;
-
-		const next = this.tasks.find((t) => t.status === "queued");
-		if (!next) return;
-
-		this.dispatching = true;
-		let agent: PersistentAgent;
-		try {
-			agent = await this.ensureAgent();
-		} catch (err) {
-			next.status = "error";
-			next.error = err instanceof Error ? err.message : String(err);
-			next.endedAt = Date.now();
-			this.resolveWaiters(next);
-			this.dispatching = false;
-			this.emit();
-			void this.dispatchNext();
-			return;
-		}
-
-		if (this.disposed) {
-			this.dispatching = false;
-			return;
-		}
-
-		try {
-			await agent.prompt(next.question);
-		} catch (err) {
-			next.status = "error";
-			next.error = err instanceof Error ? err.message : String(err);
-			next.endedAt = Date.now();
-			this.resolveWaiters(next);
-			this.dispatching = false;
-			this.emit();
-			void this.dispatchNext();
-		}
-	}
-
-	private async completeTask(task: ExploreTask): Promise<void> {
-		try {
-			const text = (await this.agent?.getLastText()) ?? "";
-			task.text = text;
-			task.status = "done";
-		} catch (err) {
-			task.error = err instanceof Error ? err.message : String(err);
-			task.status = "error";
-		}
-		task.endedAt = Date.now();
-		task.lastToolSummary = undefined;
-		this.resolveWaiters(task);
-		this.emit();
-	}
-
-	private resolveWaiters(task: ExploreTask): void {
-		const arr = this.waiters.get(task.id);
-		if (!arr) return;
-		this.waiters.delete(task.id);
-		for (const w of arr) {
-			w.resolve(task);
-		}
-	}
-
-	private emit(): void {
-		if (this.listeners.size === 0) return;
-		const state = this.getState();
-		for (const listener of this.listeners) {
+	private async disposeAgent(): Promise<void> {
+		this.unsubscribe?.();
+		this.unsubscribe = null;
+		const dispose = this.agentDispose;
+		this.agentDispose = null;
+		this.agent = null;
+		if (dispose) {
 			try {
-				listener(state);
+				await dispose();
 			} catch {
 				/* best-effort */
 			}
 		}
 	}
-}
-
-// ---- helpers ----------------------------------------------------------------
-
-function snapshot(task: ExploreTask): ExploreTask {
-	return { ...task };
-}
-
-function isTerminal(status: TaskStatus): boolean {
-	return status === "done" || status === "error" || status === "timeout";
 }

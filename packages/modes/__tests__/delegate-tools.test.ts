@@ -184,3 +184,98 @@ describe("DelegateAgents.research", () => {
 		expect(runSubagent).toHaveBeenCalledTimes(2);
 	});
 });
+
+describe("DelegateAgents.researchAsk / researchCheck / researchWait (#159a)", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		vi.mocked(resolveModel).mockResolvedValue(RESOLVED_MODEL as never);
+		vi.mocked(runSubagent).mockResolvedValue({
+			tag: 0,
+			rawText: "mock research answer",
+			error: null,
+			elapsedMs: 25,
+		} as never);
+	});
+
+	it("researchAsk returns immediately with a task id", async () => {
+		const agents = new DelegateAgents(MOCK_CTX);
+		const start = Date.now();
+		const { id } = await agents.researchAsk("what is X?");
+		const elapsed = Date.now() - start;
+		expect(id).toMatch(/^r\d+$/);
+		// Non-blocking: enqueue + return must complete in <50ms even though
+		// the underlying runSubagent is still running.
+		expect(elapsed).toBeLessThan(50);
+	});
+
+	it("two concurrent researchAsk calls get distinct ids and run in parallel", async () => {
+		const agents = new DelegateAgents(MOCK_CTX);
+		const [{ id: a }, { id: b }] = await Promise.all([
+			agents.researchAsk("q1"),
+			agents.researchAsk("q2"),
+		]);
+		expect(a).not.toBe(b);
+		// Both subprocess invocations fired in parallel, not serial.
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		expect(runSubagent).toHaveBeenCalledTimes(2);
+	});
+
+	it("researchCheck drains terminal tasks with the structured outcome attached", async () => {
+		const agents = new DelegateAgents(MOCK_CTX);
+		const { id } = await agents.researchAsk("what is X?");
+		// Wait for the dispatcher to resolve.
+		const result = await agents.researchWait(id, 5_000);
+		expect(result.status).toBe("done");
+		expect(result.text).toBe("mock research answer");
+		expect(result.outcome).toMatchObject({
+			ok: true,
+			text: "mock research answer",
+		});
+
+		// First check returns the terminal task; subsequent check is empty
+		// (drain semantics).
+		const firstDrain = agents.researchCheck();
+		expect(firstDrain.tasks).toHaveLength(1);
+		const secondDrain = agents.researchCheck();
+		expect(secondDrain.tasks).toHaveLength(0);
+	});
+
+	it("researchCheck on empty mailbox returns empty without spawning", () => {
+		const agents = new DelegateAgents(MOCK_CTX);
+		const result = agents.researchCheck();
+		expect(result.tasks).toHaveLength(0);
+		expect(result.notifications).toHaveLength(0);
+	});
+
+	it("researchWait timeout returns synthetic terminal record without cancelling subprocess", async () => {
+		// Stall the subagent so the wait can hit its timeout.
+		vi.mocked(runSubagent).mockImplementationOnce(
+			() => new Promise(() => {}) as never,
+		);
+		const agents = new DelegateAgents(MOCK_CTX);
+		const { id } = await agents.researchAsk("slow");
+		const out = await agents.researchWait(id, 25);
+		expect(out.status).toBe("timeout");
+		expect(out.error).toMatch(/timed out/);
+	});
+
+	it("a no-model failure surfaces as outcome.ok=false on the task", async () => {
+		vi.mocked(resolveModel).mockResolvedValueOnce(null);
+		const agents = new DelegateAgents(MOCK_CTX);
+		const { id } = await agents.researchAsk("q");
+		const result = await agents.researchWait(id, 5_000);
+		expect(result.status).toBe("done");
+		expect(result.outcome).toMatchObject({ ok: false, reason: "no-model" });
+		expect(result.text).toContain("[research no-model]");
+	});
+
+	it("dispose tears down the research mailbox", async () => {
+		const agents = new DelegateAgents(MOCK_CTX);
+		await agents.researchAsk("q");
+		await expect(agents.dispose()).resolves.toBeUndefined();
+		// After dispose, a fresh ask spins up a new mailbox cleanly.
+		const { id } = await agents.researchAsk("second");
+		expect(id).toMatch(/^r\d+$/);
+	});
+});
