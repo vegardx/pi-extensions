@@ -92,6 +92,38 @@ export interface AskOptions {
 }
 
 /**
+ * Default values for {@link ExploreMailboxOptions}. `parallelism: 1`
+ * preserves pre-#159c behaviour: the child mailbox stays disabled even
+ * when {@link MailboxDeps.spawnChildAgent} is configured (the seed +
+ * one running child would already exceed the cap).
+ */
+export const DEFAULT_PARALLELISM = 1;
+export const DEFAULT_QUEUE_DEPTH_THRESHOLD = 4;
+
+export interface ExploreMailboxOptions {
+	/**
+	 * Maximum simultaneous in-flight explore jobs across the seed
+	 * and any children. The seed counts as one slot; the remaining
+	 * `parallelism - 1` slots are available to children.
+	 *
+	 * `1` (default) keeps the pre-#159c single-FIFO behaviour: even
+	 * `related: false` asks queue behind the seed because there's no
+	 * spare slot for a child.
+	 */
+	parallelism?: number;
+	/**
+	 * Burst-mode trigger. When the seed mailbox has at least this many
+	 * jobs queued-or-running at ask time, the next ask routes to a
+	 * child *regardless of* the `related` hint — fanning out beats
+	 * waiting in line.
+	 *
+	 * Has no effect when `parallelism: 1` (no children allowed) or
+	 * when the per-call parallelism cap is already saturated.
+	 */
+	queueDepthThreshold?: number;
+}
+
+/**
  * Returns true when the explore panel should be hidden: no tasks are
  * actively running or queued, and there are no pending notifications.
  * Done/error/timeout tasks without active work are intentionally hidden.
@@ -285,6 +317,8 @@ interface CurrentDispatch {
 export class ExploreMailbox {
 	private readonly ctx: ExtensionContext;
 	private readonly deps: MailboxDeps;
+	private readonly parallelism: number;
+	private readonly queueDepthThreshold: number;
 	private readonly seedMailbox: AsyncJobMailbox<
 		ExploreTask,
 		ExploreNotification
@@ -315,9 +349,17 @@ export class ExploreMailbox {
 	>();
 	private readonly listenerUnsubs: (() => void)[] = [];
 
-	constructor(ctx: ExtensionContext, deps: MailboxDeps = defaultMailboxDeps()) {
+	constructor(
+		ctx: ExtensionContext,
+		deps: MailboxDeps = defaultMailboxDeps(),
+		opts: ExploreMailboxOptions = {},
+	) {
 		this.ctx = ctx;
 		this.deps = deps;
+		this.parallelism = sanitiseParallelism(opts.parallelism);
+		this.queueDepthThreshold = sanitiseQueueDepthThreshold(
+			opts.queueDepthThreshold,
+		);
 
 		this.seedMailbox = new AsyncJobMailbox<ExploreTask, ExploreNotification>({
 			kind: "explore-seed",
@@ -375,11 +417,19 @@ export class ExploreMailbox {
 	 * not a graceful-disposal path.
 	 */
 	async ask(question: string, opts: AskOptions = {}): Promise<{ id: string }> {
-		const wantsChild = opts.related === false;
 		const seedBusy = this.seedMailbox.hasInFlight;
 		const childAvailable = typeof this.deps.spawnChildAgent === "function";
+		const maxChildren = Math.max(0, this.parallelism - 1);
+		const childInFlight = this.countInFlight(this.childMailbox);
+		const capRoom = childInFlight < maxChildren;
+		const seedDepth = this.countInFlight(this.seedMailbox);
+		const burst = seedDepth >= this.queueDepthThreshold;
+		const orthogonal = opts.related === false;
 
-		if (wantsChild && seedBusy && childAvailable) {
+		const wantsChild =
+			childAvailable && seedBusy && capRoom && (orthogonal || burst);
+
+		if (wantsChild) {
 			try {
 				return this.childMailbox.enqueue((id, enqueuedAt) => ({
 					id,
@@ -478,6 +528,22 @@ export class ExploreMailbox {
 			tasks: [...seed.tasks, ...child.tasks],
 			notifications: [...seedNotifs, ...childNotifs],
 		};
+	}
+
+	/**
+	 * Count jobs that are queued or running on `mailbox`. Terminal
+	 * tasks (done/error/timeout) are excluded — they don't consume a
+	 * slot any more.
+	 */
+	private countInFlight(
+		mailbox: AsyncJobMailbox<ExploreTask, ExploreNotification>,
+	): number {
+		const { tasks } = mailbox.getState();
+		let n = 0;
+		for (const t of tasks) {
+			if (t.status === "queued" || t.status === "running") n++;
+		}
+		return n;
 	}
 
 	private emitMerged(): void {
@@ -721,4 +787,26 @@ export class ExploreMailbox {
 			}
 		}
 	}
+}
+
+/**
+ * Coerce a user-supplied parallelism value into a positive integer.
+ * Invalid values fall back to {@link DEFAULT_PARALLELISM} \u2014 callers
+ * surface the warning to the user before constructing the mailbox.
+ */
+export function sanitiseParallelism(raw: unknown): number {
+	if (typeof raw !== "number") return DEFAULT_PARALLELISM;
+	if (!Number.isFinite(raw) || raw < 1) return DEFAULT_PARALLELISM;
+	return Math.floor(raw);
+}
+
+/**
+ * Coerce a user-supplied queueDepthThreshold value into a positive
+ * integer. Invalid values fall back to
+ * {@link DEFAULT_QUEUE_DEPTH_THRESHOLD}.
+ */
+export function sanitiseQueueDepthThreshold(raw: unknown): number {
+	if (typeof raw !== "number") return DEFAULT_QUEUE_DEPTH_THRESHOLD;
+	if (!Number.isFinite(raw) || raw < 1) return DEFAULT_QUEUE_DEPTH_THRESHOLD;
+	return Math.floor(raw);
 }
