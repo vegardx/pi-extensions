@@ -142,6 +142,11 @@ import {
 	shouldInjectSteeringClassifier,
 } from "./plan/steering.js";
 import { deletePlan, loadPlan, planExists, savePlan } from "./plan/storage.js";
+import {
+	aggregateAssistantUsage,
+	formatCacheSegment,
+	fromAiUsage,
+} from "./plan/token-usage.js";
 import { registerPlanTools } from "./plan/tools.js";
 import {
 	buildTransitionOptions,
@@ -1299,6 +1304,24 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	/**
+	 * Cumulative cache-token usage across the current session,
+	 * formatted as `cache 12.3k r / 4.5k w` (read first, then write).
+	 * Returns null when both buckets are zero so the footer can drop
+	 * the segment entirely instead of showing `cache 0 r / 0 w`.
+	 *
+	 * Walks every assistant message's `usage` on every render, mirroring
+	 * pi-mono's own interactive footer. Sub-millisecond for typical
+	 * session sizes; if this becomes a hotspot we'd cache via turn_end.
+	 */
+	function formatCacheUsage(ctx: ExtensionContext): string | null {
+		const entries = ctx.sessionManager.getEntries();
+		const usage = aggregateAssistantUsage(
+			entries as unknown as Parameters<typeof aggregateAssistantUsage>[0],
+		);
+		return formatCacheSegment(usage);
+	}
+
+	/**
 	 * Return a pretty model label for the footer. Prefers the model's display
 	 * `name` (e.g. "Claude Sonnet 4.5"), falls back to the id with any
 	 * provider prefix stripped.
@@ -1342,6 +1365,7 @@ export default function (pi: ExtensionAPI) {
 					// Phase status lives in the widget (glyph + active-phase task
 					// list), so we deliberately don't duplicate it here.
 					const ctxLabel = formatContextUsage(ctx);
+					const cacheLabel = formatCacheUsage(ctx);
 					const modelLabel = formatModelLabel(ctx);
 					const usageLabel =
 						[ctxLabel, modelLabel]
@@ -1355,6 +1379,15 @@ export default function (pi: ExtensionAPI) {
 					const candidates: FooterRightCandidate[] = [];
 
 					if (!modeState) {
+						// Richest: cache + ctx/model when available; fall back
+						// to ctx/model alone, then nothing.
+						if (cacheLabel && usageLabel) {
+							const rich = `${cacheLabel} | ${usageLabel}`;
+							candidates.push({
+								visible: rich,
+								styled: theme.fg("muted", rich),
+							});
+						}
 						if (usageLabel) {
 							candidates.push({
 								visible: usageLabel,
@@ -1369,6 +1402,15 @@ export default function (pi: ExtensionAPI) {
 					const sep = theme.fg("muted", " | ");
 					const modeText = theme.bold(theme.fg(color, label));
 
+					if (cacheLabel && usageLabel) {
+						candidates.push({
+							visible: `${cacheLabel} | ${usageLabel} | ${label}`,
+							styled:
+								theme.fg("muted", `${cacheLabel} | ${usageLabel}`) +
+								sep +
+								modeText,
+						});
+					}
 					if (usageLabel) {
 						candidates.push({
 							visible: `${usageLabel} | ${label}`,
@@ -2608,7 +2650,9 @@ export default function (pi: ExtensionAPI) {
 					.map((c) => c.text)
 					.join("\n")
 					.trim();
-				return text || null;
+				if (!text) return null;
+				const usage = fromAiUsage(response.usage) ?? undefined;
+				return { text, usage };
 			} catch {
 				return null;
 			}
@@ -3362,6 +3406,14 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		notify(ctx, `shipping phase ${phase.id}…`, "info");
+		// Record per-phase token total *before* shipPhase so renderPrBody
+		// includes the Tokens section in the initial PR body. The auto
+		// session that just executed this phase is `ctx.sessionManager` at
+		// /ship time. Mid-phase compaction entries (already pushed into
+		// phase.tokens.midPhase[]) are preserved; the end-of-phase summary
+		// call's cost is written by writePhaseSummary below and lives in
+		// the plan doc rather than the PR body.
+		recordPhaseTotalTokens(ctx, plan, phase);
 		const result = await shipPhase(plan, phase);
 		if (!result.ok) {
 			notify(ctx, `ship failed: ${result.error}`, "error");
@@ -3595,6 +3647,40 @@ export default function (pi: ExtensionAPI) {
 	 * session is left untouched on disk; the summary is purely a plan-doc
 	 * artefact.
 	 */
+	/**
+	 * Aggregate every assistant message's token usage in the current
+	 * (auto) session and write it to `phase.tokens.phase`. Idempotent:
+	 * called both at /ship entry (so `renderPrBody` has the data) and
+	 * later inside `writePhaseSummary` (which overwrites with the same
+	 * value and adds `phase.tokens.summary`).
+	 *
+	 * Best-effort: a missing/empty session leaves `phase.tokens` as it
+	 * was. Mid-phase compaction entries (`phase.tokens.midPhase[]`) are
+	 * preserved — they're appended during compaction and never reset
+	 * here.
+	 */
+	function recordPhaseTotalTokens(
+		ctx: ExtensionContext,
+		plan: Plan,
+		phase: PlanPhase,
+	): void {
+		try {
+			const entries = ctx.sessionManager.getEntries();
+			const total = aggregateAssistantUsage(
+				entries as unknown as Parameters<typeof aggregateAssistantUsage>[0],
+			);
+			const tokens = phase.tokens ?? { phase: total, midPhase: [] };
+			tokens.phase = total;
+			phase.tokens = tokens;
+			phase.updatedAt = new Date().toISOString();
+			plan.updatedAt = phase.updatedAt;
+			savePlan(plan);
+		} catch {
+			// Telemetry must never block /ship. A persist failure here is
+			// recoverable on the next savePlan.
+		}
+	}
+
 	async function writePhaseSummary(
 		ctx: ExtensionCommandContext,
 		plan: Plan,
@@ -3634,18 +3720,26 @@ export default function (pi: ExtensionAPI) {
 
 		const maxTokens = readPhaseTokensSetting(ctx);
 		const preamble = buildPhaseEndSummaryPreamble(plan, phase, maxTokens);
-		const text = await summarise({
+		const out = await summarise({
 			messages: messages as Parameters<SummariseFn>[0]["messages"],
 			preamble,
 			maxTokens,
 			signal: ctx.signal,
 		});
-		if (text === null) {
+		if (out === null) {
 			notify(ctx, "phase summary skipped: summariser failed", "warning");
 			return;
 		}
 
-		phase.summary = text.trim();
+		phase.summary = out.text.trim();
+		// Walk the auto session and sum every assistant `usage` so the
+		// shipped phase carries a record of what it actually cost. Mid-phase
+		// compactions and the summary itself are added below.
+		const phaseTotal = aggregateAssistantUsage(sm.getEntries());
+		const tokens = phase.tokens ?? { phase: phaseTotal, midPhase: [] };
+		tokens.phase = phaseTotal;
+		if (out.usage) tokens.summary = out.usage;
+		phase.tokens = tokens;
 		phase.updatedAt = new Date().toISOString();
 		plan.updatedAt = phase.updatedAt;
 		savePlan(plan);
@@ -4527,7 +4621,35 @@ export default function (pi: ExtensionAPI) {
 		});
 		if (!result) return { cancel: true };
 
-		return { compaction: result };
+		// Record mid-phase compaction usage so /ship can sum it into the
+		// phase total. Best-effort: a plan write here is independent of pi's
+		// own compaction-side state, and a savePlan failure must not block
+		// the compaction from completing.
+		if (result.usage) {
+			const phase = plan.phases.find((p) => p.id === pending.phaseId);
+			if (phase) {
+				const tokens = phase.tokens ?? {
+					phase: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+					midPhase: [],
+				};
+				tokens.midPhase = [...tokens.midPhase, result.usage];
+				phase.tokens = tokens;
+				phase.updatedAt = new Date().toISOString();
+				plan.updatedAt = phase.updatedAt;
+				try {
+					savePlan(plan);
+				} catch {
+					// Best-effort — telemetry must never break compaction.
+				}
+			}
+		}
+
+		// Strip our extension-only `usage` field before handing back to pi:
+		// `CompactionResult` doesn't model it, and pi only consumes
+		// {summary, firstKeptEntryId, tokensBefore, details}.
+		const { usage: _u, ...piCompaction } = result;
+		void _u;
+		return { compaction: piCompaction };
 	});
 
 	// ---- System prompt injection ------------------------------------------
