@@ -60,6 +60,13 @@ import {
 	getWorkingDiff,
 	isGitRepo,
 } from "./git.js";
+import {
+	buildIndexerTask,
+	type IndexSketch,
+	renderIndexSketchForReviewer,
+	runIndexer,
+} from "./indexer.js";
+import { type LaneId, type LaneSpec, resolveAllLanes } from "./lanes.js";
 import { reviewTimeoutMs, runReviewer } from "./reviewer-client.js";
 import {
 	runStaticAnalysis,
@@ -90,8 +97,27 @@ export const VALID_REVIEWER_ROLES: readonly ReviewerRole[] = [
 
 const VALID_REVIEWER_ROLES_SET = new Set<ReviewerRole>(VALID_REVIEWER_ROLES);
 
-/** Fixed tier this pass uses on both `primary` and `secondary` sets. */
-const AUTO_REVIEW_TIER: Tier = "heavy";
+/**
+ * Map a `ReviewerRole` to its lane id. Reviewer ids and lane ids are
+ * deliberately the same string for the seven roles tracked by
+ * `LaneId`. `implementation-checker` is not in `LaneId` (the
+ * auto-review pass doesn't fan it out) — callers should route those
+ * through the orchestrator's lane spec instead.
+ */
+function laneIdForRole(role: ReviewerRole): LaneId | null {
+	switch (role) {
+		case "architect":
+		case "code-reviewer":
+		case "scope-analyst":
+		case "security-analyst":
+		case "code-simplifier":
+		case "doc-reviewer":
+		case "dependency-checker":
+			return role;
+		default:
+			return null;
+	}
+}
 
 const AUTO_REVIEW_WIDGET = "auto-review-progress";
 
@@ -114,7 +140,7 @@ const CHALLENGER_PROMPT_PATH = join(
  *  (e.g. a freshly-init'd repo with no `origin/HEAD`). */
 type AutoReviewScopeMode = "branch" | "working";
 
-interface AutoReviewContext {
+export interface AutoReviewContext {
 	scopeMode: AutoReviewScopeMode;
 	scopeLabel: string;
 	diff: string;
@@ -137,12 +163,25 @@ export interface RunAutoReviewOptions {
 	 */
 	roles?: string[];
 	/**
-	 * When true (default), run each role on both `primary.heavy` and
-	 * `secondary.heavy`, then synthesise with the orchestrator. When
-	 * false, run only `primary.heavy`; the orchestrator still runs but
-	 * has only one tier's findings.
+	 * When true (default), enable the `consult_other_model` tool on the
+	 * orchestrator. The consult model is resolved in the *opposite*
+	 * background set from the orchestrator's lane (orchestrator on
+	 * `secondary` → consult on `primary`, and vice versa). When false
+	 * (or no consult model is available), the orchestrator runs without
+	 * the consult tool.
+	 *
+	 * Note: this no longer controls the fan-out shape — the fan-out is
+	 * always a single secondary-first pass. The flag now only controls
+	 * the second-opinion surface.
 	 */
 	multiModel?: boolean;
+	/**
+	 * When true (default), run the indexer lane before fan-out. The
+	 * indexer produces a structured map of the diff that is threaded
+	 * into every reviewer's task payload as additional context.
+	 * Failures are best-effort and never block the fan-out.
+	 */
+	enableIndex?: boolean;
 	/**
 	 * Static analysis tool config. Passed verbatim to `runStaticAnalysis`.
 	 * When omitted, all defaults apply (tsc + biome + npmAudit enabled;
@@ -172,9 +211,23 @@ export interface RunAutoReviewResult {
 	 * CRITICAL findings — surfaced for user discussion.
 	 */
 	surfaced?: OrchestratedFinding[];
-	/** Models actually used (for the report message). */
+	/** Models actually used (for the report message). Under the new
+	 *  per-lane resolution, `primaryModel` is the *orchestrator* model
+	 *  spec, `secondaryModel` (when present) is the consult model spec.
+	 *  See `laneModels` for the full per-lane breakdown. */
 	primaryModel?: string;
 	secondaryModel?: string;
+	/**
+	 * Per-lane model spec map. Keys: reviewer role names, plus
+	 * `"orchestrator"`, `"index"` (when enabled and resolved), and
+	 * `"consult"` (when the consult tool was registered). Values are
+	 * `"provider/id"` strings. Useful for callers and the report to
+	 * show *which* model ran *which* lane when per-lane configuration
+	 * is non-uniform.
+	 */
+	laneModels?: Record<string, string>;
+	/** Indexer error message when the indexer ran and failed. */
+	indexError?: string;
 	/** True when the orchestrator agent ran and produced parseable output. */
 	orchestratorRan?: boolean;
 	/** Error message when the orchestrator failed (timeout, model not found, parse failure). */
@@ -234,9 +287,15 @@ function resolveAutoReviewContext(
 	};
 }
 
-function buildTaskFor(
+/**
+ * Build a single reviewer's task payload. Exported so callers and
+ * tests can verify what each lane sees — including the optional
+ * indexer sketch and pre-computed static analysis findings.
+ */
+export function buildTaskFor(
 	role: ReviewerRole,
 	rc: AutoReviewContext,
+	indexSketch: IndexSketch | null,
 	staticFindings?: readonly RawFinding[],
 ): string {
 	const lines: string[] = [
@@ -264,6 +323,10 @@ function buildTaskFor(
 		"If nothing in this diff falls within your lane, reply `[]` and stop.",
 		"Otherwise, emit JSON per your system prompt.",
 	);
+	const sketchSection = renderIndexSketchForReviewer(indexSketch);
+	if (sketchSection) {
+		lines.push("", sketchSection);
+	}
 	if (staticFindings && staticFindings.length > 0) {
 		lines.push(
 			"",
@@ -306,8 +369,12 @@ function renderProgress(
 	return lines;
 }
 
-interface ResolvedTierModel {
-	tier: BackgroundTier;
+interface ResolvedLaneModel {
+	/** The lane's resolved set (acts as the `BackgroundTier` tag for
+	 *  findings — `primary` or `secondary`). */
+	set: BackgroundSet;
+	/** The tier the lane resolved to (`fast` | `normal` | `heavy`). */
+	tier: Tier;
 	/** Display string: `"provider/id"`. */
 	spec: string;
 	/** Retained Model reference for the in-process orchestrator session.
@@ -318,23 +385,45 @@ interface ResolvedTierModel {
 	model: Model<Api>;
 }
 
-async function resolveTierModel(
+async function resolveLaneModel(
 	ctx: ExtensionContext,
 	extensionName: string,
-	tier: BackgroundTier,
-): Promise<ResolvedTierModel | null> {
-	const set: BackgroundSet = tier;
+	lane: LaneSpec,
+): Promise<ResolvedLaneModel | null> {
 	const resolved = await resolveModel(ctx, {
 		name: extensionName,
-		tier: AUTO_REVIEW_TIER,
-		set,
+		tier: lane.tier,
+		set: lane.set,
 	});
 	if (!resolved) return null;
 	return {
-		tier,
+		set: lane.set,
+		tier: lane.tier,
 		spec: `${resolved.model.provider}/${resolved.model.id}`,
 		model: resolved.model,
 	};
+}
+
+/**
+ * Pick the *opposite* set from the orchestrator's resolved lane and
+ * resolve a model under it for the `consult_other_model` tool. When
+ * the orchestrator already runs on `secondary`, this resolves under
+ * `primary` (the historic default for the consult tool). When the
+ * orchestrator is overridden onto `primary`, it falls back to
+ * `secondary`. Either way the orchestrator gets a second-opinion
+ * surface from a different model family.
+ */
+async function resolveConsultModel(
+	ctx: ExtensionContext,
+	extensionName: string,
+	orchestratorLane: LaneSpec,
+): Promise<ResolvedLaneModel | null> {
+	const otherSet: BackgroundSet =
+		orchestratorLane.set === "secondary" ? "primary" : "secondary";
+	return resolveLaneModel(ctx, extensionName, {
+		set: otherSet,
+		tier: orchestratorLane.tier,
+	});
 }
 
 // ---- Orchestrator phase (Phase 2) --------------------------------------
@@ -394,10 +483,13 @@ function buildOrchestratorTask(
 async function runOrchestratorPhase(opts: {
 	bundles: OrchestratorInput[];
 	rc: AutoReviewContext;
-	primary: ResolvedTierModel;
-	/** When provided, the orchestrator gets a `consult_secondary_model`
-	 *  custom tool it can call for uncertain CRITICAL findings. */
-	secondary: ResolvedTierModel | null;
+	orchestrator: ResolvedLaneModel;
+	/** When provided, the orchestrator gets a `consult_other_model`
+	 *  custom tool it can call for uncertain CRITICAL findings. The
+	 *  tool routes to a model in the *opposite* set from the
+	 *  orchestrator's lane (orchestrator on secondary → consult primary,
+	 *  and vice versa). */
+	consult: ResolvedLaneModel | null;
 	/** Fraction of reviewer invocations that errored (0–1). Used to
 	 *  decide whether to run the orchestrator even with 0 input findings. */
 	reviewerErrorRate: number;
@@ -409,7 +501,7 @@ async function runOrchestratorPhase(opts: {
 	orchestratorRan: boolean;
 	error?: string;
 }> {
-	const { bundles, rc, primary, secondary, extensionName, ctx } = opts;
+	const { bundles, rc, orchestrator, consult, extensionName, ctx } = opts;
 
 	const totalInputFindings = bundles.reduce((n, b) => n + b.findings.length, 0);
 
@@ -428,7 +520,7 @@ async function runOrchestratorPhase(opts: {
 	notify(
 		ctx,
 		`orchestrator: synthesising ${totalInputFindings} raw finding(s)${
-			secondary ? " (consult tool available)" : ""
+			consult ? " (consult tool available)" : ""
 		}`,
 		"info",
 	);
@@ -442,20 +534,22 @@ async function runOrchestratorPhase(opts: {
 
 	const timeoutMs = Math.min(reviewTimeoutMs(rc.diff.length) * 2, 600_000);
 
-	// ---- Build consultation tool (if secondary model available) ----------
+	// ---- Build consultation tool (if consult model available) ----------
 	//
 	// The orchestrator can call this tool for any CRITICAL finding it is
-	// uncertain about. The secondary model evaluates the finding using the
-	// challenger system prompt and returns its verdict as a JSON string.
-	// The orchestrator reads the response and adjusts confidence accordingly.
-	const customTools = secondary
+	// uncertain about. The consult model lives in the *opposite* set from
+	// the orchestrator's lane (orchestrator on secondary → primary as
+	// the second opinion). It evaluates the finding using the challenger
+	// system prompt and returns its verdict as a JSON string. The
+	// orchestrator reads the response and adjusts confidence accordingly.
+	const customTools = consult
 		? [
 				defineTool({
-					name: "consult_secondary_model",
-					label: "Consult Secondary Model",
+					name: "consult_other_model",
+					label: "Consult Other Model",
 					description:
-						"Ask the secondary reviewer model whether it agrees with a finding " +
-						"you are uncertain about. The secondary model has independent code " +
+						"Ask a model in the opposite background set whether it agrees with a " +
+						"finding you are uncertain about. The consult model has independent code " +
 						"access and will return a JSON verdict with agree/reason/suggestedAction.",
 					parameters: Type.Object({
 						file: Type.String({ description: "File path" }),
@@ -471,14 +565,14 @@ async function runOrchestratorPhase(opts: {
 						),
 					}),
 					async execute(_toolCallId, params, signal) {
-						// Tool is only registered when secondary != null;
+						// Tool is only registered when consult != null;
 						// guard defensively so TypeScript/biome are happy.
-						if (!secondary) {
+						if (!consult) {
 							return {
 								content: [
 									{
 										type: "text" as const,
-										text: '{"agree":false,"reason":"secondary model unavailable"}',
+										text: '{"agree":false,"reason":"consult model unavailable"}',
 									},
 								],
 								details: {},
@@ -510,8 +604,8 @@ async function runOrchestratorPhase(opts: {
 							tag: "consultation",
 							task: consultTask,
 							systemPromptPath: CHALLENGER_PROMPT_PATH,
-							provider: secondary.model.provider,
-							model: secondary.model.id,
+							provider: consult.model.provider,
+							model: consult.model.id,
 							cwd: ctx.cwd,
 							signal,
 							timeoutMs: reviewTimeoutMs(rc.diff.length),
@@ -533,7 +627,7 @@ async function runOrchestratorPhase(opts: {
 		: [];
 
 	// ---- Spin up in-process orchestrator session -------------------------
-	// Use the model reference retained by resolveTierModel so custom-provider
+	// Use the model reference retained by resolveLaneModel so custom-provider
 	// models (e.g. radicalai) remain usable even if the provider re-registers
 	// its model list between resolution and use (async refresh race).
 
@@ -550,7 +644,7 @@ async function runOrchestratorPhase(opts: {
 
 	const { session } = await createAgentSession({
 		cwd: ctx.cwd,
-		model: primary.model,
+		model: orchestrator.model,
 		// Read-only built-in tools + the optional consult custom tool.
 		tools: ["read", "grep", "find", "ls"],
 		customTools,
@@ -640,6 +734,9 @@ export function formatTierAttribution(
 /**
  * Build the fix prompt the host agent receives once the orchestrator
  * has produced high-confidence findings with concrete fix suggestions.
+ *
+ * `primaryModel` is the orchestrator's model spec; `secondaryModel`
+ * (optional) is the consult model spec (when registered).
  */
 export function buildAutoReviewFixPrompt(
 	accepted: readonly OrchestratedFinding[],
@@ -647,7 +744,7 @@ export function buildAutoReviewFixPrompt(
 	secondaryModel?: string,
 ): string {
 	const reviewerDesc = secondaryModel
-		? `The review orchestrator (\`${primaryModel}\` synthesising \`${primaryModel}\` + \`${secondaryModel}\` reviewer output) flagged the following high-confidence findings. Apply the suggested fixes directly.`
+		? `The review orchestrator (\`${primaryModel}\`, with consult fallback to \`${secondaryModel}\` for uncertain CRITICALs) flagged the following high-confidence findings. Apply the suggested fixes directly.`
 		: `The review orchestrator (\`${primaryModel}\`) flagged the following findings with concrete fix suggestions. Apply them directly.`;
 	const lines: string[] = [
 		"[auto-review]",
@@ -720,12 +817,12 @@ export function buildAutoReviewReport(opts: {
 	lines.push(`**Scope**: ${opts.scopeLabel}`);
 	lines.push(`**Roles**: ${opts.roles.join(", ")}`);
 	if (opts.multiModel && opts.secondaryModel) {
-		lines.push(`**Primary model**: \`${opts.primaryModel}\``);
-		lines.push(`**Secondary model**: \`${opts.secondaryModel}\``);
-		lines.push(`**Mode**: multi-model + orchestrator synthesis`);
+		lines.push(`**Orchestrator model**: \`${opts.primaryModel}\``);
+		lines.push(`**Consult model**: \`${opts.secondaryModel}\``);
+		lines.push(`**Mode**: secondary-first fan-out + consult-tool orchestrator`);
 	} else {
-		lines.push(`**Model**: \`${opts.primaryModel}\``);
-		lines.push(`**Mode**: single-model + orchestrator synthesis`);
+		lines.push(`**Orchestrator model**: \`${opts.primaryModel}\``);
+		lines.push(`**Mode**: secondary-first fan-out + orchestrator (no consult)`);
 	}
 	if (opts.staticToolsRan > 0) {
 		lines.push(`**Static analysis**: ${opts.staticToolsRan} tool(s) ran`);
@@ -955,9 +1052,10 @@ export function partitionFindings(findings: readonly OrchestratedFinding[]): {
 }
 
 /**
- * Public entry point. Resolves both heavy models, runs Phase 0 static
- * analysis, fans out to role reviewers in parallel, then runs the
- * orchestrator agent to synthesise findings.
+ * Public entry point. Resolves per-lane models from settings, runs
+ * Phase 0 static analysis, optionally runs the indexer (Phase 0.5),
+ * fans out to role reviewers in a single secondary-first pass, then
+ * runs the orchestrator agent to synthesise findings.
  */
 export async function runAutoReview(
 	opts: RunAutoReviewOptions,
@@ -999,13 +1097,28 @@ export async function runAutoReview(
 		);
 		return { ran: false, abortReason: "no-valid-roles" };
 	}
+
+	// `multiModel` toggles whether the orchestrator gets a consult-tool
+	// surface for second-opinion lookups under the opposite background
+	// set. It no longer controls the fan-out (the fan-out is always a
+	// single secondary-first pass under the per-lane configuration).
 	const multiModel = opts.multiModel ?? true;
 
-	const primary = await resolveTierModel(ctx, extensionName, "primary");
-	if (!primary) {
+	// Resolve the per-lane configuration once. `lanes.<id>` overrides
+	// `defaultLane` overrides built-in defaults; invalid entries are
+	// fail-closed (skipped, falling through to the next layer).
+	const settings = readRelevantSettings(ctx.cwd);
+	const laneTable = resolveAllLanes(settings);
+
+	const orchestrator = await resolveLaneModel(
+		ctx,
+		extensionName,
+		laneTable.orchestrator,
+	);
+	if (!orchestrator) {
 		notify(
 			ctx,
-			"no usable primary heavy model (set backgroundModels.primary.heavy)",
+			`no usable orchestrator model (lane orchestrator: ${laneTable.orchestrator.set}.${laneTable.orchestrator.tier})`,
 			"warning",
 		);
 		return {
@@ -1014,25 +1127,55 @@ export async function runAutoReview(
 			scopeLabel: rc.scopeLabel,
 		};
 	}
-	let secondary: ResolvedTierModel | null = null;
-	if (multiModel) {
-		secondary = await resolveTierModel(ctx, extensionName, "secondary");
-		if (!secondary) {
-			notify(
-				ctx,
-				"no usable secondary heavy model (set backgroundModels.secondary.heavy)",
-				"warning",
-			);
-			return {
-				ran: false,
-				abortReason: "no-secondary-model",
-				scopeLabel: rc.scopeLabel,
-				primaryModel: primary.spec,
-			};
-		}
+
+	// Consult model lives in the *opposite* set from the orchestrator's
+	// lane so the orchestrator gets a second opinion from a different
+	// model family. When unavailable the orchestrator simply runs
+	// without the consult tool surface.
+	const consult: ResolvedLaneModel | null = multiModel
+		? await resolveConsultModel(ctx, extensionName, laneTable.orchestrator)
+		: null;
+	if (multiModel && !consult) {
+		const otherSet =
+			laneTable.orchestrator.set === "secondary" ? "primary" : "secondary";
+		notify(
+			ctx,
+			`no consult model available (orchestrator on ${laneTable.orchestrator.set}, no usable model in ${otherSet}.${laneTable.orchestrator.tier}) — running without consult tool`,
+			"info",
+		);
 	}
 
-	const tierModels = multiModel && secondary ? [primary, secondary] : [primary];
+	// Resolve every reviewer-role lane independently. Each maps to one
+	// invocation in the single fan-out pass. Roles whose model fails to
+	// resolve are dropped with a warning rather than aborting the run.
+	const roleLaneModels: Map<ReviewerRole, ResolvedLaneModel> = new Map();
+	for (const role of roles) {
+		const laneId = laneIdForRole(role);
+		if (!laneId) continue;
+		const spec = laneTable[laneId];
+		const lm = await resolveLaneModel(ctx, extensionName, spec);
+		if (!lm) {
+			notify(
+				ctx,
+				`no usable model for ${role} (lane ${spec.set}.${spec.tier}) — skipping`,
+				"warning",
+			);
+			continue;
+		}
+		roleLaneModels.set(role, lm);
+	}
+	if (roleLaneModels.size === 0) {
+		notify(
+			ctx,
+			"no reviewer lanes resolved to a usable model — aborting auto-review",
+			"warning",
+		);
+		return {
+			ran: false,
+			abortReason: "no-primary-model",
+			scopeLabel: rc.scopeLabel,
+		};
+	}
 
 	// ---- Phase 0: Static analysis ---------------------------------------
 	// Run before spawning AI agents so findings can be injected as
@@ -1053,20 +1196,72 @@ export async function runAutoReview(
 		);
 	}
 
+	// ---- Phase 0.5: Indexer ---------------------------------------------
+	// Build a structured map of the diff and thread it into every
+	// reviewer's task payload. Best-effort: failures are captured but
+	// never block the fan-out.
+	let indexSketch: IndexSketch | null = null;
+	let indexError: string | undefined;
+	let indexerSpec: string | undefined;
+	const enableIndex = opts.enableIndex ?? true;
+	if (enableIndex) {
+		const indexLane = await resolveLaneModel(
+			ctx,
+			extensionName,
+			laneTable.index,
+		);
+		if (indexLane) {
+			indexerSpec = indexLane.spec;
+			notify(ctx, `indexer: building diff sketch (${indexLane.spec})`, "info");
+			const out = await runIndexer({
+				task: buildIndexerTask(rc),
+				provider: indexLane.model.provider,
+				model: indexLane.model.id,
+				cwd: ctx.cwd,
+				signal: ctx.signal,
+				timeoutMs: reviewTimeoutMs(rc.diff.length),
+			});
+			if (out.error) {
+				indexError = out.error;
+				notify(
+					ctx,
+					`indexer failed: ${out.error.split("\n")[0]} — reviewers continue without index`,
+					"warning",
+				);
+			} else {
+				indexSketch = out.sketch;
+			}
+		} else {
+			notify(
+				ctx,
+				`indexer: no usable model (lane ${laneTable.index.set}.${laneTable.index.tier}) — skipping`,
+				"info",
+			);
+		}
+	}
+
+	// ---- Phase 1: Single-pass fan-out ----------------------------------
+	// Each reviewer role runs once, at its per-lane resolved model.
+	const invocations: Array<
+		ReviewerInvocationKey & { laneModel: ResolvedLaneModel }
+	> = [];
+	const status = new Map<string, "running" | "done">();
+	for (const role of roles) {
+		const lm = roleLaneModels.get(role);
+		if (!lm) continue;
+		invocations.push({ role, tier: lm.set, laneModel: lm });
+		status.set(`${role}|${lm.set}`, "running");
+	}
+
+	const laneSpecs = invocations
+		.map((inv) => `${inv.role}:${inv.laneModel.spec}`)
+		.join(", ");
 	notify(
 		ctx,
-		`${rc.scopeLabel}: ${rc.changedFiles} file(s), fanning out ${roles.length * tierModels.length} reviewers (${primary.spec}${secondary ? ` + ${secondary.spec}` : ""})`,
+		`${rc.scopeLabel}: ${rc.changedFiles} file(s), fanning out ${invocations.length} reviewers (${laneSpecs})`,
 		"info",
 	);
 
-	const status = new Map<string, "running" | "done">();
-	const invocations: Array<ReviewerInvocationKey & ResolvedTierModel> = [];
-	for (const role of roles) {
-		for (const tierModel of tierModels) {
-			invocations.push({ role: role as ReviewerRole, ...tierModel });
-			status.set(`${role}|${tierModel.tier}`, "running");
-		}
-	}
 	if (ctx.hasUI) {
 		ctx.ui.setStatus(extensionName, `auto-review 0/${invocations.length}`);
 		ctx.ui.setWidget(AUTO_REVIEW_WIDGET, renderProgress(status));
@@ -1087,6 +1282,7 @@ export async function runAutoReview(
 					task: buildTaskFor(
 						inv.role,
 						rc,
+						indexSketch,
 						staticFindings.byLane.get(
 							inv.role as
 								| "code-reviewer"
@@ -1094,8 +1290,8 @@ export async function runAutoReview(
 								| "code-simplifier",
 						),
 					),
-					provider: inv.model.provider,
-					model: inv.model.id,
+					provider: inv.laneModel.model.provider,
+					model: inv.laneModel.model.id,
 					cwd: ctx.cwd,
 					signal: ctx.signal,
 					timeoutMs: reviewTimeoutMs(rc.diff.length),
@@ -1127,8 +1323,8 @@ export async function runAutoReview(
 			ran: false,
 			abortReason: "fanout-error",
 			scopeLabel: rc.scopeLabel,
-			primaryModel: primary.spec,
-			...(secondary ? { secondaryModel: secondary.spec } : {}),
+			primaryModel: orchestrator.spec,
+			...(consult ? { secondaryModel: consult.spec } : {}),
 		};
 	}
 
@@ -1167,7 +1363,7 @@ export async function runAutoReview(
 	if (allStaticFindings.length > 0) {
 		orchestratorBundles.push({
 			role: staticBundleRole,
-			tier: "primary" as BackgroundTier,
+			tier: orchestrator.set as BackgroundTier,
 			findings: allStaticFindings,
 			staticTool: true,
 		});
@@ -1183,8 +1379,8 @@ export async function runAutoReview(
 	} = await runOrchestratorPhase({
 		bundles: orchestratorBundles,
 		rc,
-		primary,
-		secondary,
+		orchestrator,
+		consult,
 		reviewerErrorRate,
 		extensionName,
 		ctx,
@@ -1200,7 +1396,7 @@ export async function runAutoReview(
 	// high + fix → auto-apply
 	// high / medium + no fix → surface for discussion
 	// low + CRITICAL → surface with caveat (TypeScript safety net: the
-	//   orchestrator should have called consult_secondary_model, but if
+	//   orchestrator should have called consult_other_model, but if
 	//   it still returns low confidence we never silently drop a CRITICAL)
 	// low + IMPORTANT/NOTE → drop
 	const withFix = (f: OrchestratedFinding) =>
@@ -1223,7 +1419,16 @@ export async function runAutoReview(
 		return false;
 	});
 
-	const secondarySpec = secondary?.spec;
+	const orchestratorSpec = orchestrator.spec;
+	const consultSpec = consult?.spec;
+	const laneModelSummary: Record<string, string> = {};
+	for (const [role, lm] of roleLaneModels) {
+		laneModelSummary[role] = lm.spec;
+	}
+	laneModelSummary.orchestrator = orchestrator.spec;
+	if (indexerSpec) laneModelSummary.index = indexerSpec;
+	if (consultSpec) laneModelSummary.consult = consultSpec;
+
 	pi.sendMessage(
 		{
 			customType: "auto-review-report",
@@ -1231,8 +1436,8 @@ export async function runAutoReview(
 				scopeLabel: rc.scopeLabel,
 				roles: roles as readonly string[],
 				multiModel,
-				primaryModel: primary.spec,
-				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+				primaryModel: orchestratorSpec,
+				...(consultSpec ? { secondaryModel: consultSpec } : {}),
 				findings,
 				autoApplied,
 				surfaced,
@@ -1251,8 +1456,10 @@ export async function runAutoReview(
 				surfaced: surfaced.length,
 				orchestratorRan,
 				staticToolsRan,
-				primaryModel: primary.spec,
-				...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+				primaryModel: orchestratorSpec,
+				...(consultSpec ? { secondaryModel: consultSpec } : {}),
+				laneModels: laneModelSummary,
+				...(indexError ? { indexError } : {}),
 				errorCount: errors.length,
 			},
 		},
@@ -1267,14 +1474,14 @@ export async function runAutoReview(
 				customType: "auto-review-followup",
 				content: buildAutoReviewFixPrompt(
 					autoApplied,
-					primary.spec,
-					secondarySpec,
+					orchestratorSpec,
+					consultSpec,
 				),
 				display: false,
 				details: {
 					autoApplied: autoApplied.length,
-					primaryModel: primary.spec,
-					...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+					primaryModel: orchestratorSpec,
+					...(consultSpec ? { secondaryModel: consultSpec } : {}),
 				},
 			},
 			{ deliverAs: "followUp", triggerTurn: surfaced.length === 0 },
@@ -1287,14 +1494,14 @@ export async function runAutoReview(
 				customType: "auto-review-discussion",
 				content: buildAutoReviewDiscussionPrompt(
 					surfaced,
-					primary.spec,
-					secondarySpec,
+					orchestratorSpec,
+					consultSpec,
 				),
 				display: false,
 				details: {
 					surfaced: surfaced.length,
-					primaryModel: primary.spec,
-					...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+					primaryModel: orchestratorSpec,
+					...(consultSpec ? { secondaryModel: consultSpec } : {}),
 				},
 			},
 			{ deliverAs: "followUp", triggerTurn: true },
@@ -1321,8 +1528,10 @@ export async function runAutoReview(
 		orchestratorRan,
 		...(orchError ? { orchestratorError: orchError } : {}),
 		staticToolsRan,
-		primaryModel: primary.spec,
-		...(secondarySpec ? { secondaryModel: secondarySpec } : {}),
+		primaryModel: orchestratorSpec,
+		...(consultSpec ? { secondaryModel: consultSpec } : {}),
+		laneModels: laneModelSummary,
+		...(indexError ? { indexError } : {}),
 		errors,
 	};
 }

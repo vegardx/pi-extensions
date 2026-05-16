@@ -112,12 +112,12 @@ const BASE_REPORT_OPTS = {
 };
 
 describe("buildAutoReviewReport", () => {
-	it("includes scope and models in multi-model mode", () => {
+	it("includes scope and models with consult fallback", () => {
 		const report = buildAutoReviewReport(BASE_REPORT_OPTS);
 		expect(report).toContain("current branch vs. main");
 		expect(report).toContain("anthropic/claude-opus-4-5");
 		expect(report).toContain("openai/gpt-5");
-		expect(report).toContain("multi-model");
+		expect(report).toContain("secondary-first fan-out");
 	});
 
 	it("shows static tools ran count", () => {

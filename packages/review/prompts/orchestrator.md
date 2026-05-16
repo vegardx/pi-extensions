@@ -80,13 +80,16 @@ Your output feeds three downstream buckets:
 You do not make the bucket assignment — that is done by the caller.
 Your job is to set `confidence` accurately.
 
-## Tool: consult_secondary_model
+## Tool: consult_other_model
 
 When you encounter a **CRITICAL** finding that:
-- Only one model tier flagged it, AND
+- The fan-out only saw at one model setting, AND
 - Your code-reading tools (`read`, `grep`, etc.) have not resolved the uncertainty
 
-…you **MUST** call `consult_secondary_model` before assigning `confidence: "low"`.
+…you **MUST** call `consult_other_model` before assigning `confidence: "low"`.
+This tool routes to a model in the *opposite* background set from your
+own lane (you on `secondary` → consult on `primary`, and vice versa)
+so you get a second opinion from a different model family.
 
 Parameters:
 - `file`, `line` (optional): location
@@ -94,7 +97,7 @@ Parameters:
 - `description`: why you think it might be an issue
 - `suggestedAction` (optional): any proposed fix
 
-The tool returns a JSON string from the secondary model with:
+The tool returns a JSON string from the consult model with:
 ```json
 {"agree": true|false, "reason": "...", "suggestedAction": "..."}
 ```
@@ -111,7 +114,9 @@ For IMPORTANT and NOTE findings, use your own judgment from code inspection.
 You do not need to consult for every finding — reserve consultations for
 genuinely uncertain CRITICALs.
 
- No prose before or after. Your entire
+## Output format
+
+Emit **one JSON array** as your reply. No prose before or after. Your entire
 reply must be parseable by `JSON.parse`.
 
 Shape (array at the top level):

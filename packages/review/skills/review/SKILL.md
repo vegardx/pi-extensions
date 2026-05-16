@@ -45,26 +45,50 @@ When invoked via the `/develop` auto-review trigger, the pipeline is:
    configurable per-project via `extensionConfig.review.staticAnalysis`
    in `settings.json`.
 
-2. **Phase 1 — Fan-out**: N reviewer roles × M model tiers run in
-   parallel. Each role agent receives the diff plus any static tool
-   output relevant to its lane.
+2. **Phase 0.5 — Indexer**: A single read-only sub-agent emits a
+   compact JSON map of the diff (entry points, modules, hot files,
+   risk surfaces, open questions). This sketch threads into every
+   reviewer's task payload as additional context. Best-effort: if
+   the indexer fails or is disabled, reviewers run without it.
 
-3. **Phase 2 — Orchestrator**: A single synthesis agent (using the
-   primary model) receives all raw findings from Phase 1, deduplicates
-   them (fuzzy — same issue described differently is merged), and
-   cross-validates using `read`/`grep`/`find` tools. For uncertain
-   CRITICAL findings it can call a `consult_secondary_model` tool,
-   which invokes the secondary model as a second opinion. The
-   orchestrator assigns a `confidence` level to each finding.
+3. **Phase 1 — Fan-out (single pass)**: Each reviewer role runs
+   exactly once at its per-lane resolved model. By default lanes
+   resolve to `secondary/normal` (security-analyst upgrades to
+   `secondary/heavy`). Override per-lane via
+   `extensionConfig.review.lanes.<role>` or the `defaultLane` shortcut.
 
-4. **Phase 3 — Split**:
+4. **Phase 2 — Orchestrator**: A single synthesis agent (defaults to
+   `secondary/heavy`) receives all raw findings from Phase 1,
+   deduplicates them (fuzzy — same issue described differently is
+   merged), and cross-validates using `read`/`grep`/`find` tools. For
+   uncertain CRITICAL findings it can call a `consult_other_model`
+   tool, which routes to a model in the *opposite* background set
+   (orchestrator on `secondary` → consult on `primary`, and vice
+   versa) for a second opinion. The orchestrator assigns a
+   `confidence` level to each finding.
+
+5. **Phase 3 — Split**:
    - `confidence: "high"` + concrete fix → auto-apply
    - `confidence: "high"/"medium"` without fix → surface for discussion
    - `confidence: "low"` + CRITICAL → surface with caveat
    - `confidence: "low"` + IMPORTANT/NOTE → drop
 
- (see above). If you're standalone, derive the diff
-   yourself:
+6. **Phase 4 — Verification handoff**: Auto-applying findings are
+   batched into a single `auto-review-followup` message delivered to
+   the host agent. Findings without concrete fixes (or low-confidence
+   CRITICALs) go into `auto-review-discussion` so the host agent can
+   ask the user before touching code. The split is explicit: the
+   orchestrator never modifies files; the host agent applies and
+   verifies after a single hand-off.
+
+## Standalone walk-through
+
+When the auto-review pipeline isn't running (you're invoked directly
+as `/skill:review`, or from a host that hasn't wired Phase 0/1/2),
+use this manual procedure:
+
+1. **Resolve diff/scope** (see above). If you're standalone, derive
+   the diff yourself:
    ```bash
    git diff HEAD                    # working tree
    git diff --cached                # staged
