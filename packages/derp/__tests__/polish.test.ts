@@ -9,6 +9,7 @@ function makeCtx(): DerpContext {
 		sessionName: null,
 		piVersion: "0.73.0",
 		recentEntries: [],
+		crashReports: [],
 	};
 }
 

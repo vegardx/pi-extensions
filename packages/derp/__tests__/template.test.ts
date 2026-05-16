@@ -1,4 +1,5 @@
 import type { DerpContext } from "../context.js";
+import type { CrashReportSummary } from "../crash-reports.js";
 import {
 	applyTitlePrefix,
 	buildFallbackIssue,
@@ -17,6 +18,7 @@ function makeCtx(overrides: Partial<DerpContext> = {}): DerpContext {
 			{ role: "user", text: "fix the thing" },
 			{ role: "assistant", text: "done" },
 		],
+		crashReports: [],
 		...overrides,
 	};
 }
@@ -140,5 +142,81 @@ describe("buildFallbackIssue", () => {
 	it("omits the recent-activity section when entries are empty", () => {
 		const r = buildFallbackIssue(makeCtx({ recentEntries: [] }), "");
 		expect(r.body).not.toContain("## Recent session activity");
+	});
+});
+
+function makeCrashReport(
+	over: Partial<CrashReportSummary> = {},
+): CrashReportSummary {
+	return {
+		schemaVersion: 1,
+		timestamp: "2026-05-16T17:30:00.000Z",
+		origin: "uncaughtException",
+		error: {
+			name: "TypeError",
+			message: "undefined is not a function",
+			stack: "TypeError: undefined is not a function\n    at run (/x.js:1:1)",
+		},
+		state: {
+			mode: "auto",
+			stage: "executing",
+			branch: "feat/x",
+			planSlug: "p",
+			activePhaseId: "ph",
+		},
+		session: { id: "sess-1", file: "~/.pi/agent/sess-1.jsonl" },
+		recentEntries: [{ role: "user", text: "do thing" }],
+		redactionHits: [],
+		sourcePath: "/tmp/2026-05-16T17-30-00-sess-1.json",
+		...over,
+	};
+}
+
+describe("crash-report rendering", () => {
+	it("buildPolishTask omits the section when no reports", () => {
+		const t = buildPolishTask(makeCtx({ crashReports: [] }));
+		expect(t).not.toContain("## Crash reports");
+	});
+
+	it("buildPolishTask includes a Crash reports section with verbatim instructions", () => {
+		const t = buildPolishTask(makeCtx({ crashReports: [makeCrashReport()] }));
+		expect(t).toContain("## Crash reports");
+		expect(t).toContain("verbatim");
+		expect(t).toContain("`TypeError`");
+		expect(t).toContain("undefined is not a function");
+		expect(t).toContain("`feat/x`");
+		expect(t).toContain("`p`");
+		expect(t).toContain("`ph`");
+	});
+
+	it("buildFallbackIssue includes the section when reports exist", () => {
+		const r = buildFallbackIssue(
+			makeCtx({ crashReports: [makeCrashReport()] }),
+			"",
+		);
+		expect(r.body).toContain("## Crash reports");
+		expect(r.body).toContain("undefined is not a function");
+		expect(r.body).toContain("<details><summary>Stack</summary>");
+	});
+
+	it("buildFallbackIssue surfaces redactionHits when non-empty", () => {
+		const r = buildFallbackIssue(
+			makeCtx({
+				crashReports: [makeCrashReport({ redactionHits: ["secret-token"] })],
+			}),
+			"",
+		);
+		expect(r.body).toContain("Redaction hits");
+		expect(r.body).toContain("`secret-token`");
+	});
+
+	it("separates multiple reports with a horizontal rule", () => {
+		const r = buildFallbackIssue(
+			makeCtx({
+				crashReports: [makeCrashReport(), makeCrashReport()],
+			}),
+			"",
+		);
+		expect((r.body.match(/\n---\n/g) ?? []).length).toBeGreaterThanOrEqual(1);
 	});
 });

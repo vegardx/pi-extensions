@@ -12,6 +12,11 @@
 
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import {
+	type CrashReportSummary,
+	defaultCrashReportDir,
+	loadCrashReportsForSession,
+} from "./crash-reports.js";
 
 // ---------------------------------------------------------------------------
 // Remote URL parsing
@@ -189,6 +194,12 @@ export interface DerpContext {
 	piVersion: string | null;
 	/** Tail of the session conversation, summarised + truncated. */
 	recentEntries: RecentEntry[];
+	/**
+	 * Crash reports tagged with this session id, newest first. Empty
+	 * for sessions that didn't crash. Already redacted at write time;
+	 * we render them verbatim into the issue body.
+	 */
+	crashReports: CrashReportSummary[];
 }
 
 export interface GatherContextInput {
@@ -200,6 +211,11 @@ export interface GatherContextInput {
 	recentEntryCount: number;
 	/** Where to start crawling for pi's package.json. Default: `cwd`. */
 	piVersionStartPath?: string;
+	/**
+	 * Where to look for crash-report files. Default: the same path
+	 * `packages/modes/crash-report.ts` writes to. Tests override.
+	 */
+	crashReportsDir?: string;
 }
 
 /**
@@ -229,6 +245,11 @@ export function gatherDerpContext(input: GatherContextInput): GatherResult {
 
 	const piVersion = readPiVersion(input.piVersionStartPath ?? input.cwd);
 
+	const crashReports = loadCrashReportsForSession(
+		input.sessionId,
+		input.crashReportsDir ?? defaultCrashReportDir(),
+	);
+
 	const ctx: DerpContext = {
 		userText,
 		date: new Date().toISOString().slice(0, 10),
@@ -236,6 +257,7 @@ export function gatherDerpContext(input: GatherContextInput): GatherResult {
 		sessionName: input.sessionName ?? null,
 		piVersion,
 		recentEntries: summariseEntries(input.entries, input.recentEntryCount),
+		crashReports,
 	};
 	return { ok: true, ctx };
 }
