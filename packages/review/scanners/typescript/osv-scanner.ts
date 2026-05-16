@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -160,6 +162,27 @@ export function parseOsvScannerOutput(raw: string): RawFinding[] {
  * (or instead of) `npm-audit` based on lockfile presence + binary
  * availability.
  */
+/**
+ * Auto-detect: enable when ANY recognised lockfile / manifest is
+ * present. osv-scanner covers the OSV ecosystem broadly (npm, Go,
+ * Python, Rust, Maven, etc.) so we don't restrict to one ecosystem.
+ */
+function detectOsvScanner(cwd: string): boolean {
+	const lockfiles = [
+		"package-lock.json",
+		"yarn.lock",
+		"pnpm-lock.yaml",
+		"go.mod",
+		"go.sum",
+		"Cargo.lock",
+		"poetry.lock",
+		"requirements.txt",
+		"Pipfile.lock",
+		"pom.xml",
+	];
+	return lockfiles.some((n) => existsSync(join(cwd, n)));
+}
+
 export const osvScannerSpec: ScannerSpec = {
 	id: "osv-scanner",
 	// Spec covers only the npm/yarn ecosystem until #166c teaches
@@ -172,5 +195,6 @@ export const osvScannerSpec: ScannerSpec = {
 	budgetMs: 30_000,
 	binary: "osv-scanner",
 	buildArgs: () => ["--format", "json", "--lockfile", "package-lock.json"],
+	detectAuto: detectOsvScanner,
 	parse: parseOsvScannerOutput,
 };

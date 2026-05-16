@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -42,6 +44,23 @@ export function parseEslintOutput(raw: string): RawFinding[] {
 	return findings;
 }
 
+/** Detect ESLint flat-config or legacy `.eslintrc.*`. */
+function detectEslint(cwd: string): boolean {
+	const names = [
+		"eslint.config.js",
+		"eslint.config.mjs",
+		"eslint.config.cjs",
+		"eslint.config.ts",
+		".eslintrc.js",
+		".eslintrc.cjs",
+		".eslintrc.json",
+		".eslintrc.yaml",
+		".eslintrc.yml",
+		".eslintrc",
+	];
+	return names.some((n) => existsSync(join(cwd, n)));
+}
+
 export const eslintSpec: ScannerSpec = {
 	id: "eslint",
 	languages: ["typescript", "javascript"],
@@ -50,5 +69,6 @@ export const eslintSpec: ScannerSpec = {
 	budgetMs: 30_000,
 	binary: "eslint",
 	buildArgs: () => ["--format", "json", "."],
+	detectAuto: detectEslint,
 	parse: parseEslintOutput,
 };

@@ -70,6 +70,7 @@ import { type LaneId, type LaneSpec, resolveAllLanes } from "./lanes.js";
 import { reviewTimeoutMs, runReviewer } from "./reviewer-client.js";
 import {
 	runStaticAnalysis,
+	runStaticAnalysisFromSettings,
 	type StaticAnalysisConfig,
 } from "./static-checker.js";
 
@@ -1200,10 +1201,16 @@ export async function runAutoReview(
 	// ---- Phase 0: Static analysis ---------------------------------------
 	// Run before spawning AI agents so findings can be injected as
 	// pre-computed evidence into each reviewer's task payload.
-	const staticFindings = await runStaticAnalysis(
-		ctx.cwd,
-		opts.staticAnalysisConfig ?? readStaticAnalysisConfig(ctx.cwd),
-	);
+	// Settings-aware: prefers new `extensionConfig.review.scanners`
+	// schema (kebab-case ids, `enable: "auto"`); falls back to legacy
+	// `extensionConfig.review.staticAnalysis` when absent. Explicit
+	// `opts.staticAnalysisConfig` overrides both for tests.
+	const staticFindings = opts.staticAnalysisConfig
+		? await runStaticAnalysis(ctx.cwd, opts.staticAnalysisConfig)
+		: await runStaticAnalysisFromSettings(
+				ctx.cwd,
+				readRelevantSettings(ctx.cwd),
+			);
 	const staticToolsRan = staticFindings.toolResults.filter(
 		(r) => r.available && r.enabled,
 	).length;

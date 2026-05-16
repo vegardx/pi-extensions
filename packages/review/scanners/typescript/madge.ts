@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -63,5 +65,6 @@ export const madgeSpec: ScannerSpec = {
 	budgetMs: 30_000,
 	binary: "madge",
 	buildArgs: () => ["--circular", "--json", "."],
+	detectAuto: (cwd) => existsSync(join(cwd, "node_modules", ".bin", "madge")),
 	parse: parseMadgeOutput,
 };
