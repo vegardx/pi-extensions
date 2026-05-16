@@ -32,6 +32,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { truncateToWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
+import { setActiveMode } from "@vegardx/pi-extensions-shared/active-mode.js";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
@@ -587,6 +588,7 @@ export default function (pi: ExtensionAPI) {
 	function persist(): void {
 		if (!modeState) return;
 		pi.appendEntry(STATE_ENTRY, modeState satisfies ModeState);
+		setActiveMode(modeState.mode);
 	}
 
 	/**
@@ -628,6 +630,7 @@ export default function (pi: ExtensionAPI) {
 			latest.mode = "hack";
 		}
 		modeState = latest ?? null;
+		setActiveMode(modeState?.mode ?? null);
 	}
 
 	/**
@@ -3220,6 +3223,7 @@ export default function (pi: ExtensionAPI) {
 			pi.setActiveTools(tools),
 		);
 		sm.appendCustomEntry(STATE_ENTRY, modeState satisfies ModeState);
+		setActiveMode(modeState.mode);
 		updateWidget(ctx);
 
 		const tasks = activeTasks(plan);
