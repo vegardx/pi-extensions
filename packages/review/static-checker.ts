@@ -23,8 +23,11 @@ import type { ScannerOverrides, ScannerSpec } from "./scanners/types.js";
 
 export { parseBiomeOutput } from "./scanners/typescript/biome.js";
 export { parseEslintOutput } from "./scanners/typescript/eslint.js";
+export { parseGitleaksOutput } from "./scanners/typescript/gitleaks.js";
 export { parseKnipOutput } from "./scanners/typescript/knip.js";
+export { parseMadgeOutput } from "./scanners/typescript/madge.js";
 export { parseNpmAuditOutput } from "./scanners/typescript/npm-audit.js";
+export { parseOsvScannerOutput } from "./scanners/typescript/osv-scanner.js";
 export { parseSemgrepOutput } from "./scanners/typescript/semgrep.js";
 export { parseTscOutput } from "./scanners/typescript/tsc.js";
 
@@ -42,15 +45,20 @@ export function probeTool(name: string, cwd: string): string | null {
 // ---- Legacy types (preserved for auto-review.ts + tests) ----------------
 
 /**
- * Legacy tool-name enum. The kebab-case `npm-audit` from
- * `ScannerSpec.id` is still spelled `npmAudit` here for back-compat.
+ * Legacy tool-name enum. The kebab-case `npm-audit` / `osv-scanner`
+ * from `ScannerSpec.id` are spelled `npmAudit` / `osvScanner` here
+ * for back-compat with `StaticAnalysisConfig` (camelCase, matches
+ * existing convention).
  */
 export type StaticToolName =
 	| "tsc"
 	| "biome"
 	| "eslint"
 	| "knip"
+	| "madge"
 	| "npmAudit"
+	| "osvScanner"
+	| "gitleaks"
 	| "semgrep";
 
 export type StaticToolLane = Extract<
@@ -68,7 +76,10 @@ export interface StaticAnalysisConfig {
 	biome?: Partial<StaticToolConfig>;
 	eslint?: Partial<StaticToolConfig>;
 	knip?: Partial<StaticToolConfig>;
+	madge?: Partial<StaticToolConfig>;
 	npmAudit?: Partial<StaticToolConfig>;
+	osvScanner?: Partial<StaticToolConfig>;
+	gitleaks?: Partial<StaticToolConfig>;
 	semgrep?: Partial<StaticToolConfig>;
 }
 
@@ -91,14 +102,17 @@ export interface StaticAnalysisResult {
 /**
  * Map `ScannerSpec.id` (kebab-case, public) ↔ legacy
  * `StaticToolName` (camelCase) used by `StaticAnalysisConfig`. Only
- * the npm-audit case actually differs.
+ * the multi-word ids (`npm-audit`, `osv-scanner`) actually differ.
  */
 const SPEC_ID_TO_LEGACY: Record<string, StaticToolName> = {
 	tsc: "tsc",
 	biome: "biome",
 	eslint: "eslint",
 	knip: "knip",
+	madge: "madge",
 	"npm-audit": "npmAudit",
+	"osv-scanner": "osvScanner",
+	gitleaks: "gitleaks",
 	semgrep: "semgrep",
 };
 
