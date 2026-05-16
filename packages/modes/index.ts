@@ -37,6 +37,7 @@ import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metada
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { classifyBashCommand } from "./bash-classifier.js";
+import { installCrashHandler, type SessionAccessor } from "./crash-report.js";
 import { composeFooterLine, type FooterRightCandidate } from "./footer.js";
 import {
 	checkoutBranch,
@@ -439,6 +440,11 @@ export default function (pi: ExtensionAPI) {
 
 	let modeState: ModeState | null = null;
 
+	// Latest SessionManager seen by /implement. Captured here so the
+	// process-level crash handler can pull recent session entries
+	// without needing a per-command `ctx`. Reset on session_shutdown.
+	let crashSessionAccessor: SessionAccessor | null = null;
+
 	// Stored TUI instance from the footer factory, used to trigger re-renders
 	// when the mode changes without reinstalling the footer.
 	let footerTui: { requestRender(): void } | null = null;
@@ -448,6 +454,25 @@ export default function (pi: ExtensionAPI) {
 	// on /implement, or on session shutdown.
 	let delegateAgents: DelegateAgents | null = null;
 	let exploreMailbox: ExploreMailbox | null = null;
+
+	// Install the process-level crash handler once. The handler is a
+	// no-op outside `executing` stage, so plan/ask/hack turns aren't
+	// instrumented. See `crash-report.ts` for the safety contract.
+	installCrashHandler({
+		getModeSnapshot: () => ({
+			mode: modeState?.mode ?? null,
+			stage: modeState?.stage ?? null,
+			branch: modeState?.branch ?? null,
+			planSlug: modeState?.currentPlanSlug ?? null,
+			activePhaseId:
+				activePhase(
+					modeState?.currentPlanSlug
+						? loadPlan(modeState.currentPlanSlug)
+						: null,
+				)?.id ?? null,
+		}),
+		getSessionAccessor: () => crashSessionAccessor,
+	});
 
 	function ensureDelegateAgents(ctx: ExtensionContext): DelegateAgents {
 		if (!delegateAgents) {
@@ -3312,6 +3337,14 @@ export default function (pi: ExtensionAPI) {
 		// pattern used elsewhere in this file.
 		const sm = ctx.sessionManager as unknown as SessionManager;
 		sm.appendSessionInfo(branch);
+		// Capture the SessionManager-like surface for the process-level
+		// crash handler. The handler only fires when stage==="executing",
+		// so refreshing here is sufficient.
+		crashSessionAccessor = {
+			getSessionId: () => sm.getSessionId(),
+			getSessionFile: () => sm.getSessionFile(),
+			getEntries: () => sm.getEntries(),
+		};
 		if (modeState.mode === "plan") {
 			clearPlanTurnSnapshot();
 			disposeDelegateAgents(ctx);
@@ -4818,6 +4851,7 @@ export default function (pi: ExtensionAPI) {
 		// session switches (/new, /resume, /fork).
 		if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 		footerTui = null;
+		crashSessionAccessor = null;
 		disposeDelegateAgents(ctx);
 	});
 
