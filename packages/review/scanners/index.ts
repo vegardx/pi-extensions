@@ -7,8 +7,11 @@
 import type { ScannerSpec } from "./types.js";
 import { biomeSpec } from "./typescript/biome.js";
 import { eslintSpec } from "./typescript/eslint.js";
+import { gitleaksSpec } from "./typescript/gitleaks.js";
 import { knipSpec } from "./typescript/knip.js";
+import { madgeSpec } from "./typescript/madge.js";
 import { npmAuditSpec } from "./typescript/npm-audit.js";
+import { osvScannerSpec } from "./typescript/osv-scanner.js";
 import { semgrepSpec } from "./typescript/semgrep.js";
 import { tscSpec } from "./typescript/tsc.js";
 
@@ -21,7 +24,10 @@ export const BUILTIN_SCANNERS: readonly ScannerSpec[] = [
 	biomeSpec,
 	eslintSpec,
 	knipSpec,
+	madgeSpec,
 	npmAuditSpec,
+	osvScannerSpec,
+	gitleaksSpec,
 	semgrepSpec,
 ];
 
@@ -43,7 +49,13 @@ export type {
 
 export { biomeSpec, parseBiomeOutput } from "./typescript/biome.js";
 export { eslintSpec, parseEslintOutput } from "./typescript/eslint.js";
+export { gitleaksSpec, parseGitleaksOutput } from "./typescript/gitleaks.js";
 export { knipSpec, parseKnipOutput } from "./typescript/knip.js";
+export { madgeSpec, parseMadgeOutput } from "./typescript/madge.js";
 export { npmAuditSpec, parseNpmAuditOutput } from "./typescript/npm-audit.js";
+export {
+	osvScannerSpec,
+	parseOsvScannerOutput,
+} from "./typescript/osv-scanner.js";
 export { parseSemgrepOutput, semgrepSpec } from "./typescript/semgrep.js";
 export { parseTscOutput, tscSpec } from "./typescript/tsc.js";
