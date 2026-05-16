@@ -131,4 +131,66 @@ fork for the Enter-accept-and-submit semantics used here.
 - `index.ts` — extension factory (flags, commands, event wiring)
 - `ghost-editor.ts` — `CustomEditor` subclass that paints the dim suffix
 - `predictor.ts` — model call, message trimming, `AbortController` plumbing
+- `sentinel.ts` — #146 spike: parser + system-prompt addendum for the
+  inline-suggestion sentinel protocol
+- `ab-telemetry.ts` — #146 spike: append-only JSONL writer for the A/B
+  comparison between inline and predictor paths
 - `__tests__/predictor.test.ts` — unit tests for the pure helpers
+- `__tests__/sentinel.test.ts` — sentinel parser tests
+- `__tests__/ab-telemetry.test.ts` — telemetry writer tests
+
+## #146 spike: inline sentinel protocol (opt-in)
+
+A second suggestion path is wired in behind a flag. Instead of running
+a cheap-model `complete()` call after every `agent_end`, the main
+agent itself emits a sentinel-wrapped guess of the developer's likely
+next message at the very end of its reply. The extension parses that
+block and surfaces it as ghost text — saving the second LLM
+round-trip and inheriting the frontier model's full-context view.
+
+**Status: spike, not default.** The cheap-model predictor is still
+the default and only path. The inline path opts in via settings and
+falls back to the predictor on miss.
+
+### Enabling
+
+```jsonc
+{
+  "extensionConfig": {
+    "promptSuggestion": {
+      "inline": true,             // try sentinel parse first
+      "abLog": true,              // append A/B samples to ~/.pi/agent/prompt-suggestion-ab.log
+      "abLogPath": "..."          // optional override
+    }
+  }
+}
+```
+
+Then append the addendum exported as
+`INLINE_SUGGESTION_SYSTEM_ADDENDUM` to the main agent's system prompt
+(typically your `AGENTS.md`). The addendum tells the agent how to
+emit `<<<NEXT_PROMPT>>>...<<<END>>>` and when to omit it. Without the
+addendum, the inline path will always miss and fall through to the
+predictor.
+
+### A/B comparison
+
+When `abLog` is on, every suggestion attempt appends one JSONL record
+to the log:
+
+```
+{"at":1234,"source":"inline","suggestion":"open the PR","latencyMs":0}
+{"at":2345,"source":"predictor","suggestion":null,"latencyMs":312,"model":"openai/gpt-4o-mini","notes":"no-actionable-suggestion"}
+```
+
+Four `source` values are emitted:
+
+| source | meaning |
+|---|---|
+| `inline` | sentinel parsed, predictor skipped |
+| `predictor` | inline disabled, predictor ran |
+| `inline-fallback-predictor` | sentinel missed, predictor ran |
+
+`jq` is enough to compute hit rate, mean predictor latency saved, and
+delta in suggestion content. Tradeoffs to evaluate during the spike
+are captured on issue #146.

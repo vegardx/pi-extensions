@@ -7,9 +7,16 @@ import type {
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import {
+	getExtensionConfigBoolean,
+	getExtensionConfigString,
+	readRelevantSettings,
+} from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { appendAbSample, DEFAULT_AB_LOG_PATH } from "./ab-telemetry.js";
 import { GhostEditor } from "./ghost-editor.js";
 import { Predictor, parseModelSpec } from "./predictor.js";
+import { tryParseInlineSuggestion } from "./sentinel.js";
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "prompt-suggestion.json");
 
@@ -104,6 +111,8 @@ export default function (pi: ExtensionAPI): void {
 	let editor: GhostEditor | undefined;
 	let predictor: Predictor | undefined;
 	let enabled = true;
+	let inlineMode = false;
+	let abLogPath: string | null = null;
 	// True only when the most recent user action was a direct editor submission
 	// (i.e. the `input` event fired). Extension-internal agent calls — e.g.
 	// those driven by /commit or /review — bypass `input`, so this stays false
@@ -160,6 +169,8 @@ export default function (pi: ExtensionAPI): void {
 		handler: async (_args, ctx) => {
 			const lines: string[] = [];
 			lines.push(`enabled: ${enabled}`);
+			lines.push(`inline mode (#146 spike): ${inlineMode}`);
+			lines.push(`A/B log: ${abLogPath ?? "off"}`);
 			lines.push(`pending real input: ${pendingRealInput}`);
 			lines.push(`editor installed: ${editor ? "yes" : "no"}`);
 			lines.push(`predictor: ${predictor ? "yes" : "no"}`);
@@ -226,6 +237,31 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event, ctx) => {
 		pendingRealInput = false;
 		const persisted = loadPersistedConfig();
+
+		// #146 spike: read inline-mode + ab-log flags. Both default off; the
+		// inline path is opt-in until the A/B finishes.
+		const settings = readRelevantSettings(ctx.cwd);
+		inlineMode =
+			getExtensionConfigBoolean(
+				settings,
+				"promptSuggestion",
+				"inline",
+				false,
+			) ?? false;
+		const abLogEnabled =
+			getExtensionConfigBoolean(settings, "promptSuggestion", "abLog", false) ??
+			false;
+		const abLogPathSetting = getExtensionConfigString(
+			settings,
+			"promptSuggestion",
+			"abLogPath",
+			"",
+		);
+		abLogPath = abLogEnabled
+			? abLogPathSetting && abLogPathSetting.length > 0
+				? abLogPathSetting
+				: DEFAULT_AB_LOG_PATH
+			: null;
 
 		// Enabled precedence: persisted > flag > default(true).
 		// Flag is checked via user-explicit presence; a bare default(true) shouldn't
@@ -341,7 +377,56 @@ export default function (pi: ExtensionAPI): void {
 		const snapEditor = editor;
 		const snapPredictor = predictor;
 
+		const predictStart = Date.now();
+
+		// #146 spike: try the inline sentinel-protocol first. If the main
+		// agent emitted a guess, surface it and skip the cheap-model call
+		// entirely. Falls back to the predictor on miss.
+		if (inlineMode) {
+			const inline = tryParseInlineSuggestion(
+				event.messages as readonly { role: string; content: unknown }[],
+			);
+			if (inline) {
+				snapPredictor.lastStatus = "success (inline)";
+				snapPredictor.lastAt = Date.now();
+				if (abLogPath) {
+					appendAbSample(abLogPath, {
+						at: Date.now(),
+						source: "inline",
+						suggestion: inline,
+						latencyMs: Date.now() - predictStart,
+						notes: "main-agent sentinel",
+					});
+				}
+				if (editor !== snapEditor || predictor !== snapPredictor) return;
+				if (
+					!ctx.isIdle() ||
+					ctx.hasPendingMessages() ||
+					ctx.ui.getEditorText() !== ""
+				) {
+					snapEditor.clearGhost();
+					return;
+				}
+				snapEditor.setGhost(inline);
+				return;
+			}
+			// Inline path missed — fall through to predictor, but tag the
+			// telemetry source as `inline-fallback-predictor` for the A/B.
+		}
+
 		const suggestion = await snapPredictor.predict(event.messages);
+		const predictorLatencyMs = Date.now() - predictStart;
+		if (abLogPath) {
+			appendAbSample(abLogPath, {
+				at: Date.now(),
+				source: inlineMode ? "inline-fallback-predictor" : "predictor",
+				suggestion: suggestion ?? null,
+				latencyMs: predictorLatencyMs,
+				model: snapPredictor.modelSpec,
+				stopReason: snapPredictor.lastStopReason ?? undefined,
+				notes: snapPredictor.lastStatus,
+			});
+		}
 		if (!suggestion) return;
 		// Session changed during prediction — bail.
 		if (editor !== snapEditor || predictor !== snapPredictor) return;
