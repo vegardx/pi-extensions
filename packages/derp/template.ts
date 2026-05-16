@@ -16,6 +16,7 @@
  */
 
 import type { DerpContext, RecentEntry } from "./context.js";
+import type { CrashReportSummary } from "./crash-reports.js";
 
 export interface IssueDraft {
 	title: string;
@@ -49,6 +50,54 @@ function renderRecentEntries(entries: readonly RecentEntry[]): string {
 		blocks.push(`**${e.role}:**\n\n\`\`\`\n${e.text}\n\`\`\``);
 	}
 	return blocks.join("\n\n");
+}
+
+/**
+ * Render the crash-report tail. Each report is already redacted at
+ * write time, so we copy verbatim. We render the high-signal fields
+ * (origin, error, state) inline and the recent-entry tail inside a
+ * fenced block, plus the source path so the user can recover the
+ * raw JSON. Returns null when there are no reports.
+ */
+function renderCrashReports(
+	reports: readonly CrashReportSummary[],
+): string | null {
+	if (reports.length === 0) return null;
+	const blocks: string[] = [];
+	for (const r of reports) {
+		const rows: string[] = [];
+		rows.push(`- **When:** ${r.timestamp}`);
+		rows.push(`- **Origin:** \`${r.origin}\``);
+		rows.push(
+			`- **Error:** ${r.error.name ? `\`${r.error.name}\` — ` : ""}${r.error.message}`,
+		);
+		if (r.state.mode || r.state.stage) {
+			rows.push(
+				`- **Mode/stage:** ${r.state.mode ?? "?"} / ${r.state.stage ?? "?"}`,
+			);
+		}
+		if (r.state.branch) rows.push(`- **Branch:** \`${r.state.branch}\``);
+		if (r.state.planSlug) {
+			rows.push(
+				`- **Plan / phase:** \`${r.state.planSlug}\`${
+					r.state.activePhaseId ? ` / \`${r.state.activePhaseId}\`` : ""
+				}`,
+			);
+		}
+		if (r.redactionHits.length > 0) {
+			rows.push(
+				`- **Redaction hits:** ${r.redactionHits.map((k) => `\`${k}\``).join(", ")}`,
+			);
+		}
+		rows.push(`- **Source:** \`${r.sourcePath}\``);
+
+		let block = rows.join("\n");
+		if (r.error.stack) {
+			block += `\n\n<details><summary>Stack</summary>\n\n\`\`\`\n${r.error.stack}\n\`\`\`\n</details>`;
+		}
+		blocks.push(block);
+	}
+	return blocks.join("\n\n---\n\n");
 }
 
 /**
@@ -99,6 +148,17 @@ export function buildPolishTask(ctx: DerpContext): string {
 	lines.push("");
 	lines.push(renderRecentEntries(ctx.recentEntries));
 	lines.push("");
+	const crashBlock = renderCrashReports(ctx.crashReports);
+	if (crashBlock) {
+		lines.push("## Crash reports");
+		lines.push("");
+		lines.push(
+			"The session emitted one or more uncaught errors during /implement. Each block below is captured verbatim from disk and is already redacted. Copy them into the issue body verbatim — do not paraphrase or omit fields.",
+		);
+		lines.push("");
+		lines.push(crashBlock);
+		lines.push("");
+	}
 	lines.push("## Session reference");
 	lines.push("");
 	lines.push(renderSessionRef(ctx));
@@ -147,6 +207,13 @@ export function buildFallbackIssue(
 		sections.push("## Recent session activity");
 		sections.push("");
 		sections.push(renderRecentEntries(ctx.recentEntries));
+		sections.push("");
+	}
+	const crashBlock = renderCrashReports(ctx.crashReports);
+	if (crashBlock) {
+		sections.push("## Crash reports");
+		sections.push("");
+		sections.push(crashBlock);
 		sections.push("");
 	}
 	sections.push("## Session reference");

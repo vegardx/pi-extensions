@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -222,5 +222,45 @@ describe("gatherDerpContext", () => {
 		expect(r.ctx.sessionId).toBe("abcdef1234");
 		expect(r.ctx.sessionName).toBe("test session");
 		expect(r.ctx.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+		expect(r.ctx.crashReports).toEqual([]);
+	});
+
+	it("attaches crash reports tagged with the session id", () => {
+		const crashDir = mkdtempSync(join(tmpdir(), "derp-crash-ctx-"));
+		try {
+			writeFileSync(
+				join(crashDir, "2026-05-16T17-30-00-sess-9.json"),
+				JSON.stringify({
+					schemaVersion: 1,
+					timestamp: "2026-05-16T17:30:00.000Z",
+					origin: "uncaughtException",
+					error: { name: "Error", message: "boom", stack: null },
+					state: {
+						mode: "auto",
+						stage: "executing",
+						branch: null,
+						planSlug: null,
+						activePhaseId: null,
+					},
+					session: { id: "sess-9", file: null },
+					recentEntries: [],
+					redactionHits: [],
+				}),
+			);
+			const r = gatherDerpContext({
+				cwd: repo,
+				userText: "thing crashed",
+				sessionId: "sess-9",
+				entries: [],
+				recentEntryCount: 0,
+				crashReportsDir: crashDir,
+			});
+			expect(r.ok).toBe(true);
+			if (!r.ok) return;
+			expect(r.ctx.crashReports).toHaveLength(1);
+			expect(r.ctx.crashReports[0]?.error.message).toBe("boom");
+		} finally {
+			rmSync(crashDir, { recursive: true, force: true });
+		}
 	});
 });

@@ -109,6 +109,22 @@ Recover by hand:
 gh issue create -R github.com/vegardx/pi-extensions --body-file <pending-file>
 ```
 
+## Crash reports
+
+When `/implement` crashes mid-phase, the `modes` extension writes a
+redacted JSON snapshot to `~/.pi/agent/modes/crash-reports/`. The
+snapshot includes the error + stack, the active mode/branch/phase,
+and the last few session entries.
+
+The next `/derp` invocation in the same session picks up matching
+crash reports automatically and attaches them to the issue body
+under a `## Crash reports` heading. Reports are matched by session
+id (filename + payload), so cross-session leakage is impossible.
+
+The data is already redacted at write time; `/derp` re-scans it
+defensively before filing so any redaction regression still trips
+the fail-closed check.
+
 ## Configuration
 
 Under `extensionConfig.derp` in `~/.pi/agent/settings.json` (or per
@@ -121,11 +137,11 @@ project):
 | `recentEntries` | `number` | `6` | How many tail entries from the current session to feed into the polish subagent. |
 | `titlePrefix` | `string` | `"[derp] "` | Prefix prepended to the title. Set to `""` to disable. |
 
-The polish step **uses the active session model** (`ctx.model`) — the
-same provider/id you're chatting with. There's no separate
-fast/normal/heavy tier here; `/derp` deliberately costs you the
-latency and tokens of your current model to keep the report shape
-consistent with everything else you produce in the session.
+The polish step uses a **fast tier** model (`tier: "fast"` in
+`resolveModel`) — pick the cheap/quick model in your
+`backgroundModels.primary.fast` slot, or override via
+`extensionConfig.derp.model`. Falls back to the active session
+model when no fast tier is configured.
 
 ## Future work
 

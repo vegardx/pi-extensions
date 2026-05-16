@@ -321,6 +321,22 @@ export function scanContextForSecrets(ctx: DerpContext): ContextScanResult {
 			role: e.role,
 			text: scrub(e.text),
 		})),
+		// Crash reports are already redacted at write time; running the
+		// redactor again is idempotent. We re-scan defensively so any
+		// regression in the upstream redactor still trips the
+		// fail-closed check rather than leaking via the issue body.
+		crashReports: ctx.crashReports.map((r) => ({
+			...r,
+			error: {
+				name: r.error.name,
+				message: scrub(r.error.message),
+				stack: r.error.stack === null ? null : scrub(r.error.stack),
+			},
+			recentEntries: r.recentEntries.map((e) => ({
+				role: e.role,
+				text: scrub(e.text),
+			})),
+		})),
 	};
 	return { cleanedCtx: cleaned, hits };
 }

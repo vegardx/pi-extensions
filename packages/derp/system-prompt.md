@@ -31,10 +31,16 @@ Markdown. Use these sections, in order:
    `_(no session activity captured)_`.
 3. **Observed behaviour** — what the user reported went wrong.
    Quote their words where it helps.
-4. **Environment** — copy the Environment block from the task
+4. **Crash reports** — if and only if the task contains a
+   "Crash reports" block, copy it into the body verbatim under a
+   `## Crash reports` heading. Do not paraphrase, summarise, or
+   reorder the rows. The data is already redacted; your job is to
+   surface it intact. Omit this section entirely when the task has
+   no crash reports.
+5. **Environment** — copy the Environment block from the task
    verbatim. Do not invent versions, paths, or branches.
-5. **Session reference** — copy the Session reference block from the
-   task verbatim.
+6. **Session reference** — copy the Session reference block from
+   the task verbatim.
 
 ## Secrets
 
