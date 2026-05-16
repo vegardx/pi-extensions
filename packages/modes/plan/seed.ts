@@ -28,6 +28,7 @@
 
 import type { SessionManager } from "@mariozechner/pi-coding-agent";
 import {
+	effectivePhaseKind,
 	effectiveTaskKind,
 	type Plan,
 	type Phase as PlanPhase,
@@ -81,8 +82,10 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 		const isActive = phase.id === activePhase.id;
 		const pr = phase.prNumber !== undefined ? ` PR #${phase.prNumber}` : "";
 		const marker = isActive ? "     ← THIS PHASE" : "";
+		const kind = effectivePhaseKind(phase);
+		const kindMarker = kind === "regular" ? "" : ` [${kind}]`;
 		lines.push(
-			`- Phase \`${phase.id}\` [${phase.status}]${pr} — ${phase.title}: ${phase.goal}${marker}`,
+			`- Phase \`${phase.id}\`${kindMarker} [${phase.status}]${pr} — ${phase.title}: ${phase.goal}${marker}`,
 		);
 
 		if (phase.status === "shipped" && phase.summary) {
@@ -90,7 +93,23 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 			lines.push(indentLines(phase.summary, 4));
 		}
 
-		if (isActive && phase.tasks.length > 0) {
+		// Surface pre/post tasks even when not active so the agent has
+		// the manual checklist visible without a side-load. Always
+		// rendered as `[!]` (manual) regardless of declared task kind —
+		// pre/post tasks are reviewer-facing, not agent work.
+		if (kind !== "regular" && phase.tasks.length > 0) {
+			lines.push(
+				kind === "pre"
+					? "  Preflight (manual; user ticks before regular phases proceed):"
+					: "  Handover (manual; user completes after last regular phase ships):",
+			);
+			for (const task of phase.tasks) {
+				const box = task.done ? "[x]" : "[!]";
+				lines.push(`    - ${box} ${task.title}`);
+			}
+		}
+
+		if (isActive && kind === "regular" && phase.tasks.length > 0) {
 			// Split by kind so the agent gets a clean signal: deliverables
 			// are its work; question / manual / followUp tasks are
 			// reviewer-facing notes that surface in the PR body and must

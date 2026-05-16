@@ -197,4 +197,58 @@ describe("renderPhaseIssueBody", () => {
 			/ {2}```text\n {2}Multi\n {2}line\n {2}detail\n {2}```/,
 		);
 	});
+
+	it("renders pre-phase as a manual checklist with the pre framing", () => {
+		const body = renderPhaseIssueBody(
+			makePhase({
+				id: "pre",
+				title: "Preflight",
+				kind: "pre",
+				branch: "",
+				tasks: [makeTask({ id: "t1", title: "rename secret" })],
+			}),
+			99,
+		);
+		expect(body).toContain("This is a **pre-phase**");
+		expect(body).toContain("Preflight checklist");
+		expect(body).not.toContain("What this phase ships");
+		expect(body).toContain("[ ] **rename secret**");
+		expect(body).toContain("Tracking: #99");
+	});
+
+	it("renders post-phase as a Handover checklist", () => {
+		const body = renderPhaseIssueBody(
+			makePhase({
+				id: "post",
+				title: "Handover",
+				kind: "post",
+				branch: "",
+				tasks: [makeTask({ id: "t1", title: "deploy", done: true })],
+			}),
+			99,
+		);
+		expect(body).toContain("post-phase");
+		expect(body).toContain("Handover checklist");
+		expect(body).toContain("[x] **deploy**");
+	});
+
+	it("parent issue tags pre/post phases with their kind", () => {
+		const plan = makePlan({
+			phases: [
+				makePhase({ id: "pre", title: "Preflight", kind: "pre", branch: "" }),
+				makePhase({ id: "r", title: "Regular" }),
+				makePhase({
+					id: "post",
+					title: "Handover",
+					kind: "post",
+					branch: "",
+				}),
+			],
+		});
+		const body = renderParentIssueBody(plan);
+		expect(body).toContain("**Preflight** _[pre]_");
+		expect(body).toContain("**Handover** _[post]_");
+		// Regular phase has no kind tag.
+		expect(body).toMatch(/- \[ \] \*\*Regular\*\*\n/);
+	});
 });

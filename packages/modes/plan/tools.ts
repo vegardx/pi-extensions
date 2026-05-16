@@ -21,11 +21,16 @@ import { Type } from "@sinclair/typebox";
 import {
 	canTransition,
 	defaultBranchForPhase,
+	effectivePhaseKind,
 	effectiveTaskKind,
+	findPostPhase,
+	findPrePhase,
 	matchPhaseId,
 	matchTaskId,
+	PHASE_KINDS,
 	PHASE_STATUSES,
 	type Phase,
+	type PhaseKind,
 	type PhaseStatus,
 	type Plan,
 	phaseId,
@@ -93,29 +98,34 @@ function planSummaryMarkdown(plan: Plan): string {
 	if (plan.phases.length === 0) {
 		lines.push("_No phases yet._");
 	} else {
-		for (const phase of plan.phases) {
-			const issueRef = phase.issueNumber ? ` \u2014 #${phase.issueNumber}` : "";
-			const driverRef = phase.driverSessionId
-				? ` \u2014 driver: \`${phase.driverSessionId.slice(0, 8)}\``
-				: "";
-			lines.push(
-				`## ${phase.title} \`${phase.id}\` [${phase.status}]${issueRef}${driverRef}`,
-			);
-			if (phase.dependsOn && phase.dependsOn.length > 0) {
-				lines.push("");
-				lines.push(
-					`depends on: ${phase.dependsOn.map((d) => `\`${d}\``).join(", ")}`,
-				);
-			}
-			if (phase.goal) {
-				lines.push("");
-				lines.push(`> ${phase.goal}`);
-			}
-			if (phase.tasks.length > 0) {
-				lines.push("");
-				renderTaskBlock(lines, phase.tasks);
-			}
+		// Group: pre first (if any), then regular in array order, then
+		// post (if any). Section headers surface the manual-checklist
+		// nature of pre/post so the reviewer can't mistake them for code
+		// work that ships as a PR.
+		const pre = plan.phases.filter((p) => effectivePhaseKind(p) === "pre");
+		const regular = plan.phases.filter(
+			(p) => effectivePhaseKind(p) === "regular",
+		);
+		const post = plan.phases.filter((p) => effectivePhaseKind(p) === "post");
+
+		if (pre.length > 0) {
+			lines.push("## Preflight (manual; complete before regular phases)");
 			lines.push("");
+			for (const phase of pre) renderPhaseBlock(lines, phase);
+		}
+
+		if (regular.length > 0) {
+			if (pre.length > 0) {
+				lines.push("## Phases");
+				lines.push("");
+			}
+			for (const phase of regular) renderPhaseBlock(lines, phase);
+		}
+
+		if (post.length > 0) {
+			lines.push("## Handover (manual; complete after last phase ships)");
+			lines.push("");
+			for (const phase of post) renderPhaseBlock(lines, phase);
 		}
 	}
 	const followUps = plan.followUps ?? [];
@@ -126,6 +136,52 @@ function planSummaryMarkdown(plan: Plan): string {
 		lines.push("");
 	}
 	return lines.join("\n").trimEnd();
+}
+
+function renderPhaseBlock(lines: string[], phase: Phase): void {
+	const issueRef = phase.issueNumber ? ` \u2014 #${phase.issueNumber}` : "";
+	const driverRef = phase.driverSessionId
+		? ` \u2014 driver: \`${phase.driverSessionId.slice(0, 8)}\``
+		: "";
+	const kind = effectivePhaseKind(phase);
+	const kindMarker = kind === "regular" ? "" : ` [${kind}]`;
+	lines.push(
+		`### ${phase.title} \`${phase.id}\`${kindMarker} [${phase.status}]${issueRef}${driverRef}`,
+	);
+	if (phase.dependsOn && phase.dependsOn.length > 0) {
+		lines.push("");
+		lines.push(
+			`depends on: ${phase.dependsOn.map((d) => `\`${d}\``).join(", ")}`,
+		);
+	}
+	if (phase.goal) {
+		lines.push("");
+		lines.push(`> ${phase.goal}`);
+	}
+	if (phase.tasks.length > 0) {
+		lines.push("");
+		// Pre/post tasks render with `[!]` regardless of declared kind —
+		// they're a manual checklist visually even if the agent stamped
+		// them as `deliverable` or `question` for tracking purposes.
+		if (kind === "regular") {
+			renderTaskBlock(lines, phase.tasks);
+		} else {
+			renderManualTaskBlock(lines, phase.tasks);
+		}
+	}
+	lines.push("");
+}
+
+function renderManualTaskBlock(lines: string[], tasks: Task[]): void {
+	for (const task of tasks) {
+		const box = task.done ? "[x]" : "[!]";
+		lines.push(`- ${box} ${task.title}`);
+		if (task.body.trim().length > 0) {
+			for (const bodyLine of task.body.split("\n")) {
+				lines.push(`  ${bodyLine}`);
+			}
+		}
+	}
 }
 
 function findPhase(plan: Plan, id: string): Phase | undefined {
@@ -321,6 +377,21 @@ export function registerPlanTools(
 			position: Type.Optional(
 				Type.Number({ description: "0-indexed position (for reorder/add)" }),
 			),
+			kind: Type.Optional(
+				Type.Union(
+					PHASE_KINDS.map((k) => Type.Literal(k)),
+					{
+						description:
+							"Phase kind. `regular` (default) is a code unit that ships " +
+							"as one PR. `pre` is a manual preflight checklist (at most " +
+							"one per plan); regular phases are blocked until every pre " +
+							"task is done. `post` is a manual handover checklist (at " +
+							"most one per plan) surfaced after the last regular phase " +
+							"ships. Pre/post phases never claim a feature branch and " +
+							"never run `/ship`.",
+					},
+				),
+			),
 		}),
 
 		async execute(
@@ -379,6 +450,30 @@ export function registerPlanTools(
 							details: { error: "duplicate phase id" },
 						};
 					}
+					const kind: PhaseKind =
+						(params.kind as PhaseKind | undefined) ?? "regular";
+					if (kind === "pre" && findPrePhase(plan)) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: "Plan already has a `pre` phase \u2014 at most one is allowed",
+								},
+							],
+							details: { error: "duplicate pre phase" },
+						};
+					}
+					if (kind === "post" && findPostPhase(plan)) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: "Plan already has a `post` phase \u2014 at most one is allowed",
+								},
+							],
+							details: { error: "duplicate post phase" },
+						};
+					}
 					const dependsOn = canonicaliseDependsOn(
 						plan,
 						// Ergonomic default: chain new phases off the last existing
@@ -386,10 +481,15 @@ export function registerPlanTools(
 						// fork, they pass `dependsOn` explicitly. Empty plans get
 						// `[]` (root). An explicit `dependsOn: []` overrides the
 						// default (allows declaring a sibling root in a forest).
+						// Pre phases default to a chain root: nothing depends on them
+						// via dependsOn, the auto-mode gate enforces preflight
+						// completion separately.
 						params.dependsOn ??
-							(plan.phases.length > 0
-								? [plan.phases[plan.phases.length - 1].id]
-								: []),
+							(kind === "pre"
+								? []
+								: plan.phases.length > 0
+									? [plan.phases[plan.phases.length - 1].id]
+									: []),
 					);
 					const depErr = validateDependsOn(plan, id, dependsOn);
 					if (depErr) {
@@ -403,8 +503,11 @@ export function registerPlanTools(
 						title: params.title,
 						goal: params.goal ?? "",
 						status: "planned",
-						branch: defaultBranchForPhase({ id }),
+						// Pre/post phases never claim a feature branch — they're
+						// manual checklists, not implementable code work.
+						branch: kind === "regular" ? defaultBranchForPhase({ id }) : "",
 						dependsOn,
+						...(kind === "regular" ? {} : { kind }),
 						tasks: [],
 						createdAt: nowIso(),
 						updatedAt: nowIso(),
@@ -447,6 +550,46 @@ export function registerPlanTools(
 					}
 					if (params.title !== undefined) phase.title = params.title;
 					if (params.goal !== undefined) phase.goal = params.goal;
+					if (params.kind !== undefined) {
+						const nextKind = params.kind as PhaseKind;
+						const currentKind = effectivePhaseKind(phase);
+						if (nextKind !== currentKind) {
+							if (nextKind === "pre" && findPrePhase(plan)) {
+								return {
+									content: [
+										{
+											type: "text",
+											text: "Plan already has a `pre` phase \u2014 at most one is allowed",
+										},
+									],
+									details: { error: "duplicate pre phase" },
+								};
+							}
+							if (nextKind === "post" && findPostPhase(plan)) {
+								return {
+									content: [
+										{
+											type: "text",
+											text: "Plan already has a `post` phase \u2014 at most one is allowed",
+										},
+									],
+									details: { error: "duplicate post phase" },
+								};
+							}
+							if (nextKind === "regular") {
+								delete phase.kind;
+								// Re-issue the default branch — the phase was previously
+								// pre/post and had branch="".
+								if (phase.branch === "") {
+									phase.branch = defaultBranchForPhase({ id: phase.id });
+								}
+							} else {
+								phase.kind = nextKind;
+								// Pre/post phases never claim a branch.
+								phase.branch = "";
+							}
+						}
+					}
 					if (params.dependsOn !== undefined) {
 						const dependsOn = canonicaliseDependsOn(plan, params.dependsOn);
 						const depErr = validateDependsOn(plan, phase.id, dependsOn);
