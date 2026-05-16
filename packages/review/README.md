@@ -159,6 +159,128 @@ model is active when you run `/review`, the command aborts with an error.
 - **NOTE** — informational: scope observations, minor simplifications,
   stale CHANGELOG entries
 
+## Scanners (Phase 0 — deterministic checks)
+
+Before the reviewer fan-out runs, a **scanner registry** runs deterministic
+tools (compilers, linters, secret scanners, vuln databases) and feeds their
+findings to the matching reviewer lane as pre-computed evidence. Scanner
+findings are produced from binaries, not LLMs, so they don't burn tokens
+and they're stable across runs.
+
+Nine scanners ship out of the box. All are stateless: each one probes for
+its binary on PATH (or in `node_modules/.bin/`), spawns it with stdout
+captured, and parses output into the same `RawFinding` shape the LLM
+lanes emit.
+
+### Scanner matrix
+
+| id | Lane | Default | Languages | `detectAuto` trigger | Budget |
+|---|---|---|---|---|---|
+| `tsc` | code-reviewer | on | typescript | `tsconfig.json` | 30s |
+| `biome` | code-reviewer | on | typescript, javascript | `biome.json` / `biome.jsonc` | 15s |
+| `eslint` | code-reviewer | off | typescript, javascript | `eslint.config.{js,mjs,cjs,ts}` or `.eslintrc.*` | 30s |
+| `knip` | code-simplifier | off | typescript, javascript | `knip.json{,c}` / `knip.config.{js,ts}` / `"knip"` in `package.json` | 60s |
+| `madge` | code-simplifier | off | typescript, javascript | `node_modules/.bin/madge` exists | 30s |
+| `npm-audit` | security-analyst | on | typescript, javascript | `package.json` + `package-lock.json` | 20s |
+| `osv-scanner` | security-analyst | off | typescript, javascript, python, go, rust | any lockfile (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.{mod,sum}`, `Cargo.lock`, `poetry.lock`, `requirements.txt`, `Pipfile.lock`, `pom.xml`) | 30s |
+| `gitleaks` | security-analyst | off | any | always (always relevant; binary probe still gates execution) | 60s |
+| `semgrep` | security-analyst | off | typescript, javascript, python, go | `.semgrep.{yml,yaml}` / `semgrep.{yml,yaml}` | 120s |
+
+`Default` is the value of `defaultEnabled` on the spec — what runs when
+no config is set. `enable: "auto"` (default behaviour for unconfigured
+scanners) calls `detectAuto(cwd)` to decide; specs without a detector
+fall back to `defaultEnabled`.
+
+### Configuration
+
+Per-scanner config lives at `extensionConfig.review.scanners.<id>` in
+`settings.json`, keyed by kebab-case spec id:
+
+```jsonc
+{
+  "extensionConfig": {
+    "review": {
+      "scanners": {
+        "tsc":         { "enable": true },
+        "eslint":      { "enable": "auto", "budgetMs": 45000 },
+        "semgrep":     { "enable": true, "args": { "rulesets": ["p/typescript", "p/owasp-top-ten"] } },
+        "gitleaks":    { "enable": true },
+        "osv-scanner": { "enable": "auto" },
+        "npm-audit":   { "enable": false }
+      }
+    }
+  }
+}
+```
+
+- **`enable`** — `true` / `false` / `"auto"`. When `"auto"` (or unset),
+  the scanner's `detectAuto(cwd)` decides; if the spec has no detector,
+  `defaultEnabled` wins.
+- **`budgetMs`** — overrides the spec's per-scan budget. The registry
+  enforces this at the spawn level.
+- **`args.rulesets`** — currently consumed only by `semgrep`. Default
+  ruleset is `["p/javascript"]`.
+
+Invalid entries fail closed (the registry drops them and continues).
+
+The legacy `extensionConfig.review.staticAnalysis` (camelCase ids,
+`{ enabled, timeout }` shape) is still honoured as a fallback — useful
+for existing repos. New code should use the kebab-case `scanners` path;
+when both blocks are present, `scanners` wins per-id.
+
+### Adding a language / scanner
+
+A scanner is a single file exporting a `ScannerSpec`. The registry
+lives at `packages/review/scanners/`; existing TypeScript adapters are
+in `packages/review/scanners/typescript/`. Add a new directory
+(`packages/review/scanners/python/`, `packages/review/scanners/rust/`,
+…) and follow the same shape:
+
+```ts
+import type { ScannerSpec } from "../types.js";
+
+export const ruffSpec: ScannerSpec = {
+	id: "ruff",                   // kebab-case, becomes the config key
+	languages: ["python"],
+	lane: "code-reviewer",        // "code-reviewer" | "security-analyst" | "code-simplifier"
+	defaultEnabled: false,
+	budgetMs: 20_000,
+	binary: "ruff",               // probed on PATH; node_modules/.bin/ also checked
+	buildArgs: () => ["check", "--output-format=json", "."],
+	detectAuto: (cwd) =>
+		existsSync(join(cwd, "ruff.toml")) ||
+		existsSync(join(cwd, "pyproject.toml")),
+	parse: (raw) => {
+		// Parse stdout JSON into RawFinding[]; throw to surface a parser error.
+		return [];
+	},
+};
+```
+
+Register the spec by adding it to `BUILTIN_SCANNERS` in
+`packages/review/scanners/index.ts`. Tests go alongside the adapter
+(e.g. `packages/review/__tests__/scanners/python/ruff.test.ts`); they
+typically cover empty-output, single-finding, multi-finding, malformed
+JSON, and severity mapping.
+
+See `packages/review/scanners/types.ts` for the full `ScannerSpec`
+contract (`buildArgs`, `detectAuto`, `parse`) and `registry.ts` for
+how the registry composes probe → spawn → parse.
+
+### Notes
+
+- **Gitleaks output is sanitised at the adapter level**: the `Secret`
+  and `Match` fields are deliberately dropped before findings reach
+  the orchestrator, so a real token never ends up in a review report
+  or in chat. The shared redactor in `packages/_shared/redact.ts`
+  catches anything that slips through. If you add a scanner that can
+  surface raw credentials, mirror this pattern and cross-reference
+  the redactor's catalogue so the two stay in sync.
+- **Findings reach the orchestrator alongside LLM lanes** — the
+  scanner registry's output is passed in as a pre-formed bundle, so
+  Phase 0 results and Phase 1 reviewer findings are deduped together
+  rather than reported separately.
+
 ## Test
 
 ```bash
@@ -278,6 +400,9 @@ Settings:
         "orchestrator":     { "set": "secondary", "tier": "heavy" },
         "security-analyst": { "set": "secondary", "tier": "heavy" },
         "index":            { "set": "primary",   "tier": "fast"  }
+      },
+      "scanners": {
+        // see "Scanners (Phase 0 — deterministic checks)" above
       }
     }
   }
