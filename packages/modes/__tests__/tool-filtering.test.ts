@@ -20,15 +20,15 @@ const FULL_TOOLS = [
 ];
 
 describe("computeActiveTools — plan mode", () => {
-	it("returns only PLAN_ONLY_TOOLS + plan_* (no write/edit)", () => {
+	it("returns only PLAN_ONLY_TOOLS + phase/task/plan (no write/edit)", () => {
 		const tools = computeActiveTools("plan", FULL_TOOLS);
 		expect(tools).not.toContain("write");
 		expect(tools).not.toContain("edit");
 		expect(tools).toContain("read");
 		expect(tools).toContain("bash");
-		expect(tools).toContain("plan_phase");
-		expect(tools).toContain("plan_task");
-		expect(tools).toContain("plan_view");
+		expect(tools).toContain("phase");
+		expect(tools).toContain("task");
+		expect(tools).toContain("plan");
 	});
 
 	it("contains all PLAN_ONLY_TOOLS entries", () => {
@@ -53,23 +53,23 @@ describe("computeActiveTools — auto/ask/hack mode", () => {
 		}
 	});
 
-	it("always includes plan_* and research even if absent from priorTools", () => {
+	it("always includes phase/task/plan and research even if absent from priorTools", () => {
 		// Simulate priorTools that pre-date plan support.
 		const priorWithout = ["read", "bash", "write", "edit"];
 		const tools = computeActiveTools("ask", priorWithout);
-		expect(tools).toContain("plan_phase");
-		expect(tools).toContain("plan_task");
-		expect(tools).toContain("plan_view");
+		expect(tools).toContain("phase");
+		expect(tools).toContain("task");
+		expect(tools).toContain("plan");
 		expect(tools).toContain("research");
 	});
 
-	it("does not duplicate plan_* when already in priorTools", () => {
-		const priorWith = [...FULL_TOOLS, "plan_phase", "plan_task", "plan_view"];
+	it("does not duplicate phase/task/plan when already in priorTools", () => {
+		const priorWith = [...FULL_TOOLS, "phase", "task", "plan"];
 		const tools = computeActiveTools("auto", priorWith);
 		const count = (name: string) => tools.filter((t) => t === name).length;
-		expect(count("plan_phase")).toBe(1);
-		expect(count("plan_task")).toBe(1);
-		expect(count("plan_view")).toBe(1);
+		expect(count("phase")).toBe(1);
+		expect(count("task")).toBe(1);
+		expect(count("plan")).toBe(1);
 	});
 
 	it("hack mode: same as auto — write/edit present, explore_* absent", () => {

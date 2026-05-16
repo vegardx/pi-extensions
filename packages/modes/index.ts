@@ -204,11 +204,11 @@ export const EXPLORE_TOOLS = [
  * a live pi host.
  */
 export function computeActiveTools(mode: Mode, priorTools: string[]): string[] {
-	const planTools = ["plan_phase", "plan_task", "plan_view"];
+	const planTools = ["phase", "task", "plan"];
 	if (mode === "plan") {
 		return [...PLAN_ONLY_TOOLS, ...planTools];
 	}
-	// Restore prior tools and ensure plan_* + research are included.
+	// Restore prior tools and ensure phase/task/plan + research are included.
 	// The explore_* triad is plan-mode only so it is removed.
 	const alwaysInclude = [
 		...planTools,
@@ -1243,9 +1243,7 @@ export default function (pi: ExtensionAPI) {
 							// Explicit placeholder so the user can distinguish
 							// the active phase's (empty) task list from the
 							// planned phases rendered below it (#188).
-							result.push(
-								`  (no tasks — use plan_task(add) to add a deliverable)`,
-							);
+							result.push(`  (no tasks — use task(add) to add a deliverable)`);
 						} else {
 							for (const task of phase.tasks) {
 								const label = truncateToWidth(task.title, maxLine - 4);
@@ -3046,7 +3044,7 @@ export default function (pi: ExtensionAPI) {
 					notify(
 						ctx,
 						`phase \`${targetPhaseId}\` is not ready: ${reason}. ` +
-							`Edit dependsOn (plan_phase update) to unblock, or wait for the predecessor to ship.`,
+							`Edit dependsOn (phase update) to unblock, or wait for the predecessor to ship.`,
 						"warning",
 					);
 					return;
@@ -3141,7 +3139,7 @@ export default function (pi: ExtensionAPI) {
 			notify(
 				ctx,
 				`plan has planned phases but none are ready: \`${classified.phase.id}\` ${reason}. ` +
-					"Edit dependsOn (plan_phase update) to unblock, or wait for the predecessor to ship.",
+					"Edit dependsOn (phase update) to unblock, or wait for the predecessor to ship.",
 				"warning",
 			);
 			modeState.stage = "planning";
@@ -3447,7 +3445,7 @@ export default function (pi: ExtensionAPI) {
 			? `Begin executing phase \`${phaseId}\`. The plan and active tasks are loaded as session context.`
 			: `Feature branch \`${branch}\` is ready. ${
 					hasTasks
-						? "Use `plan_task(toggle, phaseId, taskId)` to mark each task done as you complete it."
+						? "Use `task(toggle, phaseId, taskId)` to mark each task done as you complete it."
 						: "Edit files, run tests, and stop when the change is clean."
 				}`;
 
@@ -4222,7 +4220,7 @@ export default function (pi: ExtensionAPI) {
 		if (plan.phases.length === 0) {
 			notify(
 				ctx,
-				"plan has no phases — add at least one with plan_phase before parking",
+				"plan has no phases — add at least one with phase before parking",
 				"error",
 			);
 			return;
@@ -4850,7 +4848,7 @@ export default function (pi: ExtensionAPI) {
 		getCurrentPlanSlug: () => modeState?.currentPlanSlug ?? null,
 		onPlanChanged: (plan, ctx) => {
 			// Plan mode advertises read-only access through three layers (tool
-			// gating, system prompt, bash classifier). Don't let plan_phase
+			// gating, system prompt, bash classifier). Don't let phase
 			// side-effects bypass that contract by mutating the filesystem.
 			// Worktree reconciliation only runs in ask/auto, where the agent
 			// is allowed to make changes anyway.
@@ -4887,7 +4885,7 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			// When booting straight into plan mode in a git repo, materialise
-			// the plan file up front so plan_phase / plan_task work without
+			// the plan file up front so phase / task work without
 			// the user first running `/plan`. Outside a git repo we leave the
 			// slug null — same behaviour as today. Filesystem failures
 			// (unwritable `~/.pi/plans`, full disk, ...) must not break
@@ -5055,19 +5053,19 @@ export default function (pi: ExtensionAPI) {
 						"'no writes' contract refers to local filesystem and git mutations.",
 						"",
 						"Use the plan tools to build a structured plan with phases and tasks:",
-						"  plan_phase(add, title, goal?, position?)         → add a phase",
-						"  plan_phase(update, id, title?, goal?, status?)    → update a phase",
-						"  plan_phase(remove, id) | plan_phase(reorder, id, position) | plan_phase(list)",
-						"  plan_task(add, phaseId, title, body?)             → add a task",
-						"  plan_task(toggle, phaseId, taskId)                → mark a task done",
-						"  plan_task(update | remove | move)                 → edit / move tasks",
-						"  plan_view()                                       → show the current plan",
+						"  phase(add, title, goal?, position?)         → add a phase",
+						"  phase(update, id, title?, goal?, status?)    → update a phase",
+						"  phase(remove, id) | phase(reorder, id, position) | phase(list)",
+						"  task(add, phaseId, title, body?)             → add a task",
+						"  task(toggle, phaseId, taskId)                → mark a task done",
+						"  task(update | remove | move)                 → edit / move tasks",
+						"  plan()                                       → show the current plan",
 						"",
 						"A phase ships as one PR / one issue. Tasks are concrete work items inside",
 						"a phase — keep titles short and put detail (acceptance criteria, files,",
 						"tests) in the body.",
 						"",
-						"When you have a clear plan: build it with plan_phase + plan_task, present",
+						"When you have a clear plan: build it with phase + task, present",
 						"a summary to the user, then stop. The user will choose to implement,",
 						"park as GitHub issues, or keep discussing.",
 						"",
@@ -5105,7 +5103,7 @@ export default function (pi: ExtensionAPI) {
 						"plan/phase to follow and no compaction will fire automatically —",
 						"context length is the user's responsibility.",
 						"",
-						"Do NOT invoke `plan_phase`, `plan_task`, or `plan_view` unless",
+						"Do NOT invoke `phase`, `task`, or `plan` unless",
 						"the user explicitly asks. Just do the work.",
 					].join("\n"),
 					details: { modeMarker: "hack" as const },
@@ -5176,7 +5174,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (remainingDeliverables.length > 0) {
 				lines.push(
-					"Remaining deliverables (titles short — see plan_view for full body):",
+					"Remaining deliverables (titles short — see `plan` for full body):",
 					...remainingDeliverables.map(({ task }) => `  ${task.title}`),
 					"",
 				);
@@ -5194,7 +5192,7 @@ export default function (pi: ExtensionAPI) {
 				);
 			}
 			lines.push(
-				"Execute each deliverable in order. Call plan_task(toggle, phaseId, taskId)",
+				"Execute each deliverable in order. Call task(toggle, phaseId, taskId)",
 				"after completing each one. Do not stop to ask for confirmation unless",
 				"genuinely stuck.",
 				"If you need to look up a library, API, or external reference: research(question).",
@@ -5485,7 +5483,7 @@ export default function (pi: ExtensionAPI) {
 					ctx,
 					`auto-loop: stopped at gate "${completion.gate}" — ${
 						completion.gate === "no-tasks"
-							? `active phase \`${activePhase(plan)?.id ?? "unknown"}\` has no tasks; use plan_task(add) to add at least one deliverable`
+							? `active phase \`${activePhase(plan)?.id ?? "unknown"}\` has no tasks; use task(add) to add at least one deliverable`
 							: "active phase has no deliverables (only notes); add a deliverable task to enable auto-completion"
 					}`,
 					"warning",
