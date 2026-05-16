@@ -107,7 +107,12 @@ function agentMsg(content: string) {
 function buildPlanPrompt(
 	guidance: string | undefined,
 	diffSummary: string,
+	mode?: string,
 ): string {
+	const finishLine =
+		mode === "auto"
+			? "Yield back to the extension; it will confirm the plan and sequence /ship and the next phase."
+			: "Finish the turn after writing the plan.";
 	return [
 		"You are in the `/commit` flow. Analyze the current working tree and",
 		"propose a commit plan. Read `skills/gh/SKILL.md` if you need any",
@@ -144,11 +149,18 @@ function buildPlanPrompt(
 		"",
 		"Output the plan as readable markdown. Do NOT commit anything yet —",
 		"the extension will ask for explicit confirmation before anything is",
-		"staged or committed. Finish the turn after writing the plan.",
+		`staged or committed. ${finishLine}`,
 	].join("\n");
 }
 
-function buildExecutePrompt(overrideInstructions: string | null): string {
+function buildExecutePrompt(
+	overrideInstructions: string | null,
+	mode?: string,
+): string {
+	const afterCommitLine =
+		mode === "auto"
+			? "Yield back to the extension; it will sequence /ship and the next phase."
+			: "Stop after the last commit — do not push.";
 	if (overrideInstructions) {
 		return [
 			"User edited the commit plan. Execute the plan below exactly as",
@@ -171,7 +183,7 @@ function buildExecutePrompt(overrideInstructions: string | null): string {
 		"   write the message to a temp file and use `-F`.",
 		"",
 		"After every commit, run `git log -1 --oneline` so the user can",
-		"verify. Stop after the last commit — do not push.",
+		`verify. ${afterCommitLine}`,
 	].join("\n");
 }
 
@@ -498,6 +510,14 @@ export interface RunCommitOptions {
 	 * to false.
 	 */
 	nonInteractive?: boolean;
+	/**
+	 * Current pi mode (`"auto"` | `"ask"` | `"hack"` | `"plan"`).
+	 * When `"auto"`, prompt wording instructs the agent to yield back to
+	 * the extension after committing rather than stopping and waiting for
+	 * user input — the extension sequences /ship and the next phase.
+	 * Defaults to `"hack"` (interactive, no pipeline).
+	 */
+	mode?: string;
 }
 
 export interface RunCommitResult {
@@ -518,6 +538,7 @@ export async function runCommit(
 ): Promise<RunCommitResult> {
 	const { ctx, pi } = opts;
 	const nonInteractive = opts.nonInteractive === true;
+	const mode = opts.mode;
 	const guidance = (opts.guidance ?? "").trim();
 	const idle = () => waitForIdle(pi, ctx);
 
@@ -637,10 +658,13 @@ export async function runCommit(
 		? `Working tree snapshot at /commit time:\n\n\`\`\`\n${statusSnapshot}\n\`\`\``
 		: "(Working tree was clean at snapshot time — unexpected; investigate.)";
 
-	pi.sendMessage(agentMsg(buildPlanPrompt(guidance || undefined, summary)), {
-		deliverAs: "followUp",
-		triggerTurn: true,
-	});
+	pi.sendMessage(
+		agentMsg(buildPlanPrompt(guidance || undefined, summary, mode)),
+		{
+			deliverAs: "followUp",
+			triggerTurn: true,
+		},
+	);
 	notify(ctx, "asking the agent for a commit plan…", "info");
 	await idle();
 
@@ -674,7 +698,7 @@ export async function runCommit(
 
 	// ---- Step 5: execute commits -------------------------------
 	const headBefore = headSha(ctx.cwd);
-	pi.sendMessage(agentMsg(buildExecutePrompt(override)), {
+	pi.sendMessage(agentMsg(buildExecutePrompt(override, mode)), {
 		deliverAs: "followUp",
 		triggerTurn: true,
 	});

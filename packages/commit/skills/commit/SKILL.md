@@ -86,6 +86,11 @@ timeout`), use it as the starting point.
 Output the plan as readable markdown and finish the turn. Do NOT commit
 yet — the user must confirm first.
 
+> **Auto-mode pipeline**: if you are running as part of an extension-driven
+> auto pipeline (the extension sent you a `/commit` prompt and will handle
+> sequencing), yield back after writing the plan — the extension confirms
+> and continues the workflow.
+
 ## Step 4: Execute
 
 After explicit user confirmation:
@@ -98,6 +103,10 @@ git commit -m "<subject>"            # or -m subject -m body
 
 After every commit run `git log -1 --oneline` so the user can verify.
 Stop at the last commit — do not push yet.
+
+> **Auto-mode pipeline**: if the extension is driving commit sequencing,
+> yield back after the last commit — do not push. The extension sequences
+> /ship and the next phase automatically.
 
 ## Step 5: Push — fork-aware routing
 
