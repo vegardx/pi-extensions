@@ -4339,16 +4339,30 @@ export default function (pi: ExtensionAPI) {
 				"It returns { id } right away — the sub-agent works in the background.",
 			"Fire several explore_ask calls back-to-back when you have multiple " +
 				"questions; they queue in order on the persistent sub-agent.",
+			"Pass `related: false` when the question is genuinely orthogonal to your " +
+				"recent explore_ask calls (e.g. a separate subsystem). The mailbox can " +
+				"then dispatch it against a fresh child agent in parallel with the seed. " +
+				"Default `related: true` keeps everything on the seed FIFO so context " +
+				"accumulates.",
 			"Available in plan mode only.",
 		],
 		parameters: Type.Object({
 			question: Type.String({
 				description: "What to find out about the codebase.",
 			}),
+			related: Type.Optional(
+				Type.Boolean({
+					description:
+						"Default true. Set to false when the question is orthogonal to recent " +
+						"asks; lets the mailbox spawn a parallel child worker if the seed is busy.",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			try {
-				const { id } = await ensureExploreMailbox(ctx).ask(params.question);
+				const { id } = await ensureExploreMailbox(ctx).ask(params.question, {
+					related: params.related,
+				});
 				return {
 					content: [
 						{
