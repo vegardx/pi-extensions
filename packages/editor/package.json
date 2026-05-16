@@ -1,0 +1,20 @@
+{
+	"name": "pi-ext-editor",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"description": "Open the configured IDE/editor at cwd or path:line:col via /editor",
+	"pi": { "extensions": ["./index.ts"] },
+	"peerDependencies": {
+		"@mariozechner/pi-ai": "*",
+		"@mariozechner/pi-coding-agent": "*",
+		"@mariozechner/pi-tui": "*",
+		"@vegardx/pi-extensions-shared": "*"
+	},
+	"peerDependenciesMeta": {
+		"@mariozechner/pi-ai": { "optional": true },
+		"@mariozechner/pi-coding-agent": { "optional": true },
+		"@mariozechner/pi-tui": { "optional": true },
+		"@vegardx/pi-extensions-shared": { "optional": true }
+	}
+}
