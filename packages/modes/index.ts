@@ -1743,6 +1743,7 @@ export default function (pi: ExtensionAPI) {
 			pi,
 			guidance: "",
 			nonInteractive: true,
+			mode: "auto",
 		});
 		// `clean-tree` means the agent finished the phase without staging
 		// any changes (e.g. tests-only phase whose work happened in earlier
@@ -1955,6 +1956,7 @@ export default function (pi: ExtensionAPI) {
 					pi,
 					guidance: "",
 					skipReviewOffer: true,
+					mode: modeState?.mode,
 				});
 			} catch (err) {
 				notify(
