@@ -6,7 +6,8 @@ on:
   pull_request:
     branches: [main]
 
-# No write access needed; default GITHUB_TOKEN is fine.
+# `check` runs on every push/PR with read-only token.
+# `release` runs only on push to main and needs write access to tag + create releases.
 permissions:
   contents: read
 
@@ -29,3 +30,28 @@ jobs:
         run: npm ci
       - name: npm run check
         run: npm run check
+
+  release:
+    name: semantic-release
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-slim
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
