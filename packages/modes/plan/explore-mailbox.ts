@@ -1,43 +1,41 @@
 /**
  * Async mailbox for the codebase-exploration sub-agent.
  *
- * Replaces the previous synchronous `explore(question)` contract with
- * three operations:
+ * #159a introduced send/receive: ask returns immediately, check drains
+ * answers, wait blocks opt-in. #159b adds the seed-and-children dispatch
+ * model:
  *
- *   - ask(question)              — non-blocking; returns a task id.
- *   - check({ id?, drain? })     — non-blocking; drains completed tasks
- *                                  and any `notify()` calls the sub-agent
- *                                  emitted mid-turn.
- *   - wait(id, timeoutMs)        — opt-in blocking; resolves when the
- *                                  named task reaches a terminal state.
+ *   - Seed worker: a single persistent sub-agent owns the accumulating
+ *     exploration context. New `explore_ask` jobs default to dispatching
+ *     against the seed (FIFO).
+ *   - Children: when the caller marks a question `related: false` AND
+ *     the seed is busy, the mailbox spawns a short-lived child agent
+ *     pre-loaded with a Q/A snapshot of recent seed exchanges. The
+ *     child runs in parallel with the seed.
+ *   - Graceful degradation: when no child spawner is configured, or
+ *     when the child enqueue throws, the question falls back to the
+ *     seed FIFO. Existing single-question flows keep their original
+ *     wall-clock + context-accumulation behaviour.
  *
- * Why this exists: the sync API blocked the main agent for up to 60s
- * and disposed the pool on a single timeout, wiping all accumulated
- * exploration context. Splitting send and receive lets the orchestrator
- * fire several questions at once, keep planning, then drain answers
- * when ready.
+ * #159b open question (deferred to reviewer): the topic-relatedness
+ * heuristic. This implementation chooses **explicit `related: boolean`**
+ * — cheapest, predictable, no extra LLM calls. The agent decides via
+ * the `explore_ask` parameter; the mailbox doesn't introspect the
+ * question text. The context-snapshot scope is the **last 6 Q/A pairs
+ * char-budgeted to ~3000 characters**, fed via the child's first prompt
+ * (we have no API to mutate the system prompt of an already-spawned
+ * agent).
  *
- * #159a: this file is now a thin specialisation over the generic
- * {@link AsyncJobMailbox}. The queue / waiter / drain machinery lives
- * there; this file owns the explore-specific dispatcher (persistent
- * agent + agent-event correlation + `notify()` tool capture).
+ * Internals: two {@link AsyncJobMailbox} instances backing one public
+ * `ExploreMailbox`:
  *
- * Correlation rule: each task is dispatched via a fresh
- * `agent.prompt(question)` once the agent is idle. Each prompt
- * produces exactly one `agent_start` … `agent_end` cycle. The
- * dispatcher subscribes to those events and to `tool_execution_start`
- * for live status + notify capture. We deliberately do not use
- * `agent.followUp()` for orchestrator-level FIFO: real pi only drains
- * follow-ups inside an active run, so queued follow-ups on an idle
- * agent are silently dropped, and multiple follow-ups within a
- * single run share one `agent_start`/`agent_end` pair (which would
- * break correlation).
+ *   - `seedMailbox`  — `maxConcurrent: 1`, persistent agent, id prefix `q`.
+ *   - `childMailbox` — `maxConcurrent: Infinity`, ephemeral per-job
+ *     agents, id prefix `c`.
  *
- * `notify()` channel: a tiny extension shipped via `--extension`
- * registers a `notify({ text, kind? })` tool inside the sub-agent
- * process. The handler is a no-op; we observe the call via the
- * `tool_execution_start` event and surface the args via the generic
- * mailbox's notification queue.
+ * Public surface (ask / check / wait / onChange / getState / dispose)
+ * merges results across both. ID prefix tells callers which mailbox
+ * owns the job.
  */
 
 import { dirname, join } from "node:path";
@@ -69,11 +67,28 @@ export interface ExploreTask extends BaseJob {
 	question: string;
 	/** Last tool the sub-agent invoked; for the live status widget. */
 	lastToolSummary?: string;
+	/** "seed" or "child" — which inner mailbox dispatched this job. */
+	worker?: "seed" | "child";
 }
 
 export interface ExploreNotification extends BaseNotification {
 	/** Task that was running when the sub-agent emitted the notify. */
 	taskId?: string;
+}
+
+/** Caller-supplied flags on each ask. */
+export interface AskOptions {
+	/**
+	 * Default `true`. When the agent knows its next question is
+	 * orthogonal to recent seed work it can pass `related: false`,
+	 * which lets the mailbox dispatch against a fresh child agent
+	 * (in parallel with the seed) instead of queueing behind it.
+	 *
+	 * Children are only spawned when the seed is *busy*; when the
+	 * seed is idle, `related: false` still goes through the seed so
+	 * the answer accumulates into shared context.
+	 */
+	related?: boolean;
 }
 
 /**
@@ -100,15 +115,25 @@ export type {
 	MailboxState,
 } from "./async-job-mailbox.js";
 
+export interface SpawnedAgent {
+	agent: PersistentAgent;
+	dispose: () => Promise<void>;
+}
+
 export interface MailboxDeps {
 	/**
-	 * Spawn the sub-agent. Injectable so tests can stub the
-	 * underlying SubagentPool. Returns the agent and a teardown
-	 * fn for the mailbox to call on dispose.
+	 * Spawn the seed sub-agent (long-lived, owns context). Injectable
+	 * so tests can stub the underlying SubagentPool.
 	 */
-	spawnAgent(
-		ctx: ExtensionContext,
-	): Promise<{ agent: PersistentAgent; dispose: () => Promise<void> }>;
+	spawnAgent(ctx: ExtensionContext): Promise<SpawnedAgent>;
+	/**
+	 * Spawn a short-lived child sub-agent for orthogonal queries.
+	 * Optional: when omitted, `related: false` falls back to the seed
+	 * FIFO. The child agent shares the seed's system prompt and tool
+	 * set; the snapshot is delivered via the first prompt (we cannot
+	 * mutate the system prompt post-spawn).
+	 */
+	spawnChildAgent?(ctx: ExtensionContext): Promise<SpawnedAgent>;
 }
 
 // ---- Defaults ---------------------------------------------------------------
@@ -130,6 +155,13 @@ const EXPLORE_AGENT_PROMPT = join(PROMPTS_DIR, "explore-agent.md");
 const NOTIFY_EXTENSION_PATH = join(PROMPTS_DIR, "explore-notify-tool.ts");
 
 const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
+
+/** Max prior Q/A pairs surfaced to a child as context. */
+const SNAPSHOT_MAX_PAIRS = 6;
+/** Approximate char budget for the rendered Q/A snapshot. */
+const SNAPSHOT_CHAR_BUDGET = 3000;
+/** Per-entry char cap before truncation when assembling a snapshot. */
+const SNAPSHOT_PER_ENTRY_BUDGET = 600;
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -153,6 +185,55 @@ function summariseToolCall(
 	}
 }
 
+function truncate(text: string, max: number): string {
+	if (text.length <= max) return text;
+	return `${text.slice(0, max - 1).trimEnd()}…`;
+}
+
+interface JournalEntry {
+	question: string;
+	answer: string;
+}
+
+/**
+ * Render a Q/A journal as a system-context block prefix. Returns an
+ * empty string when the journal is empty so callers can prepend
+ * unconditionally.
+ */
+export function renderJournalForChild(journal: JournalEntry[]): string {
+	if (journal.length === 0) return "";
+
+	const recent = journal.slice(-SNAPSHOT_MAX_PAIRS);
+
+	const blocks: string[] = [];
+	let used = 0;
+	for (let i = recent.length - 1; i >= 0; i--) {
+		const entry = recent[i];
+		if (!entry) continue;
+		const q = truncate(entry.question, SNAPSHOT_PER_ENTRY_BUDGET);
+		const a = truncate(entry.answer, SNAPSHOT_PER_ENTRY_BUDGET);
+		const block = `Q: ${q}\nA: ${a}`;
+		if (used + block.length + 2 > SNAPSHOT_CHAR_BUDGET && blocks.length > 0) {
+			break;
+		}
+		blocks.unshift(block);
+		used += block.length + 2;
+	}
+
+	const body = blocks.join("\n\n");
+	return [
+		"---- prior exploration context (read-only) ----",
+		"The seed explore agent ran these queries earlier in this session.",
+		"Treat them as background — do NOT redo their work; build on it.",
+		"",
+		body,
+		"---- end prior exploration context ----",
+		"",
+		"Now answer the next question:",
+		"",
+	].join("\n");
+}
+
 // ---- Default deps -----------------------------------------------------------
 
 /**
@@ -161,32 +242,35 @@ function summariseToolCall(
  * `one-at-a-time` follow-up mode required for FIFO correlation.
  */
 export function defaultMailboxDeps(): MailboxDeps {
+	const buildSpawner = () => async (ctx: ExtensionContext) => {
+		const resolved = await resolveModel(ctx, {
+			name: "modes",
+			tier: "fast",
+		});
+		if (!resolved) {
+			throw new Error(
+				"no fast-tier model configured — add backgroundModels.primary.fast to settings.json",
+			);
+		}
+		const pool = new SubagentPool();
+		const agent = await pool.spawn("explore", {
+			provider: resolved.model.provider,
+			model: resolved.model.id,
+			systemPromptPath: EXPLORE_AGENT_PROMPT,
+			tools: EXPLORE_TOOLS,
+			cwd: ctx.cwd,
+			followUpMode: "one-at-a-time",
+			extraArgs: ["--extension", NOTIFY_EXTENSION_PATH],
+		});
+		return {
+			agent,
+			dispose: () => pool.dispose(),
+		};
+	};
+
 	return {
-		async spawnAgent(ctx) {
-			const resolved = await resolveModel(ctx, {
-				name: "modes",
-				tier: "fast",
-			});
-			if (!resolved) {
-				throw new Error(
-					"no fast-tier model configured — add backgroundModels.primary.fast to settings.json",
-				);
-			}
-			const pool = new SubagentPool();
-			const agent = await pool.spawn("explore", {
-				provider: resolved.model.provider,
-				model: resolved.model.id,
-				systemPromptPath: EXPLORE_AGENT_PROMPT,
-				tools: EXPLORE_TOOLS,
-				cwd: ctx.cwd,
-				followUpMode: "one-at-a-time",
-				extraArgs: ["--extension", NOTIFY_EXTENSION_PATH],
-			});
-			return {
-				agent,
-				dispose: () => pool.dispose(),
-			};
-		},
+		spawnAgent: buildSpawner(),
+		spawnChildAgent: buildSpawner(),
 	};
 }
 
@@ -201,7 +285,14 @@ interface CurrentDispatch {
 export class ExploreMailbox {
 	private readonly ctx: ExtensionContext;
 	private readonly deps: MailboxDeps;
-	private readonly inner: AsyncJobMailbox<ExploreTask, ExploreNotification>;
+	private readonly seedMailbox: AsyncJobMailbox<
+		ExploreTask,
+		ExploreNotification
+	>;
+	private readonly childMailbox: AsyncJobMailbox<
+		ExploreTask,
+		ExploreNotification
+	>;
 
 	private agent: PersistentAgent | null = null;
 	private agentDispose: (() => Promise<void>) | null = null;
@@ -209,87 +300,181 @@ export class ExploreMailbox {
 	private spawnError: string | null = null;
 	private unsubscribe: (() => void) | null = null;
 	/**
-	 * The currently in-flight dispatch's handle + barrier. Set when
-	 * `dispatchExplore` enters its prompt phase, cleared on agent_end
-	 * (or abort). The eager listener installed in {@link ensureAgent}
-	 * routes incoming agent events through whichever dispatch is
-	 * active. Single-slot is sufficient because the inner mailbox runs
-	 * with `maxConcurrent: 1`.
+	 * Currently in-flight seed dispatch. Set when `dispatchSeed`
+	 * begins, cleared on agent_end (or abort). The shared listener on
+	 * the seed agent routes events through this slot. Single-slot is
+	 * sufficient because the seed mailbox runs `maxConcurrent: 1`.
 	 */
 	private currentDispatch: CurrentDispatch | null = null;
+
+	/** Q/A journal of completed seed exchanges (newest at end). */
+	private readonly journal: JournalEntry[] = [];
+
+	private readonly externalListeners = new Set<
+		(state: MailboxState<ExploreTask, ExploreNotification>) => void
+	>();
+	private readonly listenerUnsubs: (() => void)[] = [];
 
 	constructor(ctx: ExtensionContext, deps: MailboxDeps = defaultMailboxDeps()) {
 		this.ctx = ctx;
 		this.deps = deps;
-		this.inner = new AsyncJobMailbox<ExploreTask, ExploreNotification>({
-			kind: "explore",
-			// Preserve the pre-#159a id scheme (`q1`, `q2`, ...) so existing
-			// tests + log scrapers keep working.
+
+		this.seedMailbox = new AsyncJobMailbox<ExploreTask, ExploreNotification>({
+			kind: "explore-seed",
+			// Preserve the pre-#159a id scheme (`q1`, `q2`, ...).
 			idPrefix: "q",
 			maxConcurrent: 1,
 			defaultWaitTimeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
 			synthesizeUnknown: () => ({ question: "" }),
-			dispatch: (handle) => this.dispatchExplore(handle),
+			dispatch: (handle) => this.dispatchSeed(handle),
 			onDispose: () => this.disposeAgent(),
 		});
+
+		this.childMailbox = new AsyncJobMailbox<ExploreTask, ExploreNotification>({
+			kind: "explore-child",
+			idPrefix: "c",
+			// Children are independent ephemeral processes.
+			maxConcurrent: Number.POSITIVE_INFINITY,
+			defaultWaitTimeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
+			synthesizeUnknown: () => ({ question: "" }),
+			dispatch: (handle) => this.dispatchChild(handle),
+		});
+
+		// Forward inner state to external listeners as a merged snapshot.
+		this.listenerUnsubs.push(
+			this.seedMailbox.onChange(() => this.emitMerged()),
+		);
+		this.listenerUnsubs.push(
+			this.childMailbox.onChange(() => this.emitMerged()),
+		);
 	}
 
 	/** Subscribe to mailbox state changes. Returns an unsubscribe fn. */
 	onChange(
 		listener: (state: MailboxState<ExploreTask, ExploreNotification>) => void,
 	): () => void {
-		return this.inner.onChange(listener);
+		this.externalListeners.add(listener);
+		return () => {
+			this.externalListeners.delete(listener);
+		};
 	}
 
 	/**
-	 * Enqueue a question. Spawns the sub-agent on first call. Returns
-	 * immediately with a task id — never blocks on the answer.
+	 * Enqueue a question.
+	 *
+	 * Routing:
+	 *   - `opts.related === false` AND seed has an in-flight job AND
+	 *     `deps.spawnChildAgent` is configured → child mailbox.
+	 *   - Otherwise → seed mailbox.
+	 *
+	 * If child enqueue throws (mailbox disposed, dep mis-configured,
+	 * etc.) we fall back to the seed FIFO so the question still runs.
 	 */
-	async ask(question: string): Promise<{ id: string }> {
-		return this.inner.enqueue((id, enqueuedAt) => ({
+	async ask(question: string, opts: AskOptions = {}): Promise<{ id: string }> {
+		const wantsChild = opts.related === false;
+		const seedBusy = this.seedMailbox.hasInFlight;
+		const childAvailable = typeof this.deps.spawnChildAgent === "function";
+
+		if (wantsChild && seedBusy && childAvailable) {
+			try {
+				return this.childMailbox.enqueue((id, enqueuedAt) => ({
+					id,
+					question,
+					status: "queued" as TaskStatus,
+					enqueuedAt,
+					worker: "child",
+				}));
+			} catch {
+				// fall through to seed
+			}
+		}
+
+		return this.seedMailbox.enqueue((id, enqueuedAt) => ({
 			id,
 			question,
 			status: "queued" as TaskStatus,
 			enqueuedAt,
+			worker: "seed",
 		}));
 	}
 
 	check(
 		opts: CheckOptions = {},
 	): CheckResult<ExploreTask, ExploreNotification> {
-		return this.inner.check(opts);
+		// `id`-targeted lookup: route to whichever mailbox owns it.
+		if (opts.id) {
+			const fromSeed = this.seedMailbox.check({ id: opts.id });
+			if (fromSeed.tasks.length > 0) return fromSeed;
+			return this.childMailbox.check({ id: opts.id });
+		}
+
+		const seedResult = this.seedMailbox.check(opts);
+		const childResult = this.childMailbox.check(opts);
+		return {
+			tasks: [...seedResult.tasks, ...childResult.tasks],
+			notifications: [
+				...seedResult.notifications,
+				...childResult.notifications,
+			],
+		};
 	}
 
 	async wait(
 		id: string,
 		timeoutMs: number = DEFAULT_WAIT_TIMEOUT_MS,
 	): Promise<ExploreTask> {
-		return this.inner.wait(id, timeoutMs);
+		// Route by id prefix: child ids start with `c`.
+		const target = id.startsWith("c") ? this.childMailbox : this.seedMailbox;
+		return target.wait(id, timeoutMs);
 	}
 
 	get hasInFlight(): boolean {
-		return this.inner.hasInFlight;
+		return this.seedMailbox.hasInFlight || this.childMailbox.hasInFlight;
 	}
 
 	getState(): MailboxState<ExploreTask, ExploreNotification> {
-		return this.inner.getState();
+		return this.mergedState();
 	}
 
 	async dispose(): Promise<void> {
-		await this.inner.dispose();
+		for (const u of this.listenerUnsubs) u();
+		this.listenerUnsubs.length = 0;
+		await Promise.allSettled([
+			this.seedMailbox.dispose(),
+			this.childMailbox.dispose(),
+		]);
 	}
 
 	// ---- internals --------------------------------------------------------
 
+	private mergedState(): MailboxState<ExploreTask, ExploreNotification> {
+		const seed = this.seedMailbox.getState();
+		const child = this.childMailbox.getState();
+		return {
+			tasks: [...seed.tasks, ...child.tasks],
+			notifications: [...seed.notifications, ...child.notifications],
+		};
+	}
+
+	private emitMerged(): void {
+		if (this.externalListeners.size === 0) return;
+		const state = this.mergedState();
+		for (const listener of this.externalListeners) {
+			try {
+				listener(state);
+			} catch {
+				/* best-effort */
+			}
+		}
+	}
+
 	/**
-	 * The dispatcher. Spawn the agent on first use (eager-registers a
-	 * permanent agent-event listener via {@link ensureAgent}), set up a
-	 * per-dispatch barrier, fire `prompt(question)`, and resolve when
-	 * the agent emits `agent_end`. The listener routes intermediate
-	 * events (agent_start, tool_execution_start, notify capture)
-	 * through the live handle.
+	 * Seed dispatcher (formerly the only dispatcher in #159a). Runs
+	 * the question against the persistent agent, captures notify()
+	 * calls via the shared event listener, and records the (Q, A)
+	 * pair in the journal for later child snapshots.
 	 */
-	private async dispatchExplore(
+	private async dispatchSeed(
 		handle: DispatchHandle<ExploreTask, ExploreNotification>,
 	): Promise<{ text: string }> {
 		let resolveEnded!: () => void;
@@ -298,18 +483,8 @@ export class ExploreMailbox {
 			resolveEnded = resolve;
 			rejectEnded = reject;
 		});
-		// Suppress "unhandled rejection" if the abort handler rejects
-		// `ended` while we're still awaiting `agent.prompt()` (rather
-		// than `ended` itself). The same Promise is awaited later, so
-		// the rejection still surfaces — this just declares an explicit
-		// handler to keep Vitest's unhandled-rejection guard quiet.
 		ended.catch(() => {});
-		// Set currentDispatch synchronously — BEFORE awaiting ensureAgent —
-		// so the eager agent-event listener installed by ensureAgent on its
-		// first invocation finds a non-null dispatch context the moment
-		// `agent_start` fires. Without this, microtask ordering can deliver
-		// agent_start before dispatchExplore's continuation resumes, and
-		// the FIFO head never advances to "running".
+		// Set synchronously before any await — see #159a microtask-ordering note.
 		this.currentDispatch = { handle, resolveEnded, rejectEnded };
 
 		const onAbort = () => {
@@ -325,16 +500,113 @@ export class ExploreMailbox {
 			await agent.prompt(handle.job.question);
 			await ended;
 
-			// `getLastText()` is RPC; read after agent_end so the just-
-			// finished turn's last text is what comes back.
 			const text = (await agent.getLastText()) ?? "";
-			// Clear live tool summary now that the turn is done — the
-			// generic mailbox doesn't know about our kind-specific field.
 			handle.update({ lastToolSummary: undefined });
+
+			// Record into the journal so future children get context.
+			this.journal.push({ question: handle.job.question, answer: text });
+			if (this.journal.length > SNAPSHOT_MAX_PAIRS * 2) {
+				this.journal.splice(0, this.journal.length - SNAPSHOT_MAX_PAIRS * 2);
+			}
+
 			return { text };
 		} finally {
 			handle.signal.removeEventListener("abort", onAbort);
 			this.currentDispatch = null;
+		}
+	}
+
+	/**
+	 * Child dispatcher: spawns a fresh ephemeral agent, prompts it
+	 * with a snapshot-prefixed question, captures notify() calls via
+	 * a per-job event listener, returns the answer, then disposes the
+	 * agent. Child results do NOT feed back into the journal (only
+	 * seed exchanges accumulate context).
+	 */
+	private async dispatchChild(
+		handle: DispatchHandle<ExploreTask, ExploreNotification>,
+	): Promise<{ text: string }> {
+		const spawn = this.deps.spawnChildAgent;
+		if (!spawn) {
+			throw new Error(
+				"explore child dispatcher invoked without spawnChildAgent dep",
+			);
+		}
+
+		let resolveEnded!: () => void;
+		let rejectEnded!: (err: Error) => void;
+		const ended = new Promise<void>((resolve, reject) => {
+			resolveEnded = resolve;
+			rejectEnded = reject;
+		});
+		ended.catch(() => {});
+
+		const onAbort = () => {
+			rejectEnded(new Error("explore child dispatch aborted"));
+		};
+		handle.signal.addEventListener("abort", onAbort);
+
+		const { agent, dispose } = await spawn(this.ctx);
+		const unsubscribe = agent.onEvent((event) =>
+			this.handleChildEvent(event, handle, resolveEnded),
+		);
+
+		try {
+			if (handle.signal.aborted) {
+				throw new Error("aborted before dispatch");
+			}
+			const prefix = renderJournalForChild(this.journal);
+			const finalPrompt =
+				prefix.length > 0 ? prefix + handle.job.question : handle.job.question;
+			await agent.prompt(finalPrompt);
+			await ended;
+
+			const text = (await agent.getLastText()) ?? "";
+			handle.update({ lastToolSummary: undefined });
+			return { text };
+		} finally {
+			handle.signal.removeEventListener("abort", onAbort);
+			unsubscribe();
+			try {
+				await dispose();
+			} catch {
+				/* best-effort */
+			}
+		}
+	}
+
+	private handleChildEvent(
+		event: AgentEvent,
+		handle: DispatchHandle<ExploreTask, ExploreNotification>,
+		resolveEnded: () => void,
+	): void {
+		switch (event.type) {
+			case "agent_start":
+				handle.setRunning();
+				break;
+			case "tool_execution_start": {
+				const args = (event.args ?? {}) as Record<string, unknown>;
+				handle.update({
+					lastToolSummary: summariseToolCall(event.toolName, args),
+				});
+				if (event.toolName === "notify") {
+					const text = typeof args.text === "string" ? args.text : "";
+					if (text.length > 0) {
+						const kind = typeof args.kind === "string" ? args.kind : undefined;
+						handle.notify({
+							text,
+							taskId: handle.job.id,
+							...(kind !== undefined ? { kind } : {}),
+						});
+					}
+				}
+				break;
+			}
+			case "agent_end":
+				resolveEnded();
+				break;
+			default:
+				break;
 		}
 	}
 
@@ -357,10 +629,6 @@ export class ExploreMailbox {
 						const kind = typeof args.kind === "string" ? args.kind : undefined;
 						cd.handle.notify({
 							text,
-							// Keep the legacy `taskId` field on the notification
-							// alongside the generic `jobId`. Existing consumers
-							// (widgets, tests) read `taskId`; the generic
-							// AsyncJobMailbox always populates `jobId`.
 							taskId: cd.handle.job.id,
 							...(kind !== undefined ? { kind } : {}),
 						});

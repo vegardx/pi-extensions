@@ -183,6 +183,15 @@ export class AsyncJobMailbox<
 	private jobs: TJob[] = [];
 	private jobById = new Map<string, TJob>();
 	private notifications: TNote[] = [];
+	/**
+	 * Jobs picked up by {@link dispatchNext} but not yet visibly
+	 * `running` (the dispatcher hasn't called `setRunning()` yet, or
+	 * the job is mid-await before the status flip). Without this set
+	 * the while-loop in `dispatchNext` would re-select the same
+	 * `status === "queued"` job on the next iteration when
+	 * `maxConcurrent > 1` — infinite re-dispatch.
+	 */
+	private claimedJobIds = new Set<string>();
 
 	private waiters = new Map<string, Waiter<TJob>[]>();
 	private listeners = new Set<(state: MailboxState<TJob, TNote>) => void>();
@@ -376,9 +385,12 @@ export class AsyncJobMailbox<
 	private async dispatchNext(): Promise<void> {
 		if (this.disposed) return;
 		while (this.inFlight < this.maxConcurrent) {
-			const next = this.jobs.find((j) => j.status === "queued");
+			const next = this.jobs.find(
+				(j) => j.status === "queued" && !this.claimedJobIds.has(j.id),
+			);
 			if (!next) return;
 			this.inFlight++;
+			this.claimedJobIds.add(next.id);
 			void this.runJob(next);
 		}
 	}
@@ -431,6 +443,7 @@ export class AsyncJobMailbox<
 		} finally {
 			job.endedAt = Date.now();
 			this.abortControllers.delete(job.id);
+			this.claimedJobIds.delete(job.id);
 			this.inFlight = Math.max(0, this.inFlight - 1);
 			this.resolveWaiters(job);
 			this.emit();
