@@ -38,12 +38,22 @@ dependency-only diff, the other six do the same.
 
 When invoked via the `/develop` auto-review trigger, the pipeline is:
 
-1. **Phase 0 — Static analysis**: `tsc --noEmit`, `biome check`,
-   `npm audit`, and optionally `semgrep` / `knip` run before any AI
-   agent. Findings are injected as pre-computed evidence into the
-   relevant reviewer lane's task payload. Enabled tools are
-   configurable per-project via `extensionConfig.review.staticAnalysis`
-   in `settings.json`.
+1. **Phase 0 — Scanner registry**: A registry of deterministic
+   scanners (`tsc`, `biome`, `eslint`, `knip`, `madge`, `npm-audit`,
+   `osv-scanner`, `gitleaks`, `semgrep` — see
+   `packages/review/README.md` for the full matrix) runs before any
+   AI agent. Each scanner has a built-in lane (`code-reviewer`,
+   `code-simplifier`, or `security-analyst`); its findings are
+   injected as pre-computed evidence into that lane's task payload.
+   Per-scanner config lives at `extensionConfig.review.scanners.<id>`
+   with `enable: true | false | "auto"`, `budgetMs`, and (semgrep)
+   `args.rulesets`. `"auto"` resolves via the spec's `detectAuto(cwd)`
+   heuristic (e.g. `tsconfig.json` for `tsc`, `.semgrep.yml` for
+   `semgrep`); falls back to `defaultEnabled` when no detector exists.
+   The legacy `extensionConfig.review.staticAnalysis` block is still
+   read as a fallback. Scanner findings carry the same severity
+   rubric and confidence semantics as LLM findings; downstream
+   phases dedupe across both.
 
 2. **Phase 0.5 — Indexer**: A single read-only sub-agent emits a
    compact JSON map of the diff (entry points, modules, hot files,
@@ -68,8 +78,13 @@ When invoked via the `/develop` auto-review trigger, the pipeline is:
    `confidence` level to each finding.
 
 5. **Phase 3 — Split**:
-   - `confidence: "high"` + concrete fix → auto-apply
-   - `confidence: "high"/"medium"` without fix → surface for discussion
+   - `confidence: "high"` + concrete fix → **“Accept fix” short-circuit**:
+     the finding skips the interactive walk and goes straight into
+     the fix batch. This is the deterministic-scanner happy path —
+     `tsc` errors and `gitleaks` hits are almost always real and the
+     scanner already produced the fix. Logged in the report so you can
+     see what was auto-applied.
+   - `confidence: "high"`/`"medium"` without fix → surface for discussion
    - `confidence: "low"` + CRITICAL → surface with caveat
    - `confidence: "low"` + IMPORTANT/NOTE → drop
 
