@@ -16,6 +16,14 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
+import {
+	AsyncJobMailbox,
+	type BaseJob,
+	type BaseNotification,
+	type CheckOptions,
+	type CheckResult,
+	type MailboxState,
+} from "./async-job-mailbox.js";
 
 const PROMPTS_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -81,9 +89,95 @@ export class DelegateAgents {
 	private readonly ctx: ExtensionContext;
 	private readonly activeResearch = new Map<number, string>();
 	private nextResearchId = 0;
+	/**
+	 * Non-blocking research mailbox (#159a). `research_ask` enqueues
+	 * a job here; `research_check` / `research_wait` drain it.
+	 * `maxConcurrent: Infinity` because each research call spawns a
+	 * fresh subprocess and they're already parallel-safe.
+	 *
+	 * Lazily created so the legacy blocking `research()` path doesn't
+	 * pay any setup cost.
+	 */
+	private researchMailboxInstance: AsyncJobMailbox<
+		ResearchTask,
+		ResearchNotification
+	> | null = null;
 
 	constructor(ctx: ExtensionContext) {
 		this.ctx = ctx;
+	}
+
+	// ---- non-blocking research mailbox (#159a) -------------------------
+
+	private get researchMailbox(): AsyncJobMailbox<
+		ResearchTask,
+		ResearchNotification
+	> {
+		if (this.researchMailboxInstance) return this.researchMailboxInstance;
+		this.researchMailboxInstance = new AsyncJobMailbox<
+			ResearchTask,
+			ResearchNotification
+		>({
+			kind: "research",
+			// Each research job spawns its own subprocess — they're already
+			// parallel-safe, no FIFO needed. Infinity matches today's
+			// blocking-research semantics where N concurrent calls fan out
+			// to N subprocesses.
+			maxConcurrent: Number.POSITIVE_INFINITY,
+			defaultWaitTimeoutMs: DEFAULT_RESEARCH_TIMEOUT_MS,
+			dispatch: async (handle) => {
+				handle.setRunning();
+				const outcome = await this.research(handle.job.question, {
+					timeoutMs: handle.job.timeoutMs,
+					signal: handle.signal,
+				});
+				// Pack outcome into the job so callers can read structured
+				// failure reasons via `check`/`wait`. `text` is the agent-
+				// facing summary; on failure we synthesise a one-liner so
+				// the bare `text` field still tells the story.
+				const text = outcome.ok ? outcome.text : formatOutcomeFailure(outcome);
+				return {
+					text,
+					jobPatch: { outcome } satisfies Partial<ResearchTask>,
+				};
+			},
+		});
+		return this.researchMailboxInstance;
+	}
+
+	async researchAsk(
+		question: string,
+		opts: ResearchOptions = {},
+	): Promise<{ id: string }> {
+		const timeoutMs = opts.timeoutMs ?? DEFAULT_RESEARCH_TIMEOUT_MS;
+		return this.researchMailbox.enqueue((id, enqueuedAt) => ({
+			id,
+			status: "queued",
+			enqueuedAt,
+			question,
+			timeoutMs,
+		}));
+	}
+
+	researchCheck(
+		opts: CheckOptions = {},
+	): CheckResult<ResearchTask, ResearchNotification> {
+		if (!this.researchMailboxInstance) return { tasks: [], notifications: [] };
+		return this.researchMailboxInstance.check(opts);
+	}
+
+	async researchWait(id: string, timeoutMs?: number): Promise<ResearchTask> {
+		return this.researchMailbox.wait(id, timeoutMs);
+	}
+
+	onResearchChange(
+		listener: (state: MailboxState<ResearchTask, ResearchNotification>) => void,
+	): () => void {
+		return this.researchMailbox.onChange(listener);
+	}
+
+	get hasResearchInFlight(): boolean {
+		return this.researchMailboxInstance?.hasInFlight ?? false;
 	}
 
 	/**
@@ -182,6 +276,40 @@ export class DelegateAgents {
 	/** No persistent state — present as a no-op for symmetry with the
 	 *  prior API; future additions can hook teardown here. */
 	async dispose(): Promise<void> {
-		/* no-op */
+		await this.researchMailboxInstance?.dispose();
+		this.researchMailboxInstance = null;
+	}
+}
+
+// ---- Research mailbox types (#159a) ----------------------------------------
+
+export interface ResearchTask extends BaseJob {
+	question: string;
+	timeoutMs: number;
+	/**
+	 * Structured outcome of the underlying `research()` call — set
+	 * once the dispatcher resolves. Even on `ok: false` the task's
+	 * `status` is `"done"`: the run finished, the result just isn't
+	 * useful. Callers branch on `outcome.ok` rather than `status`.
+	 */
+	outcome?: ResearchOutcome;
+}
+
+export interface ResearchNotification extends BaseNotification {
+	/* room to extend: severity, source, etc. */
+}
+
+function formatOutcomeFailure(
+	outcome: ResearchOutcome & { ok: false },
+): string {
+	switch (outcome.reason) {
+		case "no-model":
+			return `[research no-model] ${outcome.detail}`;
+		case "timeout":
+			return `[research timeout] ${outcome.elapsedMs}ms (limit ${outcome.timeoutMs}ms)`;
+		case "subagent-error":
+			return `[research error] ${outcome.detail}`;
+		case "empty":
+			return `[research empty] ${outcome.detail}`;
 	}
 }

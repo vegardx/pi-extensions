@@ -181,6 +181,9 @@ export const PLAN_ONLY_TOOLS = [
 	"explore_check",
 	"explore_wait",
 	"research",
+	"research_ask",
+	"research_check",
+	"research_wait",
 ] as const;
 
 export const EXPLORE_TOOLS = [
@@ -201,7 +204,13 @@ export function computeActiveTools(mode: Mode, priorTools: string[]): string[] {
 	}
 	// Restore prior tools and ensure plan_* + research are included.
 	// The explore_* triad is plan-mode only so it is removed.
-	const alwaysInclude = [...planTools, "research"];
+	const alwaysInclude = [
+		...planTools,
+		"research",
+		"research_ask",
+		"research_check",
+		"research_wait",
+	];
 	const extra = alwaysInclude.filter((t) => !priorTools.includes(t));
 	return [...priorTools, ...extra].filter(
 		(t) => !EXPLORE_TOOLS.includes(t as (typeof EXPLORE_TOOLS)[number]),
@@ -4478,6 +4487,135 @@ export default function (pi: ExtensionAPI) {
 				},
 			);
 			return formatResearchOutcome(ctx, outcome);
+		},
+	});
+
+	// ---- Non-blocking research mailbox tools (#159a) ----------------------
+	//
+	// `research_ask` returns immediately with a task id; `research_check`
+	// drains terminal jobs + any notifications; `research_wait` opt-in
+	// blocks on a single id. Mirrors the explore_* surface so agents that
+	// already know one knows the other. The legacy blocking `research`
+	// tool above is preserved — callers that want a single sync
+	// look-up-and-return keep using it.
+
+	pi.registerTool({
+		name: "research_ask",
+		label: "Ask Research",
+		description:
+			"Queue a question for the research sub-agent. Returns immediately " +
+			"with a task id — does NOT block while the sub-agent searches the " +
+			"web. Use research_check to drain answers, or research_wait to opt " +
+			"in to blocking on a specific id. Multiple research_ask calls run " +
+			"in parallel — each spawns its own subprocess. Use this instead " +
+			"of `research` when you want to keep planning while the answer " +
+			"comes back.",
+		promptSnippet: "Queue a non-blocking research question",
+		promptGuidelines: [
+			"Use research_ask + research_check for parallel web lookups: fire " +
+				"several questions, keep working, drain answers when ready. The " +
+				"task id you get back is what you pass to research_check({id}) or " +
+				"research_wait(id).",
+			"Each research_ask spawns its own subprocess, so they run " +
+				"concurrently. There's no FIFO — you'll see all asked-and-running " +
+				"jobs in the mailbox at once.",
+			"On failure (timeout, no model, empty output), the task still " +
+				"reaches `done` status — read `task.outcome.ok` to branch.",
+		],
+		parameters: Type.Object({
+			question: Type.String({ description: "What to research." }),
+			timeoutMs: Type.Optional(
+				Type.Number({
+					description:
+						"Hard timeout in milliseconds for this call. Overrides " +
+						"`extensionConfig.modes.researchTimeoutMs`.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const rawOverride = params.timeoutMs;
+			const timeoutMs =
+				rawOverride != null && Number.isFinite(rawOverride) && rawOverride > 0
+					? rawOverride
+					: readResearchTimeoutMs(ctx);
+			const { id } = await ensureDelegateAgents(ctx).researchAsk(
+				params.question,
+				{ timeoutMs },
+			);
+			return {
+				content: [{ type: "text", text: `research_ask: queued ${id}` }],
+				details: { id },
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "research_check",
+		label: "Check Research",
+		description:
+			"Drain the research mailbox: returns completed/in-flight task records " +
+			"and any notifications. Non-blocking. Default removes terminal tasks " +
+			"so each one is reported once. Pass { id } to peek at a single task " +
+			"without draining.",
+		promptSnippet: "Drain pending research answers",
+		parameters: Type.Object({
+			id: Type.Optional(
+				Type.String({
+					description: "Optional id to peek at a single task without draining.",
+				}),
+			),
+			drain: Type.Optional(
+				Type.Boolean({
+					description:
+						"Default true. Set to false to leave terminal tasks + notifications in place.",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = ensureDelegateAgents(ctx).researchCheck({
+				...(params.id !== undefined ? { id: params.id } : {}),
+				...(params.drain !== undefined ? { drain: params.drain } : {}),
+			});
+			if (result.tasks.length === 0 && result.notifications.length === 0) {
+				return {
+					content: [{ type: "text", text: "[research_check] mailbox empty" }],
+					details: result,
+				};
+			}
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				details: result,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: "research_wait",
+		label: "Wait for Research",
+		description:
+			"Block until the named research task reaches a terminal state, or the " +
+			"timeout fires. Use only when you genuinely cannot continue without " +
+			"that specific answer — prefer research_check for polling. A timeout " +
+			"returns a synthetic terminal record but does NOT cancel the underlying " +
+			"subprocess.",
+		promptSnippet: "Block on a single research task",
+		parameters: Type.Object({
+			id: Type.String({ description: "Task id from research_ask." }),
+			timeoutMs: Type.Optional(
+				Type.Number({
+					description: "Wait deadline in ms. Default 120000 (2min).",
+				}),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await ensureDelegateAgents(ctx).researchWait(
+				params.id,
+				params.timeoutMs,
+			);
+			return {
+				content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+				details: result,
+			};
 		},
 	});
 
