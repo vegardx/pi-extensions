@@ -7,7 +7,7 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution. R
 | Mode | Tools | Bash | Confirmation | Plan needed | Compaction |
 |------|------|------|--------------|-------------|------------|
 | `hack` | all | all | none — full tool access | no | none — user owns context length |
-| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `plan_phase`, `plan_task`, `plan_view`, `explore_ask`, `explore_check`, `explore_wait`, `research`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
+| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `phase`, `task`, `plan`, `explore_ask`, `explore_check`, `explore_wait`, `research`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
 | `ask` | all | all | none during execution; the post-exec picker pauses you at the commit/ship boundary | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 | `auto` | all | all | none — fully autonomous; commits, ships, advances phases without prompting | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 
@@ -157,7 +157,7 @@ planned ─► active ─► in-review ─► ready-to-ship ─► shipped
 (any non-terminal) ─► abandoned
 ```
 
-Transitions are gated by `plan_phase update` — invalid transitions are rejected.
+Transitions are gated by `phase update` — invalid transitions are rejected.
 
 ### Plan dependency graph
 
@@ -195,7 +195,7 @@ Migration: v1 plans (no `dependsOn`) are migrated lazily on `loadPlan`
 abandoned predecessors. The migrated shape is written to disk on the
 next `savePlan`.
 
-**Cycle and conflict handling**: `plan_phase add` / `plan_phase update`
+**Cycle and conflict handling**: `phase add` / `phase update`
 run a DFS cycle check before persisting. Multi-parent (`{B, C} → D`) is
 rejected because the compaction summary chain only flows along a chain.
 Unknown-id parents block the phase via `blockedReason()` until the user
@@ -219,7 +219,7 @@ deliverables never auto-completes — a PR with no actual work shouldn't
 fire `/ship`.
 
 Plan-level follow-ups live on `Plan.followUps` rather than under a
-specific phase. Add via `plan_task action='add' phaseId='@plan'`. They
+specific phase. Add via `task action='add' phaseId='@plan'`. They
 appear in the parent /park issue rather than per-phase PRs.
 
 ### Concurrent drivers (multi-session execution)
@@ -263,7 +263,7 @@ pi --resume <session-id>
 
 Both sessions ship their chains independently. Status updates flow
 through the lockfile-protected plan file; the widget shows a `[peer]`
-marker on phases driven by another session, and `plan_view` annotates
+marker on phases driven by another session, and `plan` annotates
 the header with `driver: \`<id-prefix>\``.
 
 #### Recovery from raw `git` / `gh`
@@ -379,7 +379,7 @@ plan is well-scoped and you trust the auto-loop to ship it.
   to your settings.
 - **Detach / rejoin**: not supported in v1. If you Esc out of the
   orchestrator, workers keep running but you lose the unified
-  notify stream. Watch the plan via `plan_view` instead.
+  notify stream. Watch the plan via `plan` instead.
 
 ## Session model
 
@@ -491,11 +491,11 @@ commits still on a remote / reflog.
 
 ```
 /plan add webhook support for payments
-  → agent explores, calls plan_phase + plan_task to structure the work
+  → agent explores, calls phase + task to structure the work
   → agent presents the plan
 Shift+Tab → Implement
   → /implement: creates feat branch, switches to auto
-  → agent works on phase 1's tasks, calls plan_task(toggle) as it goes
+  → agent works on phase 1's tasks, calls task(toggle) as it goes
   → all tasks done → review fires → triage findings
 /ship
   → commit, push, gh pr create, phase → in-review
@@ -510,9 +510,9 @@ The agent uses three tools to manage the plan:
 
 | Tool | Actions |
 |------|---------|
-| `plan_phase` | `add`, `update`, `remove`, `reorder`, `list` |
-| `plan_task` | `add`, `update`, `toggle`, `remove`, `move` |
-| `plan_view` | read-only markdown summary |
+| `phase` | `add`, `update`, `remove`, `reorder`, `list` |
+| `task` | `add`, `update`, `toggle`, `remove`, `move` |
+| `plan` | read-only markdown summary |
 
 State persists in `~/.pi/plans/<slug>/plan.json`.
 

@@ -54,14 +54,14 @@ describe("STEERING_CLASSIFIER", () => {
 		expect(STEERING_CLASSIFIER).not.toMatch(/t-\w+/);
 	});
 
-	it("references plan_view rather than embedding the plan", () => {
-		expect(STEERING_CLASSIFIER).toContain("plan_view");
+	it("references plan rather than embedding the plan", () => {
+		expect(STEERING_CLASSIFIER).toContain("plan");
 	});
 
 	it("lists the four routing options", () => {
-		expect(STEERING_CLASSIFIER).toContain("plan_task(update");
-		expect(STEERING_CLASSIFIER).toContain("plan_task(add");
-		expect(STEERING_CLASSIFIER).toContain("plan_phase(add");
+		expect(STEERING_CLASSIFIER).toContain("task(update");
+		expect(STEERING_CLASSIFIER).toContain("task(add");
+		expect(STEERING_CLASSIFIER).toContain("phase(add");
 		expect(STEERING_CLASSIFIER).toContain("course correction");
 	});
 });

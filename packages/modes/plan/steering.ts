@@ -14,7 +14,7 @@
  *
  * The phase + task list is already injected by the auto-mode preamble in
  * `before_agent_start`, so this classifier deliberately does NOT repeat
- * it; the agent is told to consult the plan via `plan_view` if needed.
+ * it; the agent is told to consult the plan via `plan` if needed.
  *
  * Slash commands, skill invocations, extension-injected messages, and
  * empty input are never wrapped — see `shouldInjectSteeringClassifier`.
@@ -74,16 +74,16 @@ export function shouldInjectSteeringClassifier(input: SteeringInput): boolean {
  * so the prompt prefix stays byte-identical across turns and the prompt
  * cache keeps hitting.
  *
- * Refers the agent to `plan_view` rather than embedding the phase + task
+ * Refers the agent to `plan` rather than embedding the phase + task
  * list — the auto-mode preamble already carries that context, and
  * duplicating it costs tokens on every steering turn.
  */
 export const STEERING_CLASSIFIER = [
 	"The user just sent a free-text message. Before acting, classify it",
-	"(consult plan_view if you need the current phase/task state):",
-	"  1. refines an active task \u2192 plan_task(update, ...) and continue",
-	"  2. new task in the active phase \u2192 plan_task(add, ...) and continue",
-	"  3. new phase \u2192 plan_phase(add, ...) and continue current phase",
+	"(consult plan if you need the current phase/task state):",
+	"  1. refines an active task \u2192 task(update, ...) and continue",
+	"  2. new task in the active phase \u2192 task(add, ...) and continue",
+	"  3. new phase \u2192 phase(add, ...) and continue current phase",
 	"  4. immediate course correction \u2192 act on it now",
 	"In one sentence say what you are doing and why (not which option), then proceed.",
 ].join("\n");

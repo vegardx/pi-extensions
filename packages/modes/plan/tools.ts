@@ -2,9 +2,9 @@
  * Tool registrations for the phase/task plan system.
  *
  * Three tools:
- *   - plan_phase: manage phases (add/update/remove/reorder/list)
- *   - plan_task:  manage tasks (add/update/toggle/remove/move)
- *   - plan_view:  read-only markdown summary
+ *   - phase: manage phases (add/update/remove/reorder/list)
+ *   - task:  manage tasks (add/update/toggle/remove/move)
+ *   - plan:  read-only markdown summary
  *
  * All three operate on the "current plan" — the plan slug that the session
  * is currently working with. The session owner (modes/index.ts) is
@@ -322,20 +322,20 @@ export function registerPlanTools(
 	pi: ExtensionAPI,
 	hooks: PlanToolHooks,
 ): void {
-	// ---- plan_phase ------------------------------------------------------
+	// ---- phase ------------------------------------------------------
 
 	pi.registerTool({
-		name: "plan_phase",
-		label: "Plan Phase",
+		name: "phase",
+		label: "Phase",
 		description:
 			"Manage phases of the current plan. A phase is a unit of work that " +
 			"ships as one PR / one issue. Actions: add, update, remove, reorder, list.",
 		promptSnippet: "Add, update, remove, reorder, or list phases",
 		promptGuidelines: [
-			"Use plan_phase to structure the plan into phases. Each phase is a " +
+			"Use phase to structure the plan into phases. Each phase is a " +
 				"self-contained unit that ships as one PR.",
 			"A phase has a short title, a one-line goal, and a list of tasks. " +
-				"Use plan_task to add tasks to a phase.",
+				"Use task to add tasks to a phase.",
 			"Phases form a chain via `dependsOn` (at most one parent per phase). " +
 				"`phases[]` order is cosmetic. On `add`, `dependsOn` defaults to " +
 				"the last phase in the plan (linear chain). Pass `dependsOn` " +
@@ -701,11 +701,11 @@ export function registerPlanTools(
 		},
 	});
 
-	// ---- plan_task -------------------------------------------------------
+	// ---- task -------------------------------------------------------
 
 	pi.registerTool({
-		name: "plan_task",
-		label: "Plan Task",
+		name: "task",
+		label: "Task",
 		description:
 			"Manage tasks within a phase. A task is a concrete work item with " +
 			"a short title and detailed body (acceptance criteria, files, tests). " +
@@ -713,14 +713,14 @@ export function registerPlanTools(
 			"specific phase. Actions: add, update, toggle, remove, move.",
 		promptSnippet: "Add, update, toggle, remove, or move tasks",
 		promptGuidelines: [
-			"Use plan_task to add detail to a phase. The title is short (scannable); " +
+			"Use task to add detail to a phase. The title is short (scannable); " +
 				"put context, acceptance criteria, files, and test notes in `body`.",
 			"Set `kind` when adding a task. `deliverable` (default) gates phase " +
 				"completion. `followUp`, `question`, and `manual` are informational " +
 				"\u2014 they surface in PR/issue bodies but never block /ship.",
 			"Pass `phaseId='@plan'` to attach a follow-up to the plan itself; " +
 				"these surface on the parent /park issue.",
-			"During implementation, call plan_task(toggle, taskId) to mark each task done.",
+			"During implementation, call task(toggle, taskId) to mark each task done.",
 			"To move a task between phases (or to/from `@plan`), use action='move' " +
 				"with targetPhaseId.",
 		],
@@ -1045,17 +1045,17 @@ export function registerPlanTools(
 		},
 	});
 
-	// ---- plan_view -------------------------------------------------------
+	// ---- plan -------------------------------------------------------
 
 	pi.registerTool({
-		name: "plan_view",
-		label: "Plan View",
+		name: "plan",
+		label: "Plan",
 		description:
 			"Show a markdown summary of the current plan: phases, tasks, and " +
 			"statuses. Read-only.",
 		promptSnippet: "Show the current plan",
 		promptGuidelines: [
-			"Use plan_view to recall the plan structure when you've lost context.",
+			"Use plan to recall the plan structure when you've lost context.",
 		],
 		parameters: Type.Object({}),
 

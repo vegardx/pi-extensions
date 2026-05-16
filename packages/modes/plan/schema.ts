@@ -209,7 +209,7 @@ export interface Phase {
 	 * Phase ids this phase depends on. Authoritative dependency edge —
 	 * the `phases[]` array order is purely cosmetic from v2 onwards.
 	 *
-	 * Constraint enforced at write time (in `plan_phase`): at most one
+	 * Constraint enforced at write time (in `phase`): at most one
 	 * parent. Multi-parent (diamond) DAGs are rejected because the
 	 * compaction-summary carry-forward only flows along a chain; phases
 	 * that would share a child must instead be chained.
@@ -366,7 +366,7 @@ export interface Plan {
 	 * Plan-level standalone tasks. Used for follow-ups that aren't tied
 	 * to a specific phase (e.g. "after release: tell support", "open
 	 * design question to revisit"). Surfaced on the parent /park issue
-	 * and in plan_view; never blocks any /ship.
+	 * and in plan; never blocks any /ship.
 	 *
 	 * Optional for back-compat with v1 plans.
 	 */

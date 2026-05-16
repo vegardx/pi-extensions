@@ -11,7 +11,7 @@
  *     gate completion. They appear in their own section so they're
  *     not lost when the issue is closed.
  *
- * Plan-level `followUps` (added via `plan_task` with `phaseId="@plan"`)
+ * Plan-level `followUps` (added via `task` with `phaseId="@plan"`)
  * appear on the parent tracking issue, not on per-phase sub-issues.
  */
 
