@@ -122,6 +122,7 @@ import {
 	blockedReason,
 	chainHead,
 	effectiveDependsOn,
+	effectivePhaseKind,
 	effectiveTaskKind,
 	type ImplementBranchPlan,
 	isPhaseReady,
@@ -3073,6 +3074,50 @@ export default function (pi: ExtensionAPI) {
 			persist();
 			return;
 		}
+		if (classified.kind === "blocked-on-pre" && plan) {
+			// Pre-phase has un-ticked tasks; refuse to start any regular work
+			// until the user completes the manual preflight checklist.
+			const pre = classified.phase;
+			const pending = pre.tasks.filter((t) => !t.done);
+			const headline = pending
+				.slice(0, 3)
+				.map((t) => `  - [!] ${t.title}`)
+				.join("\n");
+			const more =
+				pending.length > 3 ? `\n  … and ${pending.length - 3} more` : "";
+			notify(
+				ctx,
+				`preflight phase \`${pre.id}\` has ${pending.length} unchecked item${
+					pending.length === 1 ? "" : "s"
+				}. Tick them with \`plan_task toggle\` before starting regular phases.\n${headline}${more}`,
+				"warning",
+			);
+			modeState.stage = "planning";
+			persist();
+			return;
+		}
+		if (classified.kind === "post-handover" && plan) {
+			// All regular phases terminal; surface the post-handover
+			// checklist instead of falsely reporting "all done".
+			const post = classified.phase;
+			const pending = post.tasks.filter((t) => !t.done);
+			const headline = pending
+				.slice(0, 5)
+				.map((t) => `  - [!] ${t.title}`)
+				.join("\n");
+			const more =
+				pending.length > 5 ? `\n  … and ${pending.length - 5} more` : "";
+			notify(
+				ctx,
+				`all regular phases shipped — handover phase \`${post.id}\` has ${pending.length} pending item${
+					pending.length === 1 ? "" : "s"
+				} for you to complete:\n${headline}${more}`,
+				"info",
+			);
+			modeState.stage = "planning";
+			persist();
+			return;
+		}
 		if (classified.kind === "blocked-on-deps" && plan) {
 			// Planned phases exist but every one is blocked on an in-flight
 			// or unresolvable parent. Surface the specific blocker so the
@@ -3443,6 +3488,18 @@ export default function (pi: ExtensionAPI) {
 					? `phase ${arg} not found in plan`
 					: "no active phase to ship — set one to active first or pass /ship <phaseId>",
 				"error",
+			);
+			return;
+		}
+		// Pre/post phases are manual checklists — there's no branch and no
+		// PR to open. /ship is a no-op; user just toggles their tasks.
+		const phaseKind = effectivePhaseKind(phase);
+		if (phaseKind !== "regular") {
+			notify(
+				ctx,
+				`phase \`${phase.id}\` is a ${phaseKind}-phase (manual checklist) — ` +
+					"there's no branch to ship. Tick its tasks with `plan_task toggle` instead.",
+				"warning",
 			);
 			return;
 		}

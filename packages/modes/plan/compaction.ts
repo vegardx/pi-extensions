@@ -94,7 +94,7 @@ import type {
 	SessionMessageEntry,
 } from "@mariozechner/pi-coding-agent";
 import type { Plan, Phase as PlanPhase, TokenUsage } from "./schema.js";
-import { TERMINAL_STATUSES } from "./schema.js";
+import { effectivePhaseKind, TERMINAL_STATUSES } from "./schema.js";
 
 /** Type alias to avoid importing AgentMessage directly from pi-agent-core. */
 type AgentMessage = SessionMessageEntry["message"];
@@ -260,7 +260,11 @@ export function renderPlanSection(plan: Plan): string {
 	const lines: string[] = [`## Plan: ${plan.title} (slug: ${plan.slug})`];
 	for (const p of plan.phases) {
 		const pr = p.prNumber !== undefined ? ` PR #${p.prNumber}` : "";
-		lines.push(`- \`${p.id}\` [${p.status}]${pr} — ${p.title}: ${p.goal}`);
+		const kind = effectivePhaseKind(p);
+		const kindMarker = kind === "regular" ? "" : ` [${kind}]`;
+		lines.push(
+			`- \`${p.id}\`${kindMarker} [${p.status}]${pr} — ${p.title}: ${p.goal}`,
+		);
 	}
 	return lines.join("\n");
 }

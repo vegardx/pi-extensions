@@ -238,4 +238,58 @@ describe("renderPlanSeed", () => {
 		const plan = makePlan([phase]);
 		expect(renderPlanSeed(plan, phase)).toBe(renderPlanSeed(plan, phase));
 	});
+
+	it("renders pre/post phases with kind marker and manual checklist", () => {
+		const pre = makePhase({
+			id: "pre",
+			title: "Preflight",
+			kind: "pre",
+			branch: "",
+			tasks: [
+				{
+					id: "t1",
+					title: "rename secret",
+					body: "",
+					done: false,
+					createdAt: "2024-01-01T00:00:00.000Z",
+					updatedAt: "2024-01-01T00:00:00.000Z",
+				},
+			],
+		});
+		const active = makePhase({ id: "r1", status: "active" });
+		const plan = makePlan([pre, active]);
+		const out = renderPlanSeed(plan, active);
+		expect(out).toContain("`pre` [pre]");
+		expect(out).toContain(
+			"Preflight (manual; user ticks before regular phases proceed)",
+		);
+		expect(out).toContain("[!] rename secret");
+	});
+
+	it("renders post phase as Handover checklist", () => {
+		const active = makePhase({ id: "r1", status: "active" });
+		const post = makePhase({
+			id: "post",
+			title: "Handover",
+			kind: "post",
+			branch: "",
+			tasks: [
+				{
+					id: "t1",
+					title: "deploy",
+					body: "",
+					done: true,
+					createdAt: "2024-01-01T00:00:00.000Z",
+					updatedAt: "2024-01-01T00:00:00.000Z",
+				},
+			],
+		});
+		const out = renderPlanSeed(makePlan([active, post]), active);
+		expect(out).toContain("`post` [post]");
+		expect(out).toContain(
+			"Handover (manual; user completes after last regular phase ships)",
+		);
+		// Done items still show [x].
+		expect(out).toContain("[x] deploy");
+	});
 });

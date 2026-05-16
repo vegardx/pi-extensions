@@ -159,14 +159,50 @@ export function effectiveTaskKind(task: Pick<Task, "kind">): TaskKind {
 	return task.kind ?? "deliverable";
 }
 
+/**
+ * Phase kinds. Distinguishes implementable work from manual-intervention
+ * checklists at the plan boundaries.
+ *
+ *   - `regular` (default): a unit of code work. Claims a feature branch,
+ *     gets implemented under `/implement`, ships via `/ship` as one PR.
+ *   - `pre`: preflight checklist. Manual prerequisites the user has to
+ *     complete before any `regular` phase becomes implementable.
+ *     At most one per plan. Never claims a branch. Never ships via
+ *     `/ship`. Never opens a PR. Auto mode refuses to enter regular
+ *     phases until every task on the pre-phase is `done`.
+ *   - `post`: handover checklist. Manual follow-ups the user has to
+ *     do after the last `regular` phase ships (deploy steps, comms,
+ *     external filings). At most one per plan. Same constraints as
+ *     `pre`. Auto mode pops a handover dialog listing the remaining
+ *     post tasks after the last regular phase ships and exits.
+ *
+ * Optional for back-compat with v1/v2 plans. Read via
+ * {@link effectivePhaseKind} which defaults to `regular`.
+ */
+export const PHASE_KINDS = ["pre", "regular", "post"] as const;
+export type PhaseKind = (typeof PHASE_KINDS)[number];
+
 export interface Phase {
 	id: string;
 	title: string;
 	/** One-line: what ships when this merges. */
 	goal: string;
 	status: PhaseStatus;
-	/** Git branch — typically `feat/<phase-id>`. */
+	/**
+	 * Git branch — typically `feat/<phase-id>`.
+	 *
+	 * Empty string for `pre`/`post` phases: those don't claim a feature
+	 * branch (no PR, no `/ship`). Schema validation rejects non-empty
+	 * branches on non-regular phases.
+	 */
 	branch: string;
+	/**
+	 * Phase kind. See {@link PhaseKind}. Optional for back-compat with
+	 * v1/v2 plans — missing field reads as `regular` via
+	 * {@link effectivePhaseKind}. Constraint enforced at write time:
+	 * at most one `pre` and at most one `post` per plan.
+	 */
+	kind?: PhaseKind;
 	/**
 	 * Phase ids this phase depends on. Authoritative dependency edge —
 	 * the `phases[]` array order is purely cosmetic from v2 onwards.
@@ -440,6 +476,74 @@ export function defaultBranchForPhase(phase: Pick<Phase, "id">): string {
 }
 
 /**
+ * Read a phase's kind, defaulting to `regular` for v1/v2 plans that
+ * don't yet have the field set.
+ */
+export function effectivePhaseKind(phase: Pick<Phase, "kind">): PhaseKind {
+	return phase.kind ?? "regular";
+}
+
+/**
+ * Find the unique pre-phase (manual-intervention preflight checklist)
+ * if one exists. Schema validation enforces at-most-one.
+ */
+export function findPrePhase(plan: Pick<Plan, "phases">): Phase | undefined {
+	return plan.phases.find((p) => effectivePhaseKind(p) === "pre");
+}
+
+/**
+ * Find the unique post-phase (manual-intervention handover checklist)
+ * if one exists. Schema validation enforces at-most-one.
+ */
+export function findPostPhase(plan: Pick<Plan, "phases">): Phase | undefined {
+	return plan.phases.find((p) => effectivePhaseKind(p) === "post");
+}
+
+/**
+ * Phases that hold actual code work (a feature branch + PR). Excludes
+ * `pre` and `post` checklist phases. Used by `/implement`,
+ * {@link readyPhases}, and {@link chainHead} to ignore manual phases
+ * when sequencing implementation work.
+ */
+export function regularPhases(plan: Pick<Plan, "phases">): Phase[] {
+	return plan.phases.filter((p) => effectivePhaseKind(p) === "regular");
+}
+
+/**
+ * Pre-phase gate. Returns the pre-phase if one exists AND has at
+ * least one task that isn't `done` — the auto-mode driver and
+ * `/implement` use this to refuse to start regular work until the
+ * user ticks through the preflight.
+ *
+ * Tasks of any kind count toward the gate (deliverable / manual /
+ * question / followUp): the pre-phase is itself a manual checklist
+ * and the user is expected to mark every line complete before
+ * automation proceeds. Returns `null` when no pre-phase exists or
+ * every task is done.
+ */
+export function pendingPrePhase(plan: Pick<Plan, "phases">): Phase | null {
+	const pre = findPrePhase(plan);
+	if (!pre) return null;
+	if (pre.tasks.length === 0) return null;
+	const allDone = pre.tasks.every((t) => t.done);
+	return allDone ? null : pre;
+}
+
+/**
+ * Post-phase handover. Returns the post-phase if it exists and has
+ * at least one un-done task. Used after the last regular phase ships
+ * to surface the remaining manual handover checklist before auto
+ * mode exits.
+ */
+export function pendingPostPhase(plan: Pick<Plan, "phases">): Phase | null {
+	const post = findPostPhase(plan);
+	if (!post) return null;
+	if (post.tasks.length === 0) return null;
+	const allDone = post.tasks.every((t) => t.done);
+	return allDone ? null : post;
+}
+
+/**
  * Read a phase's `dependsOn`, defaulting to a single-parent fallback
  * derived from the array order for v1 plans that don't yet have the
  * field set on disk.
@@ -510,9 +614,12 @@ const ACTIVATABLE_PARENT_STATUSES: readonly PhaseStatus[] = [
  */
 export function isPhaseReady(
 	plan: Pick<Plan, "phases">,
-	phase: Pick<Phase, "id" | "status" | "dependsOn">,
+	phase: Pick<Phase, "id" | "status" | "dependsOn" | "kind">,
 ): boolean {
 	if (phase.status !== "planned") return false;
+	// Pre/post phases are manual checklists, not implementable work.
+	// They never enter the activation queue.
+	if (effectivePhaseKind(phase) !== "regular") return false;
 	const deps = effectiveDependsOn(plan, phase);
 	if (deps.length === 0) return true;
 	const parent = plan.phases.find((p) => p.id === deps[0]);
@@ -561,6 +668,12 @@ export function chainHead(
 			(p) => effectiveDependsOn(plan, p)[0] === curId,
 		);
 		if (!next) return null;
+		// Skip non-regular phases entirely — pre/post phases are manual
+		// checklists and never participate in the auto-loop's chain walk.
+		if (effectivePhaseKind(next) !== "regular") {
+			curId = next.id;
+			continue;
+		}
 		if (next.status === "shipped") {
 			curId = next.id;
 			continue;

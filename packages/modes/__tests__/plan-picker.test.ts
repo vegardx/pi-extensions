@@ -578,4 +578,156 @@ describe("classifyImplementContext", () => {
 			expect(result.phase.id).toBe("b");
 		}
 	});
+
+	it("returns 'blocked-on-pre' when a pre-phase has un-ticked tasks", () => {
+		const now = new Date().toISOString();
+		const pre = makePhase({
+			id: "pre",
+			kind: "pre",
+			branch: "",
+			dependsOn: [],
+			tasks: [
+				{
+					id: "t1",
+					title: "rename secret",
+					body: "",
+					done: false,
+					createdAt: now,
+					updatedAt: now,
+				},
+			],
+		});
+		const r1 = makePhase({ id: "r1", status: "planned", dependsOn: [] });
+		const plan = makePlan([pre, r1]);
+		const result = classifyImplementContext(plan);
+		expect(result.kind).toBe("blocked-on-pre");
+		if (result.kind === "blocked-on-pre") {
+			expect(result.phase.id).toBe("pre");
+		}
+	});
+
+	it("pre gate trumps an in-flight regular phase", () => {
+		// Hand-edited plan: someone activated a regular phase before
+		// finishing the preflight. The classifier still refuses.
+		const now = new Date().toISOString();
+		const pre = makePhase({
+			id: "pre",
+			kind: "pre",
+			branch: "",
+			dependsOn: [],
+			tasks: [
+				{
+					id: "t1",
+					title: "x",
+					body: "",
+					done: false,
+					createdAt: now,
+					updatedAt: now,
+				},
+			],
+		});
+		const r1 = makePhase({ id: "r1", status: "active", dependsOn: [] });
+		const result = classifyImplementContext(makePlan([pre, r1]));
+		expect(result.kind).toBe("blocked-on-pre");
+	});
+
+	it("falls through to use-phase when every pre-task is done", () => {
+		const now = new Date().toISOString();
+		const pre = makePhase({
+			id: "pre",
+			kind: "pre",
+			branch: "",
+			dependsOn: [],
+			tasks: [
+				{
+					id: "t1",
+					title: "x",
+					body: "",
+					done: true,
+					createdAt: now,
+					updatedAt: now,
+				},
+			],
+		});
+		const r1 = makePhase({ id: "r1", status: "planned", dependsOn: [] });
+		const result = classifyImplementContext(makePlan([pre, r1]));
+		expect(result.kind).toBe("use-phase");
+		if (result.kind === "use-phase") {
+			expect(result.phase.id).toBe("r1");
+		}
+	});
+
+	it("returns 'post-handover' when every regular shipped and post tasks remain", () => {
+		const now = new Date().toISOString();
+		const r1 = makePhase({ id: "r1", status: "shipped", dependsOn: [] });
+		const post = makePhase({
+			id: "post",
+			kind: "post",
+			branch: "",
+			dependsOn: ["r1"],
+			tasks: [
+				{
+					id: "h1",
+					title: "deploy",
+					body: "",
+					done: false,
+					createdAt: now,
+					updatedAt: now,
+				},
+			],
+		});
+		const result = classifyImplementContext(makePlan([r1, post]));
+		expect(result.kind).toBe("post-handover");
+		if (result.kind === "post-handover") {
+			expect(result.phase.id).toBe("post");
+		}
+	});
+
+	it("post-handover does NOT fire while a regular phase is still in-review", () => {
+		const now = new Date().toISOString();
+		const r1 = makePhase({ id: "r1", status: "shipped", dependsOn: [] });
+		const r2 = makePhase({ id: "r2", status: "in-review", dependsOn: ["r1"] });
+		const post = makePhase({
+			id: "post",
+			kind: "post",
+			branch: "",
+			dependsOn: ["r2"],
+			tasks: [
+				{
+					id: "h1",
+					title: "deploy",
+					body: "",
+					done: false,
+					createdAt: now,
+					updatedAt: now,
+				},
+			],
+		});
+		// r2 is in-review (in-flight): classifier picks it up as use-phase.
+		const result = classifyImplementContext(makePlan([r1, r2, post]));
+		expect(result.kind).toBe("refuse-no-actionable");
+	});
+
+	it("refuse-no-actionable when post tasks are all done", () => {
+		const now = new Date().toISOString();
+		const r1 = makePhase({ id: "r1", status: "shipped", dependsOn: [] });
+		const post = makePhase({
+			id: "post",
+			kind: "post",
+			branch: "",
+			dependsOn: ["r1"],
+			tasks: [
+				{
+					id: "h1",
+					title: "deploy",
+					body: "",
+					done: true,
+					createdAt: now,
+					updatedAt: now,
+				},
+			],
+		});
+		const result = classifyImplementContext(makePlan([r1, post]));
+		expect(result.kind).toBe("refuse-no-actionable");
+	});
 });
