@@ -84,5 +84,12 @@ export const gitleaksSpec: ScannerSpec = {
 		"0",
 		".",
 	],
+	/**
+	 * Auto-detect: gitleaks is **always relevant** in any git repo — secret
+	 * scanning needs no per-repo config. We treat `enable: "auto"` as "on
+	 * if the binary exists" by always returning `true`; the registry's
+	 * binary probe gates actual execution.
+	 */
+	detectAuto: () => true,
 	parse: parseGitleaksOutput,
 };

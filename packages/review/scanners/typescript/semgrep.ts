@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -47,6 +49,26 @@ export function parseSemgrepOutput(raw: string): RawFinding[] {
 	return findings;
 }
 
+/**
+ * Auto-detect: enable when the repo has a semgrep config file. With
+ * no config, semgrep needs `--config` rulesets which the user must
+ * supply explicitly via `args.rulesets` — don't auto-enable in that
+ * case (the default `p/javascript` ruleset is too noisy to opt into
+ * silently).
+ */
+function detectSemgrep(cwd: string): boolean {
+	const names = [
+		".semgrep.yml",
+		".semgrep.yaml",
+		"semgrep.yml",
+		"semgrep.yaml",
+	];
+	return names.some((n) => existsSync(join(cwd, n)));
+}
+
+/** Default ruleset when none configured — covers JS/TS by default. */
+const DEFAULT_SEMGREP_RULESETS = ["p/javascript"] as const;
+
 export const semgrepSpec: ScannerSpec = {
 	id: "semgrep",
 	// `buildArgs` pins `--config p/javascript` so we only produce useful
@@ -59,6 +81,18 @@ export const semgrepSpec: ScannerSpec = {
 	defaultEnabled: false,
 	budgetMs: 120_000,
 	binary: "semgrep",
-	buildArgs: () => ["scan", "--config", "p/javascript", "--json", "."],
+	buildArgs: (opts) => {
+		const rulesets =
+			opts?.rulesets && opts.rulesets.length > 0
+				? opts.rulesets
+				: DEFAULT_SEMGREP_RULESETS;
+		const args = ["scan"];
+		for (const r of rulesets) {
+			args.push("--config", r);
+		}
+		args.push("--json", ".");
+		return args;
+	},
+	detectAuto: detectSemgrep,
 	parse: parseSemgrepOutput,
 };

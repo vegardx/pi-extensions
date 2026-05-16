@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -110,5 +112,8 @@ export const npmAuditSpec: ScannerSpec = {
 	budgetMs: 20_000,
 	binary: "npm",
 	buildArgs: () => ["audit", "--json"],
+	detectAuto: (cwd) =>
+		existsSync(join(cwd, "package.json")) &&
+		existsSync(join(cwd, "package-lock.json")),
 	parse: parseNpmAuditOutput,
 };

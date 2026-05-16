@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -36,5 +38,6 @@ export const tscSpec: ScannerSpec = {
 	budgetMs: 30_000,
 	binary: "tsc",
 	buildArgs: () => ["--noEmit", "--pretty", "false"],
+	detectAuto: (cwd) => existsSync(join(cwd, "tsconfig.json")),
 	parse: parseTscOutput,
 };

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -61,5 +63,7 @@ export const biomeSpec: ScannerSpec = {
 	budgetMs: 15_000,
 	binary: "biome",
 	buildArgs: () => ["check", "--reporter", "json", "."],
+	detectAuto: (cwd) =>
+		existsSync(join(cwd, "biome.json")) || existsSync(join(cwd, "biome.jsonc")),
 	parse: parseBiomeOutput,
 };

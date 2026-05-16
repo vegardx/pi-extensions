@@ -105,7 +105,7 @@ export function runScanners(
 			continue;
 		}
 
-		const result = ctx.spawn(bin, spec.buildArgs(), budgetMs);
+		const result = ctx.spawn(bin, spec.buildArgs(o.args), budgetMs);
 
 		if (result.spawnError) {
 			outcomes.push({

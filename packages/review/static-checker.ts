@@ -10,6 +10,7 @@
  * `BUILTIN_SCANNERS` in `scanners/index.ts`.
  */
 
+import type { RelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import type { RawFinding, ReviewerRole } from "./findings.js";
 import {
 	BUILTIN_SCANNERS,
@@ -17,7 +18,16 @@ import {
 	defaultScannerContext,
 	runScanners,
 } from "./scanners/index.js";
-import type { ScannerOverrides, ScannerSpec } from "./scanners/types.js";
+import {
+	hasScannerSettings,
+	readScannerSettings,
+	resolveScannerOverrides,
+} from "./scanners/scanner-settings.js";
+import type {
+	ScannerOutcome,
+	ScannerOverrides,
+	ScannerSpec,
+} from "./scanners/types.js";
 
 // ---- Back-compat re-exports (parsers + probe) ---------------------------
 
@@ -145,22 +155,12 @@ function overridesFromLegacyConfig(
 // ---- Public API --------------------------------------------------------
 
 /**
- * Run all enabled static analysis tools and return findings organised
- * by reviewer lane. Unavailable or disabled tools are recorded but
- * silently skipped — the caller can surface the `toolResults` in the
- * report if desired.
- *
- * Implementation calls into `runScanners` over `BUILTIN_SCANNERS`;
- * the legacy result shape is reconstructed from the outcomes.
+ * Shape registry outcomes into the legacy `StaticAnalysisResult`
+ * (`byLane` + `toolResults`). Pure — no side effects, no I/O.
  */
-export async function runStaticAnalysis(
-	cwd: string,
-	config: StaticAnalysisConfig = {},
-): Promise<StaticAnalysisResult> {
-	const ctx = defaultScannerContext(cwd);
-	const overrides = overridesFromLegacyConfig(BUILTIN_SCANNERS, config);
-	const outcomes = runScanners(BUILTIN_SCANNERS, ctx, overrides);
-
+function toStaticAnalysisResult(
+	outcomes: readonly ScannerOutcome[],
+): StaticAnalysisResult {
 	const toolResults: StaticToolResult[] = [];
 	const laneMap = new Map<StaticToolLane, RawFinding[]>();
 
@@ -182,4 +182,67 @@ export async function runStaticAnalysis(
 	}
 
 	return { byLane: laneMap, toolResults };
+}
+
+/**
+ * Run all enabled static analysis tools and return findings organised
+ * by reviewer lane. Unavailable or disabled tools are recorded but
+ * silently skipped — the caller can surface the `toolResults` in the
+ * report if desired.
+ *
+ * Implementation calls into `runScanners` over `BUILTIN_SCANNERS`;
+ * the legacy result shape is reconstructed from the outcomes.
+ */
+export async function runStaticAnalysis(
+	cwd: string,
+	config: StaticAnalysisConfig = {},
+): Promise<StaticAnalysisResult> {
+	const ctx = defaultScannerContext(cwd);
+	const overrides = overridesFromLegacyConfig(BUILTIN_SCANNERS, config);
+	const outcomes = runScanners(BUILTIN_SCANNERS, ctx, overrides);
+	return toStaticAnalysisResult(outcomes);
+}
+
+/**
+ * Settings-aware entry point. Prefers `extensionConfig.review.scanners`
+ * (new schema, kebab-case ids, `enable: "auto"` supported). Falls back
+ * to legacy `extensionConfig.review.staticAnalysis` (camelCase ids)
+ * when the new key is absent. Either way, returns the same
+ * `StaticAnalysisResult` shape `auto-review.ts` already consumes.
+ *
+ * `legacyOverride` (when supplied) wins only if NEITHER the new
+ * `scanners` block nor a legacy `staticAnalysis` block is present in
+ * `settings` — it's the lowest-priority knob, intended for tests.
+ */
+export async function runStaticAnalysisFromSettings(
+	cwd: string,
+	settings: RelevantSettings,
+	legacyOverride?: StaticAnalysisConfig,
+): Promise<StaticAnalysisResult> {
+	if (hasScannerSettings(settings)) {
+		const parsed = readScannerSettings(settings);
+		const overrides = resolveScannerOverrides(BUILTIN_SCANNERS, parsed, cwd);
+		const ctx = defaultScannerContext(cwd);
+		const outcomes = runScanners(BUILTIN_SCANNERS, ctx, overrides);
+		return toStaticAnalysisResult(outcomes);
+	}
+	const legacyFromSettings = readLegacyFromSettings(settings);
+	return runStaticAnalysis(cwd, legacyFromSettings ?? legacyOverride ?? {});
+}
+
+/**
+ * Extract a legacy `StaticAnalysisConfig` view from a `RelevantSettings`
+ * blob. Returns `null` when no legacy block is present — callers fall
+ * through to a supplied override or empty config.
+ */
+function readLegacyFromSettings(
+	settings: RelevantSettings,
+): StaticAnalysisConfig | null {
+	const review = settings.extensionConfig?.review;
+	if (!review || typeof review !== "object" || Array.isArray(review)) {
+		return null;
+	}
+	const raw = (review as Record<string, unknown>).staticAnalysis;
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+	return raw as StaticAnalysisConfig;
 }

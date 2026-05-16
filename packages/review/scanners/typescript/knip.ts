@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { RawFinding } from "../../findings.js";
 import type { ScannerSpec } from "../types.js";
 
@@ -56,6 +58,33 @@ export function parseKnipOutput(raw: string): RawFinding[] {
 	return findings;
 }
 
+/**
+ * Detect a knip configuration: dedicated `knip.json{,c}`, dedicated
+ * config file, or `"knip"` key in `package.json`. Knip without config
+ * still works but produces noise; we only auto-enable when the user
+ * has actually opted in.
+ */
+function detectKnip(cwd: string): boolean {
+	const direct = [
+		"knip.json",
+		"knip.jsonc",
+		"knip.config.js",
+		"knip.config.ts",
+	];
+	if (direct.some((n) => existsSync(join(cwd, n)))) return true;
+	try {
+		const pkgPath = join(cwd, "package.json");
+		if (!existsSync(pkgPath)) return false;
+		const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as Record<
+			string,
+			unknown
+		>;
+		return typeof pkg.knip === "object" && pkg.knip !== null;
+	} catch {
+		return false;
+	}
+}
+
 export const knipSpec: ScannerSpec = {
 	id: "knip",
 	languages: ["typescript", "javascript"],
@@ -64,5 +93,6 @@ export const knipSpec: ScannerSpec = {
 	budgetMs: 60_000,
 	binary: "knip",
 	buildArgs: () => ["--reporter", "json"],
+	detectAuto: detectKnip,
 	parse: parseKnipOutput,
 };

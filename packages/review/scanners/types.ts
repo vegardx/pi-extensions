@@ -48,6 +48,17 @@ export interface ScannerContext {
 	spawn: (bin: string, args: string[], timeoutMs: number) => SpawnResult;
 }
 
+/**
+ * Optional argument-builder inputs. Per-scanner config (e.g.
+ * `rulesets` for semgrep) flows in here from
+ * `extensionConfig.review.scanners.<id>` so the registry can stay
+ * agnostic about each adapter's option surface.
+ */
+export interface ScannerArgsOptions {
+	/** Semgrep config rulesets (e.g. `p/typescript`, `p/owasp-top-ten`). */
+	rulesets?: readonly string[];
+}
+
 export interface ScannerSpec {
 	/** Stable identifier — also the config key under `extensionConfig.review.scanners`. */
 	id: string;
@@ -61,8 +72,18 @@ export interface ScannerSpec {
 	budgetMs: number;
 	/** Binary name to probe via `node_modules/.bin/<name>` then PATH. */
 	binary: string;
-	/** Argv builder. Pure; no I/O. */
-	buildArgs: () => string[];
+	/**
+	 * Argv builder. Pure; no I/O. Receives optional adapter-specific
+	 * options (currently `rulesets` for semgrep) sourced from per-scanner
+	 * config; specs that don't need options can ignore the argument.
+	 */
+	buildArgs: (opts?: ScannerArgsOptions) => string[];
+	/**
+	 * Heuristic for `enable: "auto"` — return `true` when the cwd has the
+	 * relevant config / lockfile / etc. for this scanner to be useful.
+	 * When unset, `enable: "auto"` resolves to `defaultEnabled`.
+	 */
+	detectAuto?: (cwd: string) => boolean;
 	/** Parser for combined stdout+stderr. May throw — registry catches. */
 	parse: (raw: string) => RawFinding[];
 }
@@ -84,5 +105,6 @@ export interface ScannerOverrides {
 	[id: string]: {
 		enabled?: boolean;
 		budgetMs?: number;
+		args?: ScannerArgsOptions;
 	};
 }
