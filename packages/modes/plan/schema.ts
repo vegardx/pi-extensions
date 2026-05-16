@@ -244,8 +244,54 @@ export interface Phase {
 	 * edits survive.
 	 */
 	summary?: string;
+	/**
+	 * Per-phase token telemetry, populated at /ship time. Counts the
+	 * cumulative LLM cost of executing the phase across its auto session,
+	 * the per-phase end-of-phase summary, and any mid-phase compactions
+	 * that fired while the phase was active.
+	 *
+	 * Shape:
+	 *   - `phase`     — sum of every assistant message's `usage` recorded
+	 *                   in the phase's auto session
+	 *   - `summary`   — the single LLM call that wrote `phase.summary`
+	 *                   at /ship time (absent for phases that shipped
+	 *                   without a summariser available)
+	 *   - `midPhase`  — one entry per mid-phase compaction that fired
+	 *                   during the phase (chronological order)
+	 *
+	 * Optional for back-compat: phases that shipped before this field
+	 * existed have no telemetry. Re-running /ship on a shipped phase
+	 * does not recompute the totals — they're written once.
+	 */
+	tokens?: PhaseTokens;
 	createdAt: string;
 	updatedAt: string;
+}
+
+/**
+ * Single LLM call's token cost. Mirrors {@link import("@mariozechner/pi-ai").Usage}
+ * but flattened to the four fields we care about plus an aggregate cost
+ * (USD) when the underlying call exposed one. `cost` is optional because
+ * sums across heterogeneous calls drop the cost field when any
+ * contributor lacked it — absence means "unknown", not zero.
+ */
+export interface TokenUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	/** Aggregate cost in USD; absent when any contributor lacked cost data. */
+	cost?: number;
+}
+
+/**
+ * Per-phase telemetry written at /ship time. See `Phase.tokens` for the
+ * field-by-field semantics.
+ */
+export interface PhaseTokens {
+	phase: TokenUsage;
+	summary?: TokenUsage;
+	midPhase: TokenUsage[];
 }
 
 export interface PlanRepo {

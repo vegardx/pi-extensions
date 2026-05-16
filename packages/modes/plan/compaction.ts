@@ -93,7 +93,7 @@ import type {
 	SessionManager,
 	SessionMessageEntry,
 } from "@mariozechner/pi-coding-agent";
-import type { Plan, Phase as PlanPhase } from "./schema.js";
+import type { Plan, Phase as PlanPhase, TokenUsage } from "./schema.js";
 import { TERMINAL_STATUSES } from "./schema.js";
 
 /** Type alias to avoid importing AgentMessage directly from pi-agent-core. */
@@ -163,12 +163,24 @@ export interface ModesCompactionDetails {
 	modesPhaseId: string;
 }
 
+/**
+ * Result of a single summariser invocation. `text` is the assistant's
+ * text reply (already trimmed). `usage` is the LLM call's token cost
+ * when available — absent when the underlying provider didn't expose
+ * one. The pre-#143 surface was just `string | null`; widened so
+ * callers can record per-phase token telemetry.
+ */
+export interface SummariseOutput {
+	text: string;
+	usage?: TokenUsage;
+}
+
 export type SummariseFn = (args: {
 	messages: AgentMessage[];
 	preamble: string;
 	maxTokens: number;
 	signal?: AbortSignal;
-}) => Promise<string | null>;
+}) => Promise<SummariseOutput | null>;
 
 // ---------------------------------------------------------------------------
 // Plan-aware rendering — pure functions, byte-stable for given inputs.
@@ -444,6 +456,13 @@ export interface PhaseSliceCompactionResult {
 	firstKeptEntryId: string;
 	tokensBefore: number;
 	details: ModesCompactionDetails;
+	/**
+	 * Token usage of the summariser call that produced `summary`.
+	 * Absent when the body fell back to `(no recorded work)` (no LLM
+	 * call fired) or when the provider didn't expose usage data. Used
+	 * by the caller to populate `phase.tokens.midPhase[]`.
+	 */
+	usage?: TokenUsage;
 }
 
 export interface BuildPhaseSliceCompactionOptions {
@@ -508,6 +527,7 @@ export async function buildPhaseSliceCompactionResult(
 	const messages = collectMessagesSinceLastCompaction(sm);
 
 	let body = "(no recorded work)";
+	let usage: TokenUsage | undefined;
 	if (messages.length > 0) {
 		const preamble = buildSummariserPreamble(plan, phase, maxTokens, partN);
 		const out = await summarise({
@@ -517,7 +537,8 @@ export async function buildPhaseSliceCompactionResult(
 			signal,
 		});
 		if (out === null) return null;
-		body = out.trim();
+		body = out.text.trim();
+		usage = out.usage;
 	}
 
 	const prev = findLatestCompactionSummary(sm);
@@ -534,6 +555,7 @@ export async function buildPhaseSliceCompactionResult(
 			modesKind: "phase-slice",
 			modesPhaseId: phaseId,
 		} satisfies ModesCompactionDetails,
+		usage,
 	};
 }
 

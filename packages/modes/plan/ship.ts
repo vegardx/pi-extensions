@@ -15,7 +15,9 @@ import {
 	effectiveTaskKind,
 	type Plan,
 	type Phase as PlanPhase,
+	type TokenUsage,
 } from "./schema.js";
+import { addUsage, formatCost, formatTokenCount } from "./token-usage.js";
 import { effectiveWorktreePath } from "./worktree.js";
 
 export interface ShipOptions {
@@ -243,6 +245,15 @@ export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 	const lines: string[] = [];
 	lines.push("## Goal", "", phase.goal || "_(no goal set)_", "");
 
+	// Token telemetry (#143): when /ship recorded per-phase usage,
+	// surface the totals so cost/token spend is visible at review.
+	// Phases that shipped before this field existed render no Tokens
+	// section, so older PRs are byte-stable.
+	const tokensSection = renderTokensSection(phase);
+	if (tokensSection) {
+		lines.push(...tokensSection, "");
+	}
+
 	// Split phase tasks by kind. Deliverables are the unit of work the PR
 	// is shipping; question / followUp / manual tasks are notes for the
 	// reviewer (open questions, follow-up work to schedule, manual smoke
@@ -332,4 +343,47 @@ export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 		lines.push(`Part of #${plan.parentIssueNumber}`);
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Render a `## Tokens` block for the PR body. Returns an array of
+ * lines (no trailing blank), or null when there's no telemetry to
+ * show. Surfaces the per-phase phase total + per-compaction
+ * mid-phase entries; the end-of-phase summary call lands after PR
+ * creation, so its cost lives in the plan doc rather than this body.
+ */
+export function renderTokensSection(phase: PlanPhase): string[] | null {
+	const tokens = phase.tokens;
+	if (!tokens) return null;
+
+	const lines: string[] = ["## Tokens", ""];
+	lines.push(formatTokensRow("Phase", tokens.phase));
+	for (const [i, midPhase] of tokens.midPhase.entries()) {
+		lines.push(formatTokensRow(`Mid-phase compaction ${i + 1}`, midPhase));
+	}
+	if (tokens.midPhase.length > 0) {
+		const total = tokens.midPhase.reduce<TokenUsage>(
+			(acc, u) => addUsage(acc, u),
+			tokens.phase,
+		);
+		lines.push("", `**Total:** ${describeUsage(total)}`);
+	}
+	return lines;
+}
+
+function formatTokensRow(label: string, usage: TokenUsage): string {
+	return `- **${label}:** ${describeUsage(usage)}`;
+}
+
+function describeUsage(usage: TokenUsage): string {
+	const parts = [
+		`in ${formatTokenCount(usage.input)}`,
+		`out ${formatTokenCount(usage.output)}`,
+	];
+	if (usage.cacheRead > 0)
+		parts.push(`cache r ${formatTokenCount(usage.cacheRead)}`);
+	if (usage.cacheWrite > 0)
+		parts.push(`cache w ${formatTokenCount(usage.cacheWrite)}`);
+	if (typeof usage.cost === "number") parts.push(formatCost(usage.cost));
+	return parts.join(" · ");
 }

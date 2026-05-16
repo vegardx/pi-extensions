@@ -509,7 +509,9 @@ describe("buildPhaseSliceCompactionResult", () => {
 		]);
 		sm.appendMessage(userMsg("work in progress"));
 
-		const summarise: SummariseFn = vi.fn().mockResolvedValue("distilled body");
+		const summarise: SummariseFn = vi
+			.fn()
+			.mockResolvedValue({ text: "distilled body" });
 
 		const result = await buildPhaseSliceCompactionResult({
 			sm: castSm(sm),
@@ -540,7 +542,7 @@ describe("buildPhaseSliceCompactionResult", () => {
 		sm.appendCompaction("## Plan: prior", "_", 0, undefined, true);
 		sm.appendMessage(userMsg("more work"));
 
-		const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
+		const summarise: SummariseFn = vi.fn().mockResolvedValue({ text: "body" });
 		const result = await buildPhaseSliceCompactionResult({
 			sm: castSm(sm),
 			plan,
@@ -571,7 +573,7 @@ describe("buildPhaseSliceCompactionResult", () => {
 		);
 		sm.appendMessage(userMsg("more work"));
 
-		const summarise: SummariseFn = vi.fn().mockResolvedValue("body2");
+		const summarise: SummariseFn = vi.fn().mockResolvedValue({ text: "body2" });
 		const result = await buildPhaseSliceCompactionResult({
 			sm: castSm(sm),
 			plan,
@@ -633,7 +635,7 @@ describe("buildPhaseSliceCompactionResult", () => {
 		const plan = makePlan([
 			makePhase({ id: "p-1", title: "T", status: "active" }),
 		]);
-		const summarise: SummariseFn = vi.fn().mockResolvedValue("body");
+		const summarise: SummariseFn = vi.fn().mockResolvedValue({ text: "body" });
 
 		await expect(
 			buildPhaseSliceCompactionResult({

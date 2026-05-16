@@ -236,6 +236,77 @@ describe("renderPrBody", () => {
 		expect(body).toContain("- [x] already filed as #99");
 		expect(body).toContain("- [x] reviewer ran the smoke test");
 	});
+
+	it("omits the Tokens section when phase.tokens is unset (back-compat)", () => {
+		const body = renderPrBody(makePlan(), makePhase());
+		expect(body).not.toContain("## Tokens");
+	});
+
+	it("renders Tokens section with phase total and cost when present", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tokens: {
+					phase: {
+						input: 12345,
+						output: 6789,
+						cacheRead: 1234,
+						cacheWrite: 0,
+						cost: 0.42,
+					},
+					midPhase: [],
+				},
+			}),
+		);
+		expect(body).toContain("## Tokens");
+		expect(body).toContain("**Phase:**");
+		expect(body).toContain("in 12.3k");
+		expect(body).toContain("out 6.8k");
+		expect(body).toContain("cache r 1.2k");
+		expect(body).not.toContain("cache w");
+		expect(body).toContain("$0.42");
+	});
+
+	it("includes mid-phase entries and a Total row when compactions ran", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tokens: {
+					phase: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0 },
+					midPhase: [
+						{ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+						{ input: 20, output: 8, cacheRead: 0, cacheWrite: 0 },
+					],
+				},
+			}),
+		);
+		expect(body).toContain("Mid-phase compaction 1");
+		expect(body).toContain("Mid-phase compaction 2");
+		expect(body).toContain("**Total:**");
+		expect(body).toContain("in 130");
+		expect(body).toContain("out 63");
+	});
+
+	it("omits cost from Tokens when any contributor lacked it", () => {
+		const body = renderPrBody(
+			makePlan(),
+			makePhase({
+				tokens: {
+					phase: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+					midPhase: [
+						{ input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
+					],
+				},
+			}),
+		);
+		expect(body).toContain("**Total:**");
+		// Total row should NOT carry a cost segment because the phase
+		// contributor lacked cost data — even though the mid-phase entry
+		// has $0.01, the total drops cost to encode "unknown".
+		const totalLine = body.split("\n").find((l) => l.startsWith("**Total:**"));
+		expect(totalLine).toBeDefined();
+		expect(totalLine).not.toMatch(/\$/);
+	});
 });
 
 describe("shipPhase", () => {
