@@ -22,45 +22,13 @@ import {
 // Remote URL parsing
 // ---------------------------------------------------------------------------
 
-export interface OriginInfo {
-	/** Hostname extracted from the remote URL (e.g. `github.com`, `dnb.ghe.com`). */
-	host: string;
-	owner: string;
-	repo: string;
-	/** Convenience: `${host}/${owner}/${repo}`. */
-	slug: string;
-}
-
-/**
- * Parse a git remote URL into host + owner + repo. Accepts both SSH
- * (`git@host:owner/repo.git`) and HTTPS (`https://host/owner/repo.git`)
- * forms, with or without the trailing `.git`.
- *
- * Returns `null` for anything that doesn't parse cleanly so callers
- * can short-circuit without try/catch noise.
- */
-export function parseOriginUrl(raw: string): OriginInfo | null {
-	const url = raw.trim();
-	if (!url) return null;
-
-	// SSH: git@host:owner/repo(.git)?  — also handles ssh://git@host/owner/repo
-	const sshMatch = url.match(
-		/^(?:ssh:\/\/)?(?:[^@\s]+@)?([^:/\s]+)[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
-	);
-	// HTTPS: https://[user@]host/owner/repo(.git)?
-	const httpsMatch = url.match(
-		/^https?:\/\/(?:[^@/\s]+@)?([^/\s]+)\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/,
-	);
-
-	const m = httpsMatch ?? sshMatch;
-	if (!m) return null;
-	const [, host, owner, repo] = m;
-	if (!host || !owner || !repo) return null;
-	// Reject obviously-bad parses (e.g. when an HTTPS URL slipped past
-	// the SSH regex and the host now contains `://`).
-	if (host.includes(":") || host.includes("/")) return null;
-	return { host, owner, repo, slug: `${host}/${owner}/${repo}` };
-}
+// Re-exported from `@vegardx/pi-extensions-shared/git-origin.js` so
+// /derp and /idea share one parser. Tests still import from this
+// module's local path.
+export {
+	type OriginInfo,
+	parseOriginUrl,
+} from "@vegardx/pi-extensions-shared/git-origin.js";
 
 // ---------------------------------------------------------------------------
 // Session-entry summarisation

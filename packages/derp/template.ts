@@ -227,16 +227,6 @@ export function buildFallbackIssue(
 // Polish-output parsing
 // ---------------------------------------------------------------------------
 
-/**
- * Validate that a parsed JSON value has the `{ title, body }` shape
- * the polish subagent is supposed to emit. Returns the typed draft
- * or `null` for anything malformed.
- */
-export function validatePolishOutput(value: unknown): IssueDraft | null {
-	if (!value || typeof value !== "object") return null;
-	const v = value as Record<string, unknown>;
-	const title = typeof v.title === "string" ? v.title.trim() : "";
-	const body = typeof v.body === "string" ? v.body : "";
-	if (!title || !body) return null;
-	return { title, body };
-}
+// Re-exported from `@vegardx/pi-extensions-shared/polish-runner.js` —
+// the validator is identical between /derp and /idea.
+export { validatePolishOutput } from "@vegardx/pi-extensions-shared/polish-runner.js";
