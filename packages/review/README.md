@@ -21,8 +21,16 @@ current model used for every reviewer (no separate reviewer model).
 - `reviewer-client.ts` — spawns one `pi --mode rpc` subagent per role using
   the current model (`ctx.model.provider` / `ctx.model.id`), collects its
   JSON reply, tears it down.
-- `prompts/` — seven role-specific system prompts used by the RPC fan-out.
-  Every prompt enforces valid-JSON-only output.
+- `lanes.ts` — pure: per-lane `{set, tier}` configuration reader.
+  Resolves `extensionConfig.review.lanes.<id>` → `defaultLane` →
+  built-in defaults. Used by the auto-review pass.
+- `indexer.ts` — Phase 0.5 indexer sub-agent. Emits a structured map
+  of the diff (entry points, modules, hot files, risk surfaces, open
+  questions) that's threaded into every reviewer's task payload as
+  pre-computed evidence. Best-effort; failures are non-fatal.
+- `prompts/` — seven role-specific system prompts used by the RPC fan-out
+  plus the indexer, orchestrator, and challenger prompts. Every prompt
+  enforces valid-JSON-only output.
 - `skills/review/SKILL.md` — the orchestrator workflow. Usable standalone
   via `/skill:review` even without the extension.
 - `skills/<role>/SKILL.md` (seven files) — per-reviewer standalone
@@ -177,52 +185,106 @@ Differences from the interactive `/review` command:
 - **Configurable roles** (default: `code-reviewer` and
   `code-simplifier`). Set `extensionConfig.develop.autoReviewRoles`
   to any subset of the seven reviewer roles.
-- **Multi-model or single-model mode** (`autoReviewMultiModel`,
-  default `true`). When `true`, each role runs once against
-  `backgroundModels.primary.heavy` and once against
-  `backgroundModels.secondary.heavy`; only cross-model consensus
-  findings with a concrete `suggestedAction` are auto-applied.
-  When `false`, only `primary.heavy` is used and all findings with
-  a `suggestedAction` are applied (no consensus gate).
-- **Challenge phase** (multi-model mode only). After the initial
-  fan-out, every CRITICAL finding that only one tier flagged is sent
-  to the OTHER model as a targeted challenge: “Do you agree this is
-  a real issue?” If the challenger agrees, the finding is promoted
-  to cross-model consensus (annotated with † in the report) and
-  its `suggestedAction` is updated if the challenger provides a
-  better one. Only CRITICAL findings are challenged — the overhead
-  is only justified for the highest-stakes issues.
-- **Consensus split**: findings that reach consensus (phase 1 or
-  challenge) are split by whether a concrete fix is available:
-  - With `suggestedAction` → fix prompt queued for the host agent.
-  - Without `suggestedAction` → discussion prompt: the host agent
-    surfaces the finding to the user (fix / investigate / skip).
+- **Per-lane model resolution.** Each reviewer role, the indexer, and
+  the orchestrator can be independently configured to draw from a
+  specific `{set, tier}` of `backgroundModels`. Defaults run the
+  fan-out on `secondary/normal` (security-analyst on `secondary/heavy`)
+  and the orchestrator on `secondary/heavy`. The fan-out is now a
+  single secondary-first pass — the older “primary AND secondary in
+  parallel” shape is gone. See **Lanes** below.
+- **Indexer (Phase 0.5).** Before the reviewer fan-out, a single
+  read-only sub-agent emits a structured map of the diff (entry
+  points, modules, hot files, risk surfaces, open questions). The
+  sketch is threaded into every reviewer's task payload. Failures
+  are best-effort: reviewers continue without the index. Disable via
+  `enableIndex: false` (programmatic) or by configuring the `index`
+  lane to a model that won't resolve.
+- **`consult_other_model` tool** (was `consult_secondary_model`). The
+  orchestrator can call this for any CRITICAL finding it is uncertain
+  about. The consult model is resolved in the *opposite* set from the
+  orchestrator's lane (orchestrator on `secondary` → consult on
+  `primary`, and vice versa) so the orchestrator gets a second
+  opinion from a different model family. Disable by setting
+  `multiModel: false` programmatically (the consult target is then
+  not resolved at all).
+- **Confidence-based split** (Phase 3): findings are split by
+  confidence and whether a concrete fix is available:
+  - `confidence: "high"` + `suggestedAction` → fix prompt queued for
+    the host agent.
+  - `confidence: "high"/"medium"` without fix → discussion prompt:
+    the host agent surfaces the finding to the user.
+  - `confidence: "low"` + CRITICAL → surface with caveat.
+  - `confidence: "low"` + IMPORTANT/NOTE → dropped.
+- **Verification handoff** (Phase 4): auto-applying findings are
+  delivered as a single batched `auto-review-followup` message; the
+  host agent applies, runs tests, and reports back. The orchestrator
+  never modifies files — the boundary is explicit.
 - **No interactive walk**: there is no Accept / Skip / Explain picker.
   The fix and discussion prompts are sent directly via
   `pi.sendMessage(..., { triggerTurn: true })`.
+
+### Lanes
+
+The nine lanes (seven reviewer roles + `index` + `orchestrator`) each
+resolve to one `{set, tier}` pair. Resolution order, high → low:
+
+1. `extensionConfig.review.lanes.<laneId>` — explicit per-lane override.
+2. `extensionConfig.review.defaultLane` — a single fallback for every
+   lane that doesn't have an explicit override.
+3. Built-in defaults (table below).
+
+Built-in defaults:
+
+| Lane                | set       | tier   |
+| ------------------- | --------- | ------ |
+| `index`             | secondary | normal |
+| `architect`         | secondary | normal |
+| `code-reviewer`     | secondary | normal |
+| `scope-analyst`     | secondary | normal |
+| `security-analyst`  | secondary | heavy  |
+| `code-simplifier`   | secondary | normal |
+| `doc-reviewer`      | secondary | normal |
+| `dependency-checker`| secondary | normal |
+| `orchestrator`      | secondary | heavy  |
+
+Invalid entries (unknown set, unknown tier, missing fields) at any
+layer are skipped — they fail closed to the next layer rather than
+leaking malformed config to the resolver. Resolution itself can still
+fail (the `{set, tier}` slot may not be configured under
+`backgroundModels`); the model resolver's own fall-through (e.g.
+`secondary` → `primary` for the same tier) then applies. A reviewer
+role that resolves to no model at all is dropped with a warning; the
+run continues with the remaining lanes.
 
 Settings:
 
 ```jsonc
 {
   "backgroundModels": {
-    "primary":   { "heavy": "anthropic/claude-opus-4" },
-    "secondary": { "heavy": "openai/gpt-4-turbo" }
+    "primary":   { "heavy": "anthropic/claude-opus-4", "normal": "anthropic/claude-sonnet-4-20250514" },
+    "secondary": { "heavy": "openai/gpt-4-turbo",     "normal": "openai/gpt-4o" }
   },
   "extensionConfig": {
     "develop": {
       "autoReview": false,           // disable entirely
       "autoReviewRoles": ["code-reviewer", "code-simplifier"],
-      "autoReviewMultiModel": true    // false = primary-only, no consensus gate
+      "autoReviewMultiModel": true    // false = no consult tool surface
+    },
+    "review": {
+      "defaultLane": { "set": "secondary", "tier": "normal" },
+      "lanes": {
+        "orchestrator":     { "set": "secondary", "tier": "heavy" },
+        "security-analyst": { "set": "secondary", "tier": "heavy" },
+        "index":            { "set": "primary",   "tier": "fast"  }
+      }
     }
   }
 }
 ```
 
-If a model tier is unresolvable the pass is skipped (fail-open: the
-user still gets the post-execution picker). If both tiers point at
-the same model every finding becomes “consensus” trivially — use two
-different model families for the cross-check to be meaningful.
+If a model tier is unresolvable the pass falls through per the lane
+resolution order; if no lane resolves at all the pass is skipped
+(fail-open: the user still gets the post-execution picker).
 
 ## Known limitations
 
