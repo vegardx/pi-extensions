@@ -182,14 +182,16 @@ lanes emit.
 | `knip` | code-simplifier | off | typescript, javascript | `knip.json{,c}` / `knip.config.{js,ts}` / `"knip"` in `package.json` | 60s |
 | `madge` | code-simplifier | off | typescript, javascript | `node_modules/.bin/madge` exists | 30s |
 | `npm-audit` | security-analyst | on | typescript, javascript | `package.json` + `package-lock.json` | 20s |
-| `osv-scanner` | security-analyst | off | typescript, javascript, python, go, rust | any lockfile (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.{mod,sum}`, `Cargo.lock`, `poetry.lock`, `requirements.txt`, `Pipfile.lock`, `pom.xml`) | 30s |
+| `osv-scanner` | security-analyst | off | typescript, javascript | `package-lock.json` (other ecosystems land when `buildArgs` learns to detect lockfiles) | 30s |
 | `gitleaks` | security-analyst | off | any | always (always relevant; binary probe still gates execution) | 60s |
-| `semgrep` | security-analyst | off | typescript, javascript, python, go | `.semgrep.{yml,yaml}` / `semgrep.{yml,yaml}` | 120s |
+| `semgrep` | security-analyst | off | typescript, javascript | `.semgrep.{yml,yaml}` / `semgrep.{yml,yaml}` | 120s |
 
 `Default` is the value of `defaultEnabled` on the spec — what runs when
-no config is set. `enable: "auto"` (default behaviour for unconfigured
-scanners) calls `detectAuto(cwd)` to decide; specs without a detector
-fall back to `defaultEnabled`.
+no config is set. `enable: "auto"` is **opt-in**: you have to set it
+explicitly per scanner, and then `detectAuto(cwd)` decides whether the
+scanner runs. Unconfigured scanners stay at `defaultEnabled` regardless
+of what their `detectAuto` would say — we don't auto-enable behind
+your back.
 
 ### Configuration
 
@@ -213,20 +215,27 @@ Per-scanner config lives at `extensionConfig.review.scanners.<id>` in
 }
 ```
 
-- **`enable`** — `true` / `false` / `"auto"`. When `"auto"` (or unset),
-  the scanner's `detectAuto(cwd)` decides; if the spec has no detector,
-  `defaultEnabled` wins.
+- **`enable`** — `true` / `false` / `"auto"`. When `"auto"`, the
+  scanner's `detectAuto(cwd)` decides; if the spec has no detector,
+  `defaultEnabled` wins. **Omitting `enable` is NOT the same as
+  `"auto"`** — it falls back to `defaultEnabled` directly without
+  consulting `detectAuto`.
 - **`budgetMs`** — overrides the spec's per-scan budget. The registry
   enforces this at the spawn level.
 - **`args.rulesets`** — currently consumed only by `semgrep`. Default
-  ruleset is `["p/javascript"]`.
+  ruleset is `["p/javascript"]`, but `enable: "auto"` with a repo
+  config file (e.g. `.semgrep.yml`) skips the default and lets semgrep
+  pick up the repo config.
 
 Invalid entries fail closed (the registry drops them and continues).
 
 The legacy `extensionConfig.review.staticAnalysis` (camelCase ids,
-`{ enabled, timeout }` shape) is still honoured as a fallback — useful
-for existing repos. New code should use the kebab-case `scanners` path;
-when both blocks are present, `scanners` wins per-id.
+`{ enabled, timeout }` shape) is still honoured as a fallback. Note
+that the precedence is **whole-block, not per-id**: as soon as any
+`review.scanners` entry exists, the legacy block is ignored
+entirely. This avoids ambiguity during migrations — if you've started
+moving keys to the new schema, finish the migration rather than
+leaving half on each side.
 
 ### Adding a language / scanner
 
@@ -237,6 +246,8 @@ in `packages/review/scanners/typescript/`. Add a new directory
 …) and follow the same shape:
 
 ```ts
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { ScannerSpec } from "../types.js";
 
 export const ruffSpec: ScannerSpec = {
