@@ -3052,6 +3052,20 @@ export default function (pi: ExtensionAPI) {
 					return;
 				}
 			}
+			// Pre/post phases are manual checklists — they have no branch
+			// and `/ship` rejects them. `/implement <phaseId>` would happily
+			// flow into the branch-checkout path with `phase.branch === ""`,
+			// producing `git checkout -B ""` failures. Refuse explicitly with
+			// the same warning shape as the pre/post `/ship` guard.
+			const targetKind = effectivePhaseKind(target);
+			if (targetKind !== "regular") {
+				notify(
+					ctx,
+					`phase \`${target.id}\` is a ${targetKind}-phase (manual checklist) — there's no branch to implement. Tick its tasks with \`plan_task toggle\` instead.`,
+					"warning",
+				);
+				return;
+			}
 			classified = { kind: "use-phase", phase: target };
 		} else {
 			classified = classifyImplementContext(plan);
@@ -3109,7 +3123,7 @@ export default function (pi: ExtensionAPI) {
 				pending.length > 5 ? `\n  … and ${pending.length - 5} more` : "";
 			notify(
 				ctx,
-				`all regular phases shipped — handover phase \`${post.id}\` has ${pending.length} pending item${
+				`all regular phases are terminal (shipped or abandoned) — handover phase \`${post.id}\` has ${pending.length} pending item${
 					pending.length === 1 ? "" : "s"
 				} for you to complete:\n${headline}${more}`,
 				"info",
