@@ -367,8 +367,12 @@ export class ExploreMailbox {
 	 *     `deps.spawnChildAgent` is configured → child mailbox.
 	 *   - Otherwise → seed mailbox.
 	 *
-	 * If child enqueue throws (mailbox disposed, dep mis-configured,
-	 * etc.) we fall back to the seed FIFO so the question still runs.
+	 * If child enqueue throws unexpectedly we still fall through to the
+	 * seed FIFO. In practice this only fires for synchronous defects in
+	 * the child mailbox that the seed mailbox doesn't share — disposal
+	 * tears both down together, so a "mailbox disposed" failure on the
+	 * child would also trip the seed fallback. The catch is defensive,
+	 * not a graceful-disposal path.
 	 */
 	async ask(question: string, opts: AskOptions = {}): Promise<{ id: string }> {
 		const wantsChild = opts.related === false;
@@ -423,9 +427,14 @@ export class ExploreMailbox {
 		id: string,
 		timeoutMs: number = DEFAULT_WAIT_TIMEOUT_MS,
 	): Promise<ExploreTask> {
-		// Route by id prefix: child ids start with `c`.
-		const target = id.startsWith("c") ? this.childMailbox : this.seedMailbox;
-		return target.wait(id, timeoutMs);
+		// Route by ownership rather than id-prefix literal: ask each inner
+		// mailbox via a synchronous `check({ id })` whether it knows the id,
+		// then `wait()` on the owner. Falls back to seed for unknown ids so
+		// the unknown-id error still surfaces with the seed's mailbox kind.
+		if (this.childMailbox.check({ id }).tasks.length > 0) {
+			return this.childMailbox.wait(id, timeoutMs);
+		}
+		return this.seedMailbox.wait(id, timeoutMs);
 	}
 
 	get hasInFlight(): boolean {
@@ -439,6 +448,8 @@ export class ExploreMailbox {
 	async dispose(): Promise<void> {
 		for (const u of this.listenerUnsubs) u();
 		this.listenerUnsubs.length = 0;
+		// Drop external subscribers so closures they captured can be GC'd.
+		this.externalListeners.clear();
 		await Promise.allSettled([
 			this.seedMailbox.dispose(),
 			this.childMailbox.dispose(),
@@ -450,9 +461,22 @@ export class ExploreMailbox {
 	private mergedState(): MailboxState<ExploreTask, ExploreNotification> {
 		const seed = this.seedMailbox.getState();
 		const child = this.childMailbox.getState();
+		// Notification ids are generated per-inner-mailbox starting at 1, so
+		// the merged stream would contain colliding ids (e.g. seed's `n1`
+		// alongside child's `n1`). Re-namespace them under the mailbox kind
+		// so consumers using `notification.id` as a unique key (dedup, Map
+		// storage, React keys) see globally-unique values.
+		const seedNotifs = seed.notifications.map((n) => ({
+			...n,
+			id: `seed-${n.id}`,
+		}));
+		const childNotifs = child.notifications.map((n) => ({
+			...n,
+			id: `child-${n.id}`,
+		}));
 		return {
 			tasks: [...seed.tasks, ...child.tasks],
-			notifications: [...seed.notifications, ...child.notifications],
+			notifications: [...seedNotifs, ...childNotifs],
 		};
 	}
 
@@ -505,8 +529,10 @@ export class ExploreMailbox {
 
 			// Record into the journal so future children get context.
 			this.journal.push({ question: handle.job.question, answer: text });
-			if (this.journal.length > SNAPSHOT_MAX_PAIRS * 2) {
-				this.journal.splice(0, this.journal.length - SNAPSHOT_MAX_PAIRS * 2);
+			// Cap the journal at the same window the renderer reads so we
+			// don't accumulate entries no consumer ever sees.
+			if (this.journal.length > SNAPSHOT_MAX_PAIRS) {
+				this.journal.splice(0, this.journal.length - SNAPSHOT_MAX_PAIRS);
 			}
 
 			return { text };
@@ -546,12 +572,23 @@ export class ExploreMailbox {
 		};
 		handle.signal.addEventListener("abort", onAbort);
 
-		const { agent, dispose } = await spawn(this.ctx);
-		const unsubscribe = agent.onEvent((event) =>
-			this.handleChildEvent(event, handle, resolveEnded),
-		);
-
+		let agent:
+			| Awaited<
+					ReturnType<NonNullable<MailboxDeps["spawnChildAgent"]>>
+			  >["agent"]
+			| null = null;
+		let dispose: (() => Promise<void>) | null = null;
+		let unsubscribe: (() => void) | null = null;
 		try {
+			// spawn() can reject; do it inside the try so the abort listener
+			// is unconditionally cleaned up in `finally`.
+			const spawned = await spawn(this.ctx);
+			agent = spawned.agent;
+			dispose = spawned.dispose;
+			unsubscribe = agent.onEvent((event) =>
+				this.handleChildEvent(event, handle, resolveEnded),
+			);
+
 			if (handle.signal.aborted) {
 				throw new Error("aborted before dispatch");
 			}
@@ -566,11 +603,13 @@ export class ExploreMailbox {
 			return { text };
 		} finally {
 			handle.signal.removeEventListener("abort", onAbort);
-			unsubscribe();
-			try {
-				await dispose();
-			} catch {
-				/* best-effort */
+			unsubscribe?.();
+			if (dispose) {
+				try {
+					await dispose();
+				} catch {
+					/* best-effort */
+				}
 			}
 		}
 	}
