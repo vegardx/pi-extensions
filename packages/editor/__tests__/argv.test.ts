@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { applyArgvTemplate, parsePathArg } from "../argv.js";
 
 describe("parsePathArg", () => {
@@ -77,6 +78,22 @@ describe("parsePathArg", () => {
 			line: "7",
 			col: "",
 		});
+	});
+
+	it("expands `~/` to the user's home directory", () => {
+		const result = parsePathArg("~/foo.ts", "/repo");
+		expect(result.path).toBe(`${homedir()}/foo.ts`);
+	});
+
+	it("expands a bare `~` to the user's home directory", () => {
+		expect(parsePathArg("~", "/repo").path).toBe(homedir());
+	});
+
+	it("does NOT expand `~` mid-path (e.g. `foo/~bar`)", () => {
+		// Only leading `~/` or bare `~` get expansion. Anything else stays
+		// literal so paths containing `~` mid-string aren't mangled.
+		const result = parsePathArg("foo/~bar", "/repo");
+		expect(result.path).toBe("/repo/foo/~bar");
 	});
 });
 

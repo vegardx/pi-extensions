@@ -1,4 +1,3 @@
-import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { vi } from "vitest";
 import { launchEditor } from "../spawn.js";

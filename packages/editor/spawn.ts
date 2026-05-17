@@ -21,6 +21,13 @@ export interface LaunchEditorInput {
 	args: readonly string[];
 	cwd: string;
 	detach: boolean;
+	/**
+	 * Optional sink for `error` events that fire AFTER the launch has
+	 * already settled (e.g. an EACCES that arrives post-spawn). Without
+	 * this hook late failures are silently swallowed; with it the
+	 * caller can surface them via `ctx.ui.notify`.
+	 */
+	onLateError?: (err: NodeJS.ErrnoException) => void;
 }
 
 export type LaunchOutcome =
@@ -66,6 +73,13 @@ export async function launchEditor(
 			});
 
 			child.on("error", (err: NodeJS.ErrnoException) => {
+				if (settled) {
+					// Late `error` after we've already settled (e.g. EACCES that
+					// arrives post-spawn). Surface to the optional callback so
+					// callers can notify the user; otherwise silently swallow.
+					input.onLateError?.(err);
+					return;
+				}
 				if (err.code === "ENOENT") {
 					settle({
 						ok: false,
@@ -89,7 +103,18 @@ export async function launchEditor(
 			// Some platforms / mocks don't emit `spawn` synchronously even
 			// when the child is up. Bail out positively after a short grace
 			// — by then any ENOENT would already have surfaced via `error`.
-			setTimeout(() => settle({ ok: true }), 100).unref?.();
+			// When the grace path settles, we still need to `unref()` so the
+			// detach guarantee holds even when `spawn` never fires.
+			setTimeout(() => {
+				if (input.detach) {
+					try {
+						child.unref();
+					} catch {
+						/* best-effort: the child may have died already */
+					}
+				}
+				settle({ ok: true });
+			}, 100).unref?.();
 		} catch (err) {
 			settle({
 				ok: false,

@@ -5,6 +5,7 @@
  * exercised in isolation. The shell-out itself lives in `spawn.ts`.
  */
 
+import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 
 export interface ParsedPathArg {
@@ -65,8 +66,20 @@ export function parsePathArg(
 		}
 	}
 
-	const resolved = isAbsolute(pathPart) ? pathPart : resolve(cwd, pathPart);
+	const expanded = expandHome(pathPart);
+	const resolved = isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
 	return { path: resolved, line, col };
+}
+
+/**
+ * Expand a leading `~/` (or bare `~`) to the user's home directory.
+ * Without this, `/editor ~/foo.ts` would resolve to `<cwd>/~/foo.ts`,
+ * which is almost never what the user meant.
+ */
+function expandHome(p: string): string {
+	if (p === "~") return homedir();
+	if (p.startsWith("~/")) return resolve(homedir(), p.slice(2));
+	return p;
 }
 
 export interface ArgvTemplateVars {

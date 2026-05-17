@@ -21,6 +21,9 @@ single argument `{path}`.
 | `args` | `string[]` | `["{path}"]` | Argv template. Placeholders: `{path}`, `{cwd}`, `{line}`, `{col}`. |
 | `detach` | `boolean` | `true` | Detach + `unref()` so pi can exit independently. |
 
+Path arg accepts `path`, `path:line`, `path:line:col`. A leading `~/`
+(or bare `~`) expands to your home directory.
+
 ### Placeholders & empty values
 
 `{path}` always resolves (to a file or the cwd). `{line}` / `{col}` are empty
@@ -30,6 +33,14 @@ don't break argv:
 - An arg whose placeholders all resolved empty is dropped (with the preceding
   `-x` / `--xxx` flag, if any).
 - Trailing `:` runs are trimmed when the trailing placeholder resolved empty.
+- **Caveat — flag-drop ambiguity**: the rule above can't distinguish a
+  *value-introducer* flag (`--line {line}`) from a *standalone* flag
+  that happens to sit immediately before a dropped placeholder.
+  `["--wait", "--line", "{line}", "{path}"]` will drop the standalone
+  `--wait` when `{line}` is empty because it's the immediate
+  predecessor of the dropped value. If you need a standalone flag
+  near a placeholder pair, put it after the value or in its own arg
+  (`["--wait=true", "--line", "{line}", "{path}"]`).
 
 So `["-g", "{path}:{line}:{col}"]` becomes `-g <path>` for `/editor foo.ts`,
 `-g <path>:42` for `/editor foo.ts:42`, and `-g <path>:42:8` for the full form.
