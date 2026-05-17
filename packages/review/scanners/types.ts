@@ -57,6 +57,13 @@ export interface ScannerContext {
 export interface ScannerArgsOptions {
 	/** Semgrep config rulesets (e.g. `p/typescript`, `p/owasp-top-ten`). */
 	rulesets?: readonly string[];
+	/**
+	 * Repository root the scanner will run against. Optional because
+	 * most adapters don't need it; semgrep uses it to detect a repo
+	 * config file and skip the default `p/javascript` ruleset when one
+	 * is present (so auto-enable matches the user's actual rules).
+	 */
+	cwd?: string;
 }
 
 export interface ScannerSpec {
