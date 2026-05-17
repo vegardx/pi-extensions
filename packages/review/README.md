@@ -196,9 +196,11 @@ Differences from the interactive `/review` command:
   read-only sub-agent emits a structured map of the diff (entry
   points, modules, hot files, risk surfaces, open questions). The
   sketch is threaded into every reviewer's task payload. Failures
-  are best-effort: reviewers continue without the index. Disable via
-  `enableIndex: false` (programmatic) or by configuring the `index`
-  lane to a model that won't resolve.
+  are best-effort: reviewers continue without the index. Disable
+  via `enableIndex: false` (programmatic). Configuring the `index`
+  lane to a non-existent model does NOT disable the indexer — the
+  resolver falls back through `secondary` → `primary` → the active
+  session model, so the indexer will still run on a fallback.
 - **`consult_other_model` tool** (was `consult_secondary_model`). The
   orchestrator can call this for any CRITICAL finding it is uncertain
   about. The consult model is resolved in the *opposite* set from the
