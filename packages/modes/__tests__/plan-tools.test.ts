@@ -565,9 +565,9 @@ describe("plan markdown rendering", () => {
 	});
 });
 
-describe("plan_phase kind (pre/post)", () => {
+describe("phase kind (pre/post)", () => {
 	it('adds a pre phase with branch="" and dependsOn=[]', async () => {
-		const r = await call("plan_phase", {
+		const r = await call("phase", {
 			action: "add",
 			title: "Preflight",
 			kind: "pre",
@@ -581,8 +581,8 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 
 	it('adds a post phase with branch=""', async () => {
-		await call("plan_phase", { action: "add", title: "Regular" });
-		const r = await call("plan_phase", {
+		await call("phase", { action: "add", title: "Regular" });
+		const r = await call("phase", {
 			action: "add",
 			title: "Handover",
 			kind: "post",
@@ -595,18 +595,18 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 
 	it("regular phase omits the kind field on disk (back-compat)", async () => {
-		await call("plan_phase", { action: "add", title: "Plain" });
+		await call("phase", { action: "add", title: "Plain" });
 		const plan = loadPlan("tools-test");
 		expect(plan?.phases[0]?.kind).toBeUndefined();
 	});
 
 	it("rejects a second pre phase", async () => {
-		await call("plan_phase", {
+		await call("phase", {
 			action: "add",
 			title: "Preflight",
 			kind: "pre",
 		});
-		const r = await call("plan_phase", {
+		const r = await call("phase", {
 			action: "add",
 			title: "Another preflight",
 			kind: "pre",
@@ -615,12 +615,12 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 
 	it("rejects a second post phase", async () => {
-		await call("plan_phase", {
+		await call("phase", {
 			action: "add",
 			title: "Handover",
 			kind: "post",
 		});
-		const r = await call("plan_phase", {
+		const r = await call("phase", {
 			action: "add",
 			title: "More handover",
 			kind: "post",
@@ -629,8 +629,8 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 
 	it("update can promote regular → pre, clears branch", async () => {
-		await call("plan_phase", { action: "add", title: "Plain" });
-		const r = await call("plan_phase", {
+		await call("phase", { action: "add", title: "Plain" });
+		const r = await call("phase", {
 			action: "update",
 			id: "plain",
 			kind: "pre",
@@ -643,12 +643,12 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 
 	it("update can demote pre → regular, re-issues default branch", async () => {
-		await call("plan_phase", {
+		await call("phase", {
 			action: "add",
 			title: "Preflight",
 			kind: "pre",
 		});
-		const r = await call("plan_phase", {
+		const r = await call("phase", {
 			action: "update",
 			id: "preflight",
 			kind: "regular",
@@ -661,13 +661,13 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 
 	it("update rejects switch to pre when one already exists", async () => {
-		await call("plan_phase", {
+		await call("phase", {
 			action: "add",
 			title: "Preflight",
 			kind: "pre",
 		});
-		await call("plan_phase", { action: "add", title: "Other" });
-		const r = await call("plan_phase", {
+		await call("phase", { action: "add", title: "Other" });
+		const r = await call("phase", {
 			action: "update",
 			id: "other",
 			kind: "pre",
@@ -676,20 +676,20 @@ describe("plan_phase kind (pre/post)", () => {
 	});
 });
 
-describe("plan_view markdown sections for pre/post", () => {
+describe("plan markdown sections for pre/post", () => {
 	it("renders Preflight, Phases, and Handover sections", async () => {
-		await call("plan_phase", {
+		await call("phase", {
 			action: "add",
 			title: "Preflight",
 			kind: "pre",
 		});
-		await call("plan_phase", { action: "add", title: "Regular" });
-		await call("plan_phase", {
+		await call("phase", { action: "add", title: "Regular" });
+		await call("phase", {
 			action: "add",
 			title: "Handover",
 			kind: "post",
 		});
-		const r = await call("plan_view", {});
+		const r = await call("plan", {});
 		const text = (r.content[0] as any).text as string;
 		expect(text).toContain("## Preflight");
 		expect(text).toContain("## Phases");
@@ -701,18 +701,18 @@ describe("plan_view markdown sections for pre/post", () => {
 	});
 
 	it("pre/post tasks render with [!] regardless of declared kind", async () => {
-		await call("plan_phase", {
+		await call("phase", {
 			action: "add",
 			title: "Preflight",
 			kind: "pre",
 		});
-		await call("plan_task", {
+		await call("task", {
 			action: "add",
 			phaseId: "preflight",
 			title: "rename secret",
 			kind: "deliverable",
 		});
-		const r = await call("plan_view", {});
+		const r = await call("plan", {});
 		const text = (r.content[0] as any).text as string;
 		expect(text).toContain("[!] rename secret");
 	});
