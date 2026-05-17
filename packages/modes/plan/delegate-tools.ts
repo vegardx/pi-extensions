@@ -87,6 +87,13 @@ export type ResearchOutcome =
 
 export class DelegateAgents {
 	private readonly ctx: ExtensionContext;
+	private readonly pendingResearchListeners: Array<
+		(state: MailboxState<ResearchTask, ResearchNotification>) => void
+	> = [];
+	private readonly pendingResearchUnsubscribes = new Map<
+		(state: MailboxState<ResearchTask, ResearchNotification>) => void,
+		() => void
+	>();
 	private readonly activeResearch = new Map<number, string>();
 	private nextResearchId = 0;
 	/**
@@ -125,6 +132,10 @@ export class DelegateAgents {
 			// to N subprocesses.
 			maxConcurrent: Number.POSITIVE_INFINITY,
 			defaultWaitTimeoutMs: DEFAULT_RESEARCH_TIMEOUT_MS,
+			synthesizeUnknown: () => ({
+				question: "",
+				timeoutMs: DEFAULT_RESEARCH_TIMEOUT_MS,
+			}),
 			dispatch: async (handle) => {
 				handle.setRunning();
 				const outcome = await this.research(handle.job.question, {
@@ -142,6 +153,14 @@ export class DelegateAgents {
 				};
 			},
 		});
+		// Flush any listeners that subscribed before the mailbox was lazily
+		// created — keeps `onResearchChange` from forcing setup just by
+		// being observed.
+		for (const l of this.pendingResearchListeners) {
+			const unsubscribe = this.researchMailboxInstance.onChange(l);
+			this.pendingResearchUnsubscribes.set(l, unsubscribe);
+		}
+		this.pendingResearchListeners.length = 0;
 		return this.researchMailboxInstance;
 	}
 
@@ -173,7 +192,22 @@ export class DelegateAgents {
 	onResearchChange(
 		listener: (state: MailboxState<ResearchTask, ResearchNotification>) => void,
 	): () => void {
-		return this.researchMailbox.onChange(listener);
+		// Don't force lazy mailbox creation just because someone wants to
+		// observe state. If the mailbox isn't built yet, buffer the
+		// listener; the getter flushes pending listeners on first access.
+		if (this.researchMailboxInstance) {
+			return this.researchMailboxInstance.onChange(listener);
+		}
+		this.pendingResearchListeners.push(listener);
+		return () => {
+			const i = this.pendingResearchListeners.indexOf(listener);
+			if (i >= 0) this.pendingResearchListeners.splice(i, 1);
+			const attached = this.pendingResearchUnsubscribes.get(listener);
+			if (attached) {
+				attached();
+				this.pendingResearchUnsubscribes.delete(listener);
+			}
+		};
 	}
 
 	get hasResearchInFlight(): boolean {

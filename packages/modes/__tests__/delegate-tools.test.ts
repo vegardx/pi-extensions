@@ -198,14 +198,42 @@ describe("DelegateAgents.researchAsk / researchCheck / researchWait (#159a)", ()
 	});
 
 	it("researchAsk returns immediately with a task id", async () => {
+		// Make `runSubagent` block on a never-resolving promise so we can
+		// prove `researchAsk` returns *before* the underlying subprocess
+		// completes — this is the actual non-blocking contract. Wall-clock
+		// thresholds are flaky on CI; an ordering-based assertion isn't.
+		let subagentResolve:
+			| ((value: { rawText: string; error: null; elapsedMs: number }) => void)
+			| null = null;
+		vi.mocked(runSubagent).mockImplementationOnce(
+			() =>
+				new Promise<{
+					rawText: string;
+					error: null;
+					elapsedMs: number;
+				}>((res) => {
+					subagentResolve = res;
+				}) as never,
+		);
 		const agents = new DelegateAgents(MOCK_CTX);
-		const start = Date.now();
 		const { id } = await agents.researchAsk("what is X?");
-		const elapsed = Date.now() - start;
 		expect(id).toMatch(/^r\d+$/);
-		// Non-blocking: enqueue + return must complete in <50ms even though
-		// the underlying runSubagent is still running.
-		expect(elapsed).toBeLessThan(50);
+		// At this point the underlying promise hasn't resolved yet — the
+		// fact that we got `{ id }` proves enqueue is non-blocking.
+		expect(subagentResolve).not.toBeNull();
+		// Clean up the dangling subagent so vitest doesn't complain about
+		// hanging promises across tests.
+		(
+			subagentResolve as unknown as (value: {
+				rawText: string;
+				error: null;
+				elapsedMs: number;
+			}) => void
+		)({
+			rawText: "answer",
+			error: null,
+			elapsedMs: 5,
+		});
 	});
 
 	it("two concurrent researchAsk calls get distinct ids and run in parallel", async () => {
