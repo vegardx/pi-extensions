@@ -54,8 +54,10 @@ describe("STEERING_CLASSIFIER", () => {
 		expect(STEERING_CLASSIFIER).not.toMatch(/t-\w+/);
 	});
 
-	it("references plan rather than embedding the plan", () => {
-		expect(STEERING_CLASSIFIER).toContain("plan");
+	it("references the plan tool rather than embedding the plan", () => {
+		// Anchor to the specific 'consult plan' instruction so the rename
+		// coverage doesn't silently regress on a generic "plan" match.
+		expect(STEERING_CLASSIFIER).toContain("consult plan");
 	});
 
 	it("lists the four routing options", () => {
