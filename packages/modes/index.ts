@@ -254,6 +254,14 @@ type Mode = "plan" | "auto" | "ask" | "hack";
 
 const ALL_MODES: readonly Mode[] = ["plan", "auto", "ask", "hack"] as const;
 
+// Module-level guard so the process-level crash handler is registered
+// exactly once even if the extension factory is re-evaluated (hot
+// reload, multiple registrations). Without this, every re-evaluation
+// would attach a new pair of `uncaughtExceptionMonitor` /
+// `unhandledRejection` listeners and we'd produce duplicate crash
+// reports + extra disk I/O on a real crash.
+let crashHandlerDispose: (() => void) | null = null;
+
 /**
  * Validate an extensionConfig.modes.defaultMode value. Falls back to
  * "plan" on missing/invalid input. Caller is responsible for surfacing
@@ -455,10 +463,21 @@ export default function (pi: ExtensionAPI) {
 	let delegateAgents: DelegateAgents | null = null;
 	let exploreMailbox: ExploreMailbox | null = null;
 
-	// Install the process-level crash handler once. The handler is a
-	// no-op outside `executing` stage, so plan/ask/hack turns aren't
-	// instrumented. See `crash-report.ts` for the safety contract.
-	installCrashHandler({
+	// Install the process-level crash handler once per process. The
+	// handler is a no-op outside `executing` stage, so plan/ask/hack
+	// turns aren't instrumented. See `crash-report.ts` for the safety
+	// contract. Module-level guard prevents duplicate listeners on
+	// factory re-evaluation; the previous handler (if any) is disposed
+	// so the new one observes fresh closures over `modeState` etc.
+	if (crashHandlerDispose) {
+		try {
+			crashHandlerDispose();
+		} catch {
+			/* best-effort */
+		}
+		crashHandlerDispose = null;
+	}
+	crashHandlerDispose = installCrashHandler({
 		getModeSnapshot: () => ({
 			mode: modeState?.mode ?? null,
 			stage: modeState?.stage ?? null,

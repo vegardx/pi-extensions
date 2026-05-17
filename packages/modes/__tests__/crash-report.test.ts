@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -310,7 +310,7 @@ describe("installCrashHandler", () => {
 			"uncaughtException",
 		);
 		const dir = crashReportDir(tmp);
-		const files = require("node:fs").readdirSync(dir) as string[];
+		const files = readdirSync(dir);
 		expect(files).toHaveLength(1);
 		const content = readFileSync(join(dir, files[0]!), "utf8");
 		const report = JSON.parse(content) as CrashReport;

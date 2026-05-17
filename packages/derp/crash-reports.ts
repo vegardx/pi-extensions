@@ -152,12 +152,36 @@ function parseReport(path: string): CrashReportSummary | null {
 			id: typeof session.id === "string" ? session.id : null,
 			file: typeof session.file === "string" ? session.file : null,
 		},
-		recentEntries: Array.isArray(v.recentEntries)
-			? (v.recentEntries as ReadonlyArray<{ role: string; text: string }>)
-			: [],
-		redactionHits: Array.isArray(v.redactionHits)
-			? (v.redactionHits as ReadonlyArray<string>)
-			: [],
+		recentEntries: normaliseEntries(v.recentEntries),
+		redactionHits: normaliseStringArray(v.redactionHits),
 		sourcePath: path,
 	};
+}
+
+/**
+ * Normalise a `recentEntries` field defensively: only keep entries
+ * that are non-null objects and coerce their `role`/`text` to strings.
+ * Hostile or tampered crash-report JSON should not be able to put
+ * non-string values into `CrashReportSummary` — downstream consumers
+ * (e.g. `scanContextForSecrets` calling `redactFull`) expect strings.
+ */
+function normaliseEntries(
+	raw: unknown,
+): ReadonlyArray<{ role: string; text: string }> {
+	if (!Array.isArray(raw)) return [];
+	const out: { role: string; text: string }[] = [];
+	for (const entry of raw) {
+		if (!entry || typeof entry !== "object") continue;
+		const e = entry as Record<string, unknown>;
+		out.push({
+			role: typeof e.role === "string" ? e.role : String(e.role ?? ""),
+			text: typeof e.text === "string" ? e.text : String(e.text ?? ""),
+		});
+	}
+	return out;
+}
+
+function normaliseStringArray(raw: unknown): ReadonlyArray<string> {
+	if (!Array.isArray(raw)) return [];
+	return raw.filter((x): x is string => typeof x === "string");
 }
