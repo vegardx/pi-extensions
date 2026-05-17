@@ -157,7 +157,7 @@ falls back to the predictor on miss.
 ```jsonc
 {
   "extensionConfig": {
-    "promptSuggestion": {
+    "prompt-suggestion": {
       "inline": true,             // try sentinel parse first
       "abLog": true,              // append A/B samples to ~/.pi/agent/prompt-suggestion-ab.log
       "abLogPath": "..."          // optional override
