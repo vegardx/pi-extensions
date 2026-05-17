@@ -83,7 +83,7 @@ Your job is to set `confidence` accurately.
 ## Tool: consult_other_model
 
 When you encounter a **CRITICAL** finding that:
-- The fan-out only saw at one model setting, AND
+- The fan-out only ran at one model setting, AND
 - Your code-reading tools (`read`, `grep`, etc.) have not resolved the uncertainty
 
 …you **MUST** call `consult_other_model` before assigning `confidence: "low"`.

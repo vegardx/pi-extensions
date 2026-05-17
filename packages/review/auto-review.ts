@@ -715,6 +715,16 @@ async function runOrchestratorPhase(opts: {
  * attribution string. When model specs are available, maps tier
  * labels to actual model names (e.g. "anthropic/claude-sonnet-4-20250514").
  * Falls back to raw tier labels when model specs aren't provided.
+ *
+ * NOTE (#164b): in the new secondary-first single-pass architecture
+ * `confirmedByTiers` semantics are blurry — "secondary" findings come
+ * from the fan-out lanes (whose model varies per lane) and "primary"
+ * findings typically come from the consult tool. The `secondaryModel`
+ * arg historically meant "secondary fan-out tier model" but is now
+ * being filled with the consult spec at call sites. Per-finding
+ * attribution is therefore approximate; the orchestrator/consult
+ * split shown in the report header is the authoritative reference.
+ * Tracked as a follow-up to plumb `laneModels` through to here.
  */
 export function formatTierAttribution(
 	tiers: readonly string[],
@@ -1132,15 +1142,25 @@ export async function runAutoReview(
 	// lane so the orchestrator gets a second opinion from a different
 	// model family. When unavailable the orchestrator simply runs
 	// without the consult tool surface.
-	const consult: ResolvedLaneModel | null = multiModel
+	const consultRaw: ResolvedLaneModel | null = multiModel
 		? await resolveConsultModel(ctx, extensionName, laneTable.orchestrator)
 		: null;
+	// `resolveModel` falls back from `secondary.<tier>` to `primary.<tier>`
+	// (and then to `ctx.model`), so with only one set configured the
+	// orchestrator and consult specs can collapse to the same model. In
+	// that case the consult tool isn't actually a second opinion — skip
+	// it so we don't pretend.
+	const consult: ResolvedLaneModel | null =
+		consultRaw && consultRaw.spec !== orchestrator.spec ? consultRaw : null;
 	if (multiModel && !consult) {
 		const otherSet =
 			laneTable.orchestrator.set === "secondary" ? "primary" : "secondary";
+		const reason = consultRaw
+			? `${otherSet}.${laneTable.orchestrator.tier} resolved to the same model as the orchestrator (${consultRaw.spec})`
+			: `orchestrator on ${laneTable.orchestrator.set}, no usable model in ${otherSet}.${laneTable.orchestrator.tier}`;
 		notify(
 			ctx,
-			`no consult model available (orchestrator on ${laneTable.orchestrator.set}, no usable model in ${otherSet}.${laneTable.orchestrator.tier}) — running without consult tool`,
+			`no consult model available (${reason}) — running without consult tool`,
 			"info",
 		);
 	}
