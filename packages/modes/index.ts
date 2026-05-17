@@ -94,6 +94,8 @@ import {
 	type ExploreNotification,
 	type ExploreTask,
 	exploreWidgetShouldHide,
+	sanitiseParallelism,
+	sanitiseQueueDepthThreshold,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import {
@@ -2583,11 +2585,10 @@ export default function (pi: ExtensionAPI) {
 	/**
 	 * Read `extensionConfig.modes.explore.{parallelism,queueDepthThreshold}`.
 	 *
-	 * Both values must be finite positive integers; anything else falls
-	 * back to the default and emits a one-line warning so the user knows
-	 * the setting was ignored. The mailbox itself re-validates the same
-	 * way — this layer exists so the warning fires before the mailbox is
-	 * constructed and silently ignores junk.
+	 * Both values are sanitised the same way the mailbox itself does
+	 * (positive numbers floored to integer; everything else falls back
+	 * to the default). When the user supplied something that fell back
+	 * we emit a one-line warning so they know the setting was ignored.
 	 */
 	function readExploreSettings(ctx: ExtensionContext): {
 		parallelism: number;
@@ -2598,19 +2599,47 @@ export default function (pi: ExtensionAPI) {
 			| Record<string, unknown>
 			| undefined;
 		const explore = extCfg?.explore as Record<string, unknown> | undefined;
-		const parallelism = validatePositiveInt(
+		const parallelism = readSanitisedNumber(
 			ctx,
 			explore?.parallelism,
 			"extensionConfig.modes.explore.parallelism",
 			DEFAULT_PARALLELISM,
+			sanitiseParallelism,
 		);
-		const queueDepthThreshold = validatePositiveInt(
+		const queueDepthThreshold = readSanitisedNumber(
 			ctx,
 			explore?.queueDepthThreshold,
 			"extensionConfig.modes.explore.queueDepthThreshold",
 			DEFAULT_QUEUE_DEPTH_THRESHOLD,
+			sanitiseQueueDepthThreshold,
 		);
 		return { parallelism, queueDepthThreshold };
+	}
+
+	/**
+	 * Read a numeric setting via the same sanitiser the mailbox uses, and
+	 * warn only when the user supplied something that fell back to the
+	 * default. Keeps settings-path behaviour consistent with the
+	 * constructor-path behaviour for things like `2.7` (floored to 2,
+	 * not silently rejected).
+	 */
+	function readSanitisedNumber(
+		ctx: ExtensionContext,
+		raw: unknown,
+		key: string,
+		fallback: number,
+		sanitise: (raw: unknown) => number,
+	): number {
+		if (raw === undefined) return fallback;
+		const sanitised = sanitise(raw);
+		if (sanitised === fallback && raw !== fallback) {
+			notify(
+				ctx,
+				`${key}: ${JSON.stringify(raw)} is not a valid positive number; using default ${fallback}`,
+				"warning",
+			);
+		}
+		return sanitised;
 	}
 
 	function validatePositiveInt(
