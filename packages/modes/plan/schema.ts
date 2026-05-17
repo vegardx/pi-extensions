@@ -192,8 +192,10 @@ export interface Phase {
 	 * Git branch — typically `feat/<phase-id>`.
 	 *
 	 * Empty string for `pre`/`post` phases: those don't claim a feature
-	 * branch (no PR, no `/ship`). Schema validation rejects non-empty
-	 * branches on non-regular phases.
+	 * branch (no PR, no `/ship`). This is a tool-layer invariant
+	 * enforced by `plan_phase add`/`update`; `loadPlan`/`migratePlan`
+	 * do not validate it, so a hand-edited `plan.json` could violate
+	 * it. Treat reads defensively at the boundary.
 	 */
 	branch: string;
 	/**

@@ -703,7 +703,10 @@ describe("classifyImplementContext", () => {
 				},
 			],
 		});
-		// r2 is in-review (in-flight): classifier picks it up as use-phase.
+		// r2 is in-review (in-flight) — not active/needs-attention so the
+		// classifier doesn't pick it up as use-phase, and post-handover
+		// won't fire while a regular phase is still non-terminal. Result:
+		// refuse-no-actionable.
 		const result = classifyImplementContext(makePlan([r1, r2, post]));
 		expect(result.kind).toBe("refuse-no-actionable");
 	});

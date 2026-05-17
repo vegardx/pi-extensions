@@ -115,10 +115,12 @@ function planSummaryMarkdown(plan: Plan): string {
 		}
 
 		if (regular.length > 0) {
-			if (pre.length > 0) {
-				lines.push("## Phases");
-				lines.push("");
-			}
+			// Always emit the `## Phases` header so the markdown hierarchy
+			// stays consistent (no H3 phase headings without an H2 above
+			// them) and the section is greppable in plans that don't have a
+			// pre/post section.
+			lines.push("## Phases");
+			lines.push("");
 			for (const phase of regular) renderPhaseBlock(lines, phase);
 		}
 
@@ -481,11 +483,13 @@ export function registerPlanTools(
 						// fork, they pass `dependsOn` explicitly. Empty plans get
 						// `[]` (root). An explicit `dependsOn: []` overrides the
 						// default (allows declaring a sibling root in a forest).
-						// Pre phases default to a chain root: nothing depends on them
-						// via dependsOn, the auto-mode gate enforces preflight
-						// completion separately.
+						// Pre/post phases default to a chain root: nothing depends
+						// on them via dependsOn. The auto-mode gate enforces preflight
+						// (and post-phase handover) completion separately, so
+						// embedding them in the dependsOn chain would double-encode
+						// and confuse `chainHead`/`readyPhases`.
 						params.dependsOn ??
-							(kind === "pre"
+							(kind !== "regular"
 								? []
 								: plan.phases.length > 0
 									? [plan.phases[plan.phases.length - 1].id]
