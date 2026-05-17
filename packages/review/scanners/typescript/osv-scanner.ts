@@ -23,7 +23,6 @@ function osvSeverityToFinding(
 	if (maxSeverity) {
 		const n = Number(maxSeverity);
 		if (Number.isFinite(n)) {
-			if (n >= 9.0) return "CRITICAL";
 			if (n >= 7.0) return "CRITICAL";
 			if (n >= 4.0) return "IMPORTANT";
 			return "NOTE";
@@ -79,14 +78,31 @@ export function parseOsvScannerOutput(raw: string): RawFinding[] {
 			const ecosystem =
 				typeof pkgInfo?.ecosystem === "string" ? pkgInfo.ecosystem : "";
 
-			const groups = Array.isArray(pkg.groups)
-				? (pkg.groups as Record<string, unknown>[])
+			const rawGroups = Array.isArray(pkg.groups)
+				? (pkg.groups as unknown[])
 				: [];
-			const groupMaxSeverity = groups
-				.map((g) =>
-					typeof g.max_severity === "string" ? g.max_severity : undefined,
-				)
-				.find(Boolean);
+			const groups: Record<string, unknown>[] = [];
+			for (const g of rawGroups) {
+				if (g && typeof g === "object") {
+					groups.push(g as Record<string, unknown>);
+				}
+			}
+			// Pick the *maximum* severity across all groups, not the first
+			// non-empty one. With multiple groups present, picking the first
+			// can understate the overall severity.
+			let groupMaxSeverity: string | undefined;
+			let groupMaxNumeric = -Infinity;
+			for (const g of groups) {
+				const raw =
+					typeof g.max_severity === "string" ? g.max_severity : undefined;
+				if (!raw) continue;
+				const n = Number(raw);
+				if (!Number.isFinite(n)) continue;
+				if (n > groupMaxNumeric) {
+					groupMaxNumeric = n;
+					groupMaxSeverity = raw;
+				}
+			}
 			const groupAliases: string[] = [];
 			for (const g of groups) {
 				if (Array.isArray(g.aliases)) {
@@ -146,7 +162,11 @@ export function parseOsvScannerOutput(raw: string): RawFinding[] {
  */
 export const osvScannerSpec: ScannerSpec = {
 	id: "osv-scanner",
-	languages: ["typescript", "javascript", "python", "go", "rust"],
+	// Spec covers only the npm/yarn ecosystem until #166c teaches
+	// `buildArgs()` to detect lockfiles per-language. Don't advertise
+	// languages we don't actually scan — future language-based filtering
+	// would otherwise enable osv-scanner for ecosystems it isn't reading.
+	languages: ["typescript", "javascript"],
 	lane: "security-analyst",
 	defaultEnabled: false,
 	budgetMs: 30_000,
