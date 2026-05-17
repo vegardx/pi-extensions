@@ -306,6 +306,13 @@ export function installCrashHandler(deps: CrashHandlerDeps): () => void {
 	};
 	const onUnhandled = (reason: unknown): void => {
 		fire(reason, "unhandledRejection");
+		// NOTE: registering an `unhandledRejection` listener suppresses
+		// Node's default behaviour (Node 15+ defaults to terminate). This
+		// is a deliberate tradeoff for a TUI extension: capturing the
+		// crash report and letting the process continue is preferable to
+		// silent termination of an interactive session. Pi-mono itself
+		// does not register an `unhandledRejection` listener, so this is
+		// the only listener attached and the only behaviour shift.
 	};
 
 	const fire = (err: unknown, origin: CrashOrigin): void => {

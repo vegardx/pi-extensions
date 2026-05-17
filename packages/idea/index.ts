@@ -327,6 +327,17 @@ export function scanContextForSecrets(ctx: IdeaContext): ContextScanResult {
 		...ctx,
 		userText: scrub(ctx.userText),
 		sessionName: ctx.sessionName ? scrub(ctx.sessionName) : null,
+		origin: {
+			...ctx.origin,
+			// origin.slug is rendered in the polish task's Environment block.
+			// For internal GHE/corp remotes the host can be a sensitive
+			// internal hostname — scrub before passing to the subagent so the
+			// fail-closed redaction check sees it.
+			host: scrub(ctx.origin.host),
+			owner: scrub(ctx.origin.owner),
+			repo: scrub(ctx.origin.repo),
+			slug: scrub(ctx.origin.slug),
+		},
 		recentEntries: ctx.recentEntries.map((e) => ({
 			role: e.role,
 			text: scrub(e.text),
