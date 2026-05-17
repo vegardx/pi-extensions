@@ -26,7 +26,10 @@ export function defaultProbe(name: string, cwd: string): string | null {
 		timeout: 3_000,
 		stdio: "pipe",
 	});
-	if (r.status === 0 && r.stdout.trim()) return name;
+	if (r.status === 0) {
+		const resolved = r.stdout.trim();
+		if (resolved) return resolved;
+	}
 	return null;
 }
 
