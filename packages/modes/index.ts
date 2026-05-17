@@ -4552,6 +4552,10 @@ export default function (pi: ExtensionAPI) {
 				currentPlanSlug: initialPlanSlug,
 			};
 			// Don't persist yet — only persist when the user actively changes mode.
+			// Mirror the in-memory mode to the shared accessor so /commit and any
+			// other reader see the actual default mode (otherwise they get null
+			// and fall back to the strict copy on every fresh session).
+			setActiveMode(modeState.mode);
 			applyModeTools();
 			installFooter(ctx);
 			updateWidget(ctx);
