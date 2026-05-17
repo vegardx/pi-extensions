@@ -580,6 +580,8 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
 | `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
 | `researchTimeoutMs` | `90000` | Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
+| `explore.parallelism` | `1` | Max in-flight `explore_ask` jobs across the seed worker and ephemeral children combined. `1` keeps the single-FIFO behaviour from before #159b. Increase to fan out unrelated questions in parallel. Non-integer / non-positive values fall back to the default with a warning. |
+| `explore.queueDepthThreshold` | `4` | When the seed FIFO has this many queued jobs, `related: true` asks burst-route to children even when the seed is busy — better to fan out and finish than wait. Only meaningful when `explore.parallelism > 1`. |
 
 > **Autoreview is off by default.** The pipeline (`/review`, post-execution batch) runs end-to-end but the surrounding triage and feedback flow needs more design work before it's on for everyone — see the `TODO(autoreview)` block on `runBatchReview` for the open issues. Opt in per-repo by setting `extensionConfig.modes.review.enable: true`.
 
