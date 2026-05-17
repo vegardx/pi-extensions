@@ -6,7 +6,7 @@
  * the registry's barrel).
  */
 
-import { runScanners } from "../../scanners/registry.js";
+import { defaultProbe, runScanners } from "../../scanners/registry.js";
 import type {
 	ScannerContext,
 	ScannerOutcome,
@@ -254,5 +254,27 @@ describe("runScanners", () => {
 		runScanners([spec], ctx);
 
 		expect(calls[0]?.args).toEqual(["--flag", "value"]);
+	});
+});
+
+describe("defaultProbe", () => {
+	it("returns the absolute path resolved by `which` (not the bare name)", () => {
+		// `node` is essentially guaranteed to be on PATH in CI/local dev.
+		// The contract is that probe returns either an absolute path or
+		// null — not the bare command name.
+		const result = defaultProbe("node", "/tmp");
+		expect(result).not.toBeNull();
+		if (result) {
+			expect(result).not.toBe("node");
+			expect(result.startsWith("/")).toBe(true);
+		}
+	});
+
+	it("returns null for a binary that doesn't exist anywhere", () => {
+		const result = defaultProbe(
+			"this-binary-cannot-possibly-exist-xyz123",
+			"/tmp",
+		);
+		expect(result).toBeNull();
 	});
 });
