@@ -7,7 +7,7 @@
  *
  * Do not add new scanners here — register them under
  * `packages/review/scanners/<language>/` and add the spec to
- * `BUILTIN_SCANNERS` in `scanners/index.js`.
+ * `BUILTIN_SCANNERS` in `scanners/index.ts`.
  */
 
 import type { RawFinding, ReviewerRole } from "./findings.js";
@@ -104,7 +104,7 @@ export interface StaticAnalysisResult {
  * `StaticToolName` (camelCase) used by `StaticAnalysisConfig`. Only
  * the multi-word ids (`npm-audit`, `osv-scanner`) actually differ.
  */
-const SPEC_ID_TO_LEGACY: Record<string, StaticToolName> = {
+const SPEC_ID_TO_LEGACY: Record<string, StaticToolName | undefined> = {
 	tsc: "tsc",
 	biome: "biome",
 	eslint: "eslint",

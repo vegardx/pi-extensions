@@ -49,7 +49,12 @@ export function parseSemgrepOutput(raw: string): RawFinding[] {
 
 export const semgrepSpec: ScannerSpec = {
 	id: "semgrep",
-	languages: ["typescript", "javascript", "python", "go"],
+	// `buildArgs` pins `--config p/javascript` so we only produce useful
+	// findings for TS/JS today. Listing python/go would mislead future
+	// language-based filtering into running semgrep against ecosystems
+	// it isn't configured for. Widen this when we wire per-language
+	// rulesets (#166c+).
+	languages: ["typescript", "javascript"],
 	lane: "security-analyst",
 	defaultEnabled: false,
 	budgetMs: 120_000,

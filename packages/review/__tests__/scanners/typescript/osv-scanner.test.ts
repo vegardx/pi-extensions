@@ -249,4 +249,60 @@ describe("osvScannerSpec", () => {
 		expect(args).toContain("--lockfile");
 		expect(args).toContain("package-lock.json");
 	});
+
+	it("only advertises npm-ecosystem languages (TS/JS) until ecosystem detection lands", () => {
+		// `buildArgs()` pins `--lockfile package-lock.json` so we cannot
+		// scan python/go/rust today. Don't lie about coverage in the spec.
+		expect(osvScannerSpec.languages).toEqual(["typescript", "javascript"]);
+	});
+});
+
+describe("parseOsvScannerOutput severity selection", () => {
+	it("picks the maximum severity across multiple groups, not the first", () => {
+		// First group has lower severity (4.5 = IMPORTANT) but the
+		// second group has 9.8 (CRITICAL). The finding's severity should
+		// reflect the maximum, not whichever group came first.
+		const raw = JSON.stringify({
+			results: [
+				{
+					source: { path: "package-lock.json" },
+					packages: [
+						{
+							package: { name: "x", version: "1.0.0", ecosystem: "npm" },
+							vulnerabilities: [{ id: "CVE-1", summary: "issue" }],
+							groups: [
+								{ ids: ["a"], aliases: [], max_severity: "4.5" },
+								{ ids: ["b"], aliases: [], max_severity: "9.8" },
+								{ ids: ["c"], aliases: [], max_severity: "7.0" },
+							],
+						},
+					],
+				},
+			],
+		});
+		const findings = parseOsvScannerOutput(raw);
+		expect(findings[0]?.severity).toBe("CRITICAL");
+	});
+
+	it("survives null entries inside `groups`", () => {
+		// Defensive: real osv-scanner output shouldn't include nulls,
+		// but a malformed/older schema shouldn't crash the parser.
+		const raw = JSON.stringify({
+			results: [
+				{
+					source: { path: "package-lock.json" },
+					packages: [
+						{
+							package: { name: "x", version: "1.0.0", ecosystem: "npm" },
+							vulnerabilities: [{ id: "CVE-1", summary: "issue" }],
+							groups: [null, { ids: ["a"], aliases: [], max_severity: "7.5" }],
+						},
+					],
+				},
+			],
+		});
+		expect(() => parseOsvScannerOutput(raw)).not.toThrow();
+		const findings = parseOsvScannerOutput(raw);
+		expect(findings[0]?.severity).toBe("CRITICAL");
+	});
 });
