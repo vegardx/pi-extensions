@@ -114,6 +114,35 @@ export function parseOsvScannerOutput(raw: string): RawFinding[] {
 				}
 			}
 
+			// Build a per-vuln-id index of severity/aliases. Groups in OSV are
+			// tied to specific vulnerability ids; assigning a single package-level
+			// severity to every vulnerability would mislabel later findings when
+			// a package has multiple vuln groups with different severities.
+			const severityByVulnId = new Map<string, string>();
+			const aliasesByVulnId = new Map<string, string[]>();
+			for (const g of groups) {
+				const gIds = Array.isArray(g.ids)
+					? (g.ids as unknown[]).filter(
+							(x): x is string => typeof x === "string",
+						)
+					: [];
+				const gMaxSev =
+					typeof g.max_severity === "string" ? g.max_severity : undefined;
+				const gAliases = Array.isArray(g.aliases)
+					? (g.aliases as unknown[]).filter(
+							(x): x is string => typeof x === "string",
+						)
+					: [];
+				for (const id of gIds) {
+					if (gMaxSev && !severityByVulnId.has(id)) {
+						severityByVulnId.set(id, gMaxSev);
+					}
+					if (gAliases.length > 0 && !aliasesByVulnId.has(id)) {
+						aliasesByVulnId.set(id, gAliases);
+					}
+				}
+			}
+
 			if (!Array.isArray(pkg.vulnerabilities)) continue;
 			for (const v of pkg.vulnerabilities as unknown[]) {
 				if (!v || typeof v !== "object") continue;
@@ -127,13 +156,17 @@ export function parseOsvScannerOutput(raw: string): RawFinding[] {
 					typeof dbSpecific?.severity === "string"
 						? dbSpecific.severity
 						: undefined;
-				const severity = osvSeverityToFinding(groupMaxSeverity, dbSeverity);
+				// Resolve severity per-vuln-id when we have a matching group;
+				// fall back to the package-level max when this vuln isn't in any
+				// group (some osv-scanner outputs put the severity only at the
+				// package level).
+				const vulnSeverity = severityByVulnId.get(id) ?? groupMaxSeverity;
+				const severity = osvSeverityToFinding(vulnSeverity, dbSeverity);
+				const vulnAliases = aliasesByVulnId.get(id) ?? groupAliases;
 
 				const title = `osv-scanner: ${id} in ${name}@${version}`;
 				const aliasNote =
-					groupAliases.length > 0
-						? ` (aliases: ${groupAliases.join(", ")})`
-						: "";
+					vulnAliases.length > 0 ? ` (aliases: ${vulnAliases.join(", ")})` : "";
 				const ecoNote = ecosystem ? ` [${ecosystem}]` : "";
 				const desc = summary
 					? `${summary}${ecoNote}${aliasNote}`
@@ -168,18 +201,12 @@ export function parseOsvScannerOutput(raw: string): RawFinding[] {
  * Python, Rust, Maven, etc.) so we don't restrict to one ecosystem.
  */
 function detectOsvScanner(cwd: string): boolean {
-	const lockfiles = [
-		"package-lock.json",
-		"yarn.lock",
-		"pnpm-lock.yaml",
-		"go.mod",
-		"go.sum",
-		"Cargo.lock",
-		"poetry.lock",
-		"requirements.txt",
-		"Pipfile.lock",
-		"pom.xml",
-	];
+	// Match the actual scope of `buildArgs` (which currently scans
+	// `package-lock.json`). When ecosystem detection lands and
+	// `buildArgs` learns to target other lockfiles, widen this list
+	// alongside that change — not before, otherwise auto-enable trips
+	// on Go/Rust/Python repos and runs against a missing npm lockfile.
+	const lockfiles = ["package-lock.json"];
 	return lockfiles.some((n) => existsSync(join(cwd, n)));
 }
 

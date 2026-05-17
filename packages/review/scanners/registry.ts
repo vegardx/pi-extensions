@@ -105,7 +105,11 @@ export function runScanners(
 			continue;
 		}
 
-		const result = ctx.spawn(bin, spec.buildArgs(o.args), budgetMs);
+		// Always pass `cwd` through to buildArgs so adapters that need it
+		// (semgrep, future ones) can read repo config without an extra
+		// plumbing layer. Adapters that don't care simply ignore it.
+		const args = spec.buildArgs({ ...(o.args ?? {}), cwd: ctx.cwd });
+		const result = ctx.spawn(bin, args, budgetMs);
 
 		if (result.spawnError) {
 			outcomes.push({

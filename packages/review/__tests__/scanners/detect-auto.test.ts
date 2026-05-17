@@ -122,13 +122,13 @@ describe("detectAuto", () => {
 			touch("package-lock.json", "{}");
 			expect(osvScannerSpec.detectAuto?.(tmp)).toBe(true);
 		});
-		it("true with go.mod", () => {
+		it("false with go.mod (osv buildArgs only scans package-lock.json today)", () => {
 			touch("go.mod", "module x\n");
-			expect(osvScannerSpec.detectAuto?.(tmp)).toBe(true);
+			expect(osvScannerSpec.detectAuto?.(tmp)).toBe(false);
 		});
-		it("true with Cargo.lock", () => {
+		it("false with Cargo.lock (osv buildArgs only scans package-lock.json today)", () => {
 			touch("Cargo.lock", "");
-			expect(osvScannerSpec.detectAuto?.(tmp)).toBe(true);
+			expect(osvScannerSpec.detectAuto?.(tmp)).toBe(false);
 		});
 		it("false on bare repo", () => {
 			expect(osvScannerSpec.detectAuto?.(tmp)).toBe(false);

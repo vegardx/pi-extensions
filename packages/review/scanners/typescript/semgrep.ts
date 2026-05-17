@@ -82,13 +82,25 @@ export const semgrepSpec: ScannerSpec = {
 	budgetMs: 120_000,
 	binary: "semgrep",
 	buildArgs: (opts) => {
-		const rulesets =
-			opts?.rulesets && opts.rulesets.length > 0
-				? opts.rulesets
-				: DEFAULT_SEMGREP_RULESETS;
+		const explicitRulesets =
+			opts?.rulesets && opts.rulesets.length > 0 ? opts.rulesets : null;
+		// When no rulesets are explicitly configured AND a repo config
+		// file is present, omit `--config` entirely so semgrep loads the
+		// user's actual rules. Without this, auto-enabled semgrep ignored
+		// the config that triggered detection and ran the default
+		// `p/javascript` ruleset — which the detector comment explicitly
+		// said it was avoiding.
+		let rulesets: readonly string[] | null = explicitRulesets;
+		if (!rulesets && opts?.cwd && detectSemgrep(opts.cwd)) {
+			rulesets = null;
+		} else if (!rulesets) {
+			rulesets = DEFAULT_SEMGREP_RULESETS;
+		}
 		const args = ["scan"];
-		for (const r of rulesets) {
-			args.push("--config", r);
+		if (rulesets) {
+			for (const r of rulesets) {
+				args.push("--config", r);
+			}
 		}
 		args.push("--json", ".");
 		return args;
