@@ -22,6 +22,26 @@ export default function (pi: ExtensionAPI) {
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Open the configured IDE/editor at cwd or path:line:col.",
+		configSchema: [
+			{
+				key: "command",
+				type: "string",
+				default: "",
+				doc: "Editor binary to spawn. When unset, falls back to $VISUAL, then $EDITOR, then 'code'.",
+			},
+			{
+				key: "args",
+				type: "string[]",
+				default: ["{path}"],
+				doc: "Argv template. Placeholders: {path}, {line}, {col}, {cwd}. See README for examples (VS Code, Cursor, IntelliJ, Neovim).",
+			},
+			{
+				key: "detach",
+				type: "boolean",
+				default: true,
+				doc: "Spawn detached + unref'd so closing pi doesn't kill the editor. Set false to tie editor lifetime to pi.",
+			},
+		],
 	});
 
 	pi.registerCommand(EXT_ID, {
@@ -46,6 +66,17 @@ export default function (pi: ExtensionAPI) {
 				args: argv,
 				cwd: ctx.cwd,
 				detach: config.detach,
+				onLateError: (err) => {
+					// Editor surfaced an error after spawn (e.g. EACCES). The
+					// initial outcome was already reported as success, so let
+					// the user know something went wrong post-spawn.
+					ctx.ui.notify(
+						`/editor: editor reported an error after spawn: ${
+							err.message ?? String(err)
+						}`,
+						"warning",
+					);
+				},
 			});
 
 			if (!outcome.ok) {

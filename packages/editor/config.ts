@@ -30,6 +30,20 @@ export type EnvLookup = (name: string) => string | undefined;
 const DEFAULT_ENV: EnvLookup = (name) => process.env[name];
 
 /**
+ * Wrap an `EnvLookup` so empty-string env values (e.g. `$VISUAL=""`)
+ * fall through to the next layer instead of being treated as a real
+ * configured value. Without this, an empty env var would spawn `""`
+ * which surfaces as `not-found` rather than rolling forward to the
+ * next env var or the `"code"` default.
+ */
+function envOrUndefined(env: EnvLookup, name: string): string | undefined {
+	const raw = env(name);
+	if (raw === undefined) return undefined;
+	const trimmed = raw.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/**
  * Resolve `extensionConfig.editor.{command,args,detach}` with env
  * fallback. Order:
  *
@@ -57,8 +71,8 @@ export function resolveEditorConfig(
 	const command =
 		explicitCommand.length > 0
 			? explicitCommand
-			: (env(COMMAND_ENV_VAR) ??
-				env(COMMAND_ENV_VAR_FALLBACK) ??
+			: (envOrUndefined(env, COMMAND_ENV_VAR) ??
+				envOrUndefined(env, COMMAND_ENV_VAR_FALLBACK) ??
 				DEFAULT_COMMAND);
 
 	const args = getExtensionConfigStringArray(settings, EXT_ID, "args", [
