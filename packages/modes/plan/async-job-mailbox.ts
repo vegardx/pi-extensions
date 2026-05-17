@@ -134,6 +134,16 @@ export interface AsyncJobMailboxOptions<
 	/** Wait timeout fallback. Default 120s. */
 	defaultWaitTimeoutMs?: number;
 	/**
+	 * Build the kind-specific fields for synthetic terminal records
+	 * returned by `wait()` for unknown ids. Specialisations should
+	 * provide this so callers reading kind-specific fields (e.g.
+	 * `task.question`) don't see undefined. The synthetic record's
+	 * `BaseJob` fields (`id`, `status`, `error`, timestamps) are
+	 * always populated by the mailbox itself — this just covers the
+	 * remainder of the kind. Defaults to an empty object.
+	 */
+	synthesizeUnknown?: (id: string) => Partial<TJob>;
+	/**
 	 * Best-effort hook fired when the mailbox disposes. The dispatcher
 	 * uses this to tear down its own resources (e.g. the persistent
 	 * agent in explore's case).
@@ -268,8 +278,9 @@ export class AsyncJobMailbox<
 		if (this.disposed) throw new Error(`${this.opts.kind} mailbox is disposed`);
 		const job = this.jobById.get(id);
 		if (!job) {
+			const extras = this.opts.synthesizeUnknown?.(id) ?? {};
 			return {
-				...({} as TJob),
+				...(extras as TJob),
 				id,
 				status: "error" as TaskStatus,
 				error: `unknown task id: ${id}`,

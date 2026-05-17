@@ -228,6 +228,7 @@ export class ExploreMailbox {
 			idPrefix: "q",
 			maxConcurrent: 1,
 			defaultWaitTimeoutMs: DEFAULT_WAIT_TIMEOUT_MS,
+			synthesizeUnknown: () => ({ question: "" }),
 			dispatch: (handle) => this.dispatchExplore(handle),
 			onDispose: () => this.disposeAgent(),
 		});
