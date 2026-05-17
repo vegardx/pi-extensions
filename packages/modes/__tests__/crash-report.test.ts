@@ -254,11 +254,15 @@ describe("installCrashHandler", () => {
 		expect(writes[0]!.path).toContain("crash-reports");
 	});
 
-	it("fires on unhandledRejection without altering exit behaviour", () => {
+	it("fires on unhandledRejection (note: this changes process semantics)", () => {
 		dispose = installCrashHandler(deps());
 		// `unhandledRejection` listeners receive (reason, promise). We
 		// only care that our listener writes a report; we don't reject
 		// a real Promise here because that would fail the test runner.
+		// NOTE: registering this listener suppresses Node's default
+		// terminate-on-unhandled-rejection — a deliberate tradeoff
+		// documented in `crash-report.ts` (capturing a TUI session's
+		// crash context is more valuable than a silent termination).
 		emit("unhandledRejection", new Error("rejected"), Promise.resolve());
 		expect(writes).toHaveLength(1);
 		const report = JSON.parse(writes[0]!.payload) as CrashReport;

@@ -15,6 +15,8 @@
  * regardless of which path runs.
  */
 
+import { homedir } from "node:os";
+import { redactFull } from "@vegardx/pi-extensions-shared/redact.js";
 import type { DerpContext, RecentEntry } from "./context.js";
 import type { CrashReportSummary } from "./crash-reports.js";
 
@@ -76,11 +78,23 @@ function renderCrashReports(
 				`- **Mode/stage:** ${r.state.mode ?? "?"} / ${r.state.stage ?? "?"}`,
 			);
 		}
-		if (r.state.branch) rows.push(`- **Branch:** \`${r.state.branch}\``);
-		if (r.state.planSlug) {
+		// Branch / plan / phase names can contain internal hostnames,
+		// customer identifiers, or token-shaped strings. Pass them through
+		// the redactor before rendering into the public issue body. The
+		// crash-report writer captures these verbatim from `modeState`,
+		// so this is the last fail-closed gate.
+		const safeBranch = r.state.branch ? redactFull(r.state.branch).text : null;
+		const safePlan = r.state.planSlug
+			? redactFull(r.state.planSlug).text
+			: null;
+		const safePhase = r.state.activePhaseId
+			? redactFull(r.state.activePhaseId).text
+			: null;
+		if (safeBranch) rows.push(`- **Branch:** \`${safeBranch}\``);
+		if (safePlan) {
 			rows.push(
-				`- **Plan / phase:** \`${r.state.planSlug}\`${
-					r.state.activePhaseId ? ` / \`${r.state.activePhaseId}\`` : ""
+				`- **Plan / phase:** \`${safePlan}\`${
+					safePhase ? ` / \`${safePhase}\`` : ""
 				}`,
 			);
 		}
@@ -89,15 +103,36 @@ function renderCrashReports(
 				`- **Redaction hits:** ${r.redactionHits.map((k) => `\`${k}\``).join(", ")}`,
 			);
 		}
-		rows.push(`- **Source:** \`${r.sourcePath}\``);
+		// Collapse `$HOME` to `~` so the absolute path doesn't leak the
+		// local username into a public issue (e.g. `/Users/<name>/.pi/...`).
+		rows.push(`- **Source:** \`${collapseHome(r.sourcePath)}\``);
 
 		let block = rows.join("\n");
 		if (r.error.stack) {
 			block += `\n\n<details><summary>Stack</summary>\n\n\`\`\`\n${r.error.stack}\n\`\`\`\n</details>`;
 		}
+		// Surface the captured recent-entry tail. The writer already
+		// redacted these per-entry; we render in a fenced block so the
+		// session-level context the polish step sees on the issue body
+		// matches what was actually captured at crash time.
+		if (r.recentEntries.length > 0) {
+			const tail = r.recentEntries
+				.map((e) => `[${e.role}]\n${e.text}`)
+				.join("\n\n");
+			block += `\n\n<details><summary>Recent session entries</summary>\n\n\`\`\`\n${tail}\n\`\`\`\n</details>`;
+		}
 		blocks.push(block);
 	}
 	return blocks.join("\n\n---\n\n");
+}
+
+/** Collapse `$HOME` to `~` to avoid leaking the local username. */
+function collapseHome(path: string): string {
+	const home = homedir();
+	if (home && path.startsWith(home)) {
+		return `~${path.slice(home.length)}`;
+	}
+	return path;
 }
 
 /**
@@ -170,7 +205,7 @@ export function buildPolishTask(ctx: DerpContext): string {
 		"Title: factual, ≤80 chars, no leading prefix (the caller adds one).",
 	);
 	lines.push(
-		"Body: include sections — Summary, What I was doing, Observed behaviour, Environment, Session reference. Verbatim-copy the Environment and Session-reference blocks above; do not invent values.",
+		"Body: include sections — Summary, What I was doing, Observed behaviour, Crash reports (if and only if a Crash reports block is present in the task above), Environment, Session reference. Verbatim-copy the Environment, Session-reference, and Crash-reports blocks above; do not invent values.",
 	);
 	return lines.join("\n");
 }

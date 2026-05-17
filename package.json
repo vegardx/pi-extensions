@@ -15,6 +15,7 @@
       "packages/commit/index.ts",
       "packages/derp/index.ts",
       "packages/exa/index.ts",
+      "packages/idea/index.ts",
       "packages/modes/index.ts",
       "packages/prompt-suggestion/index.ts",
       "packages/review/index.ts",
