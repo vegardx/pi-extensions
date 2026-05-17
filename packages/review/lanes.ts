@@ -3,10 +3,10 @@
  *
  * Each reviewer lane (architect, code-reviewer, …) and the indexer +
  * orchestrator can be independently configured to use a specific
- * `{set, tier}` from `backgroundModels`. The legacy "fan out across
- * primary AND secondary" path is replaced by a secondary-first single
- * pass; primary is reachable per-lane via override or via the
- * `consult_primary_model` tool when the orchestrator is uncertain.
+ * `{set, tier}` from `backgroundModels`. This module is the standalone
+ * config-reader primitive; the `auto-review.ts` rewiring that consumes
+ * it (replacing the dual-tier fan-out and renaming the consult tool to
+ * `consult_other_model`) lands as a follow-up in #164b.
  *
  * Resolution order for a given lane id:
  *   1. `extensionConfig.review.lanes.<id>` — explicit per-lane override.

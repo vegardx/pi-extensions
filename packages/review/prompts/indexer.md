@@ -23,9 +23,11 @@ array — never omit a key.
     { "file": "packages/x/y.ts", "additions": 120, "deletions": 8, "note": "core dispatch loop rewritten" }
   ],
   "riskSurfaces": [
-    { "kind": "auth"|"network"|"fs"|"crypto"|"shell"|"sql"|"concurrency"|"public-api"|"other",
+    {
+      "kind": "auth",
       "where": "path/to/x.ts:120",
-      "note": "user-controlled path joined into shell command" }
+      "note": "user-controlled path joined into shell command"
+    }
   ],
   "openQuestions": [
     "what the reviewers should clarify with the author or via tools"
@@ -49,9 +51,11 @@ array — never omit a key.
   changed.
 
 - **riskSurfaces** — places that touch a security- or correctness-
-  sensitive boundary. Pick a `kind` from the enumerated list; `other`
-  only when nothing fits. `where` is `file:line` when known; just `file`
-  otherwise. Be terse — reviewers will follow up.
+  sensitive boundary. Pick a `kind` from this enumerated list:
+  `auth`, `network`, `fs`, `crypto`, `shell`, `sql`, `concurrency`,
+  `public-api`, `other`. Use `other` only when nothing fits. `where`
+  is `file:line` when known; just `file` otherwise. Be terse —
+  reviewers will follow up.
 
 - **openQuestions** — short bullets pointing reviewers at things they'll
   need to verify (intent, missing tests, prior art). Cap at 6 items.
