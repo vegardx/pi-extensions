@@ -153,6 +153,42 @@ describe("tryParseInlineSuggestion", () => {
 		expect(blocks[0]?.text).toBe("reply body");
 	});
 
+	it("strips the sentinel block from the message even on NONE", () => {
+		// Critical correctness: the protocol explicitly allows
+		// `<<<NEXT_PROMPT>>>NONE<<<END>>>`. Without stripping on NONE,
+		// the user sees the raw sentinel in the transcript on every
+		// no-suggestion turn, breaking the "invisible to the developer"
+		// guarantee.
+		const msg = assistant("reply body\n<<<NEXT_PROMPT>>>NONE<<<END>>>");
+		const out = tryParseInlineSuggestion([msg], {
+			stripFromMessage: true,
+		});
+		expect(out).toBeNull();
+		const blocks = msg.content as Array<{ type: string; text: string }>;
+		expect(blocks[0]?.text).toBe("reply body");
+	});
+
+	it("strips ANSI escape sequences from inline suggestions", () => {
+		// A suggestion that contains escape codes would render terminal
+		// control sequences in the ghost editor. Mirrors the predictor's
+		// sanitize() behaviour.
+		const msg = assistant(
+			"\n<<<NEXT_PROMPT>>>\x1b[31mred suggestion\x1b[0m<<<END>>>",
+		);
+		const out = tryParseInlineSuggestion([msg]);
+		expect(out).toBe("red suggestion");
+	});
+
+	it("strips Unicode bidi/format overrides from inline suggestions", () => {
+		// LRO / RLO can visually spoof what the user thinks they're
+		// accepting; ZWSP can sneak past visual review.
+		const msg = assistant(
+			"\n<<<NEXT_PROMPT>>>fix\u202Eevil\u202C bug<<<END>>>",
+		);
+		const out = tryParseInlineSuggestion([msg]);
+		expect(out).toBe("fixevil bug");
+	});
+
 	it("does not mutate the message when stripFromMessage is false (default)", () => {
 		const msg = assistant("reply\n<<<NEXT_PROMPT>>>do X<<<END>>>");
 		tryParseInlineSuggestion([msg]);

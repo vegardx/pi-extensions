@@ -19,6 +19,7 @@ import { Predictor, parseModelSpec } from "./predictor.js";
 import { tryParseInlineSuggestion } from "./sentinel.js";
 
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "prompt-suggestion.json");
+const EXT_ID = "prompt-suggestion";
 
 interface PersistedConfig {
 	modelSpec?: string;
@@ -242,18 +243,12 @@ export default function (pi: ExtensionAPI): void {
 		// inline path is opt-in until the A/B finishes.
 		const settings = readRelevantSettings(ctx.cwd);
 		inlineMode =
-			getExtensionConfigBoolean(
-				settings,
-				"promptSuggestion",
-				"inline",
-				false,
-			) ?? false;
+			getExtensionConfigBoolean(settings, EXT_ID, "inline", false) ?? false;
 		const abLogEnabled =
-			getExtensionConfigBoolean(settings, "promptSuggestion", "abLog", false) ??
-			false;
+			getExtensionConfigBoolean(settings, EXT_ID, "abLog", false) ?? false;
 		const abLogPathSetting = getExtensionConfigString(
 			settings,
-			"promptSuggestion",
+			EXT_ID,
 			"abLogPath",
 			"",
 		);

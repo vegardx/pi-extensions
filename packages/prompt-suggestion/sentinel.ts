@@ -90,6 +90,23 @@ function finaliseSuggestion(raw: string): string | null {
 	let s = raw.split("\n")[0]?.trim() ?? "";
 	if (!s) return null;
 	if (s.toUpperCase() === "NONE") return null;
+	// Strip ANSI CSI / OSC / ESC-pair sequences and remaining control
+	// chars. Mirrors the predictor's sanitize() because an inline
+	// suggestion that contains escape sequences would render terminal
+	// control codes inside the ghost editor; bidi/format overrides can
+	// visually spoof what the user thinks they're accepting.
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
+	s = s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
+	s = s.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "");
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
+	s = s.replace(/\x1b[\s\S]/g, "");
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
+	s = s.replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+	// Unicode bidi / format overrides that can visually spoof text.
+	s = s.replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "");
+	s = s.trim();
+	if (!s) return null;
 	s = s.replace(/^["'`]+|["'`]+$/g, "");
 	s = s.replace(/[.!?]+$/g, "");
 	s = s.trim();
@@ -122,7 +139,13 @@ export function tryParseInlineSuggestion(
 		const text = extractAssistantText(m);
 		if (!text) return null;
 		const suggestion = parseSentinelBlock(text);
-		if (options.stripFromMessage && suggestion !== null) {
+		// Strip whenever the sentinel was PRESENT in the text, not only
+		// when it parsed to a usable suggestion. The protocol explicitly
+		// allows `<<<NEXT_PROMPT>>>NONE<<<END>>>` (and other parses can
+		// also yield null, e.g. empty/whitespace contents). Without this,
+		// the developer sees the raw sentinel in the transcript on every
+		// NONE turn, breaking the "invisible to the developer" guarantee.
+		if (options.stripFromMessage && text.includes(SENTINEL_OPEN)) {
 			stripSentinelFromMessage(m);
 		}
 		return suggestion;
