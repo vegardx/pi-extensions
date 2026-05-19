@@ -1,22 +1,34 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
 	getExtensionConfigBoolean,
 	readRelevantSettings,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { GhostEditor } from "./ghost-editor.js";
-import { tryParseInlineSuggestion } from "./sentinel.js";
+import { sanitiseSuggestion } from "./sanitise.js";
 
-export { INLINE_SUGGESTION_SYSTEM_ADDENDUM } from "./sentinel.js";
+export { INLINE_SUGGESTION_SYSTEM_ADDENDUM } from "./sanitise.js";
 
 const EXT_ID = "prompt-suggestion";
+
+// Component whose render() returns no lines. Used as both the call and
+// result slot for the suggest_next_prompt tool so the row collapses to
+// zero height in the TUI. Pi has no native "hidden tool" flag; this is
+// the supported way to make a registered tool effectively invisible.
+const HIDDEN_RENDER = {
+	render(): string[] {
+		return [];
+	},
+	invalidate(): void {},
+};
 
 export default function (pi: ExtensionAPI): void {
 	declareExtension({
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
-		doc: "Inline ghost-text prompt suggestions parsed from a sentinel block emitted by the main agent at the end of each turn.",
+		doc: "Inline ghost-text prompt suggestions delivered via a hidden suggest_next_prompt tool call at the end of each agent turn.",
 		configSchema: [
 			{
 				key: "enabled",
@@ -58,7 +70,7 @@ export default function (pi: ExtensionAPI): void {
 
 	// The editor's handleInput already clears the ghost for interactive
 	// submissions. This covers RPC/extension sources that bypass the editor
-	// entirely, and flags the next agent_end as belonging to a real user turn.
+	// entirely, and flags the next tool call as belonging to a real user turn.
 	pi.on("input", () => {
 		editor?.clearGhost();
 		pendingRealInput = true;
@@ -70,32 +82,58 @@ export default function (pi: ExtensionAPI): void {
 		editor = undefined;
 	});
 
-	pi.on("agent_end", async (event, ctx) => {
-		if (!enabled) return;
-		if (!editor) return;
-		if (!ctx.hasUI) return;
-		// Intentionally NOT checking ctx.isIdle() pre-await — agent_end means the
-		// agent just ended; Pi's internal streaming flag may not flip until after
-		// this handler runs, so isIdle() is racy here.
-		if (ctx.hasPendingMessages()) return;
-		if (ctx.ui.getEditorText() !== "") return;
-		if (!pendingRealInput) return;
-		pendingRealInput = false;
+	pi.registerTool({
+		name: "suggest_next_prompt",
+		label: "Suggest Next Prompt",
+		description:
+			"Suggest a one-line prompt to show the developer as ghost text.",
+		// No promptSnippet / promptGuidelines — the system addendum the user
+		// pastes into their AGENTS.md owns the calling contract. Listing
+		// the tool in the default Available-tools section would conflict
+		// with the addendum's "invisible to the developer" framing.
+		parameters: Type.Object({
+			text: Type.String({
+				description:
+					"One short sentence directing the developer to do something next, ≤120 chars.",
+			}),
+		}),
+		// Render nothing — see HIDDEN_RENDER above. `renderShell: "self"`
+		// stops pi from wrapping our zero-line components in the default
+		// padded Box, which would still take vertical space.
+		renderShell: "self",
+		renderCall: () => HIDDEN_RENDER,
+		renderResult: () => HIDDEN_RENDER,
 
-		const suggestion = tryParseInlineSuggestion(
-			event.messages as readonly { role: string; content: unknown }[],
-		);
-		if (!suggestion) return;
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const ok = {
+				content: [{ type: "text" as const, text: "" }],
+				details: {},
+				// terminate skips the follow-up LLM turn that would otherwise
+				// fire after a tool batch. Since the addendum tells the agent
+				// to call this exactly once at the very end of its reply, we
+				// want the turn to end here without a second round-trip.
+				terminate: true,
+			};
 
-		// Re-check after parse: extension-internal RPC could have raced.
-		if (
-			!ctx.isIdle() ||
-			ctx.hasPendingMessages() ||
-			ctx.ui.getEditorText() !== ""
-		) {
-			editor.clearGhost();
-			return;
-		}
-		editor.setGhost(suggestion);
+			if (!enabled) return ok;
+			if (!editor) return ok;
+			if (!ctx.hasUI) return ok;
+			// hasPendingMessages — another turn is queued; surfacing a ghost
+			// suggestion now would race the next turn_start clearing it.
+			if (ctx.hasPendingMessages()) return ok;
+			// User started typing during this turn; don't overwrite their work.
+			if (ctx.ui.getEditorText() !== "") return ok;
+			// Only react to suggestions for turns that started from a real
+			// user submission (i.e. the `input` event fired). Internal
+			// extension calls bypass that path.
+			if (!pendingRealInput) return ok;
+			pendingRealInput = false;
+
+			const sanitised = sanitiseSuggestion(params.text);
+			if (sanitised) {
+				editor.setGhost(sanitised);
+			}
+			return ok;
+		},
 	});
 }

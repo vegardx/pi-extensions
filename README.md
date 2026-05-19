@@ -87,7 +87,7 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 | [`idea`](packages/idea) | `/idea <text>` | Low-friction GitHub idea capture — files an issue against the current repo's origin without interrupting the active session. |
 | [`editor`](packages/editor) | `/editor [path[:line[:col]]]` | Opens the configured IDE/editor at cwd or `path:line:col`. Defaults to `code`; honours `$VISUAL`/`$EDITOR`. |
 | [`startup`](packages/startup) | `/extensions` | Reports loaded extensions, commands, tools, configs, and active models on session start. |
-| [`prompt-suggestion`](packages/prompt-suggestion) | (none — addendum-driven ghost text) | Inline ghost-text next-message suggestions parsed from a sentinel block emitted by the main agent. Requires pasting `INLINE_SUGGESTION_SYSTEM_ADDENDUM` into your `AGENTS.md`. |
+| [`prompt-suggestion`](packages/prompt-suggestion) | `suggest_next_prompt` (hidden tool) | Inline ghost-text next-message suggestions delivered via a hidden tool call at the end of each agent turn. Requires pasting `INLINE_SUGGESTION_SYSTEM_ADDENDUM` into your `AGENTS.md`. |
 | [`caffeinate`](packages/caffeinate) | `/caffeinate` | macOS keep-awake helper, refcounted, footer indicator. |
 | [`webfetch`](packages/webfetch) | `webfetch` tool | Fetch a URL and extract main content as clean Markdown (Defuddle + optional LLM summary). |
 | [`gh`](packages/gh) [`triage`](packages/triage) [`context7`](packages/context7) [`exa`](packages/exa) | skills | See the Skills table above. |
