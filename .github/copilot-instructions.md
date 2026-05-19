@@ -4,7 +4,7 @@ Monorepo of [pi.dev](https://pi.dev) extensions. npm workspaces, one
 extension per package under `packages/*`. Extensions are TypeScript
 modules loaded at runtime via jiti — **there is no build step**.
 
-Primary source of conventions: `CLAUDE.md` at the repo root. The seven
+Primary source of conventions: `AGENTS.md` at the repo root. The seven
 review-lane prompts in `packages/review/prompts/*.md` describe in
 detail what reviewers flag and — just as importantly — what they do
 not flag. When in doubt, read those.
@@ -47,7 +47,7 @@ not flag. When in doubt, read those.
   and can override per extension via
   `settings.json → extensionConfig.<name>.model`. Most extensions
   read `primary`; consumers that want cross-model checking (today:
-  `/develop`'s auto-review pass via `pi-ext-review/auto-review`) read
+  the `modes` auto-review pass via `pi-ext-review/auto-review`) read
   `secondary`, which falls back to `primary` when a tier isn't
   configured under it. If resolution fails, the
   extension disables its side task for the session with a single
@@ -127,14 +127,14 @@ Focused on what this repo actually cares about:
 - **CRITICAL** — exploitable security issue, data-corrupting bug, or
   layering violation that blocks future work.
 - **IMPORTANT** — logic error on an edge case, missing tests for new
-  branches, clear `CLAUDE.md` violation, feature creep that should be
+  branches, clear `AGENTS.md` violation, feature creep that should be
   split out.
 - **NOTE** — minor inconsistency, simplification opportunity, or
   defence-in-depth observation.
 
 ## When you need more context
 
-- `CLAUDE.md` — repo conventions in full.
+- `AGENTS.md` — repo conventions in full.
 - `packages/review/prompts/*.md` — the seven reviewer lanes with
   detailed "flag / don't flag" lists the local `/review` extension
   uses. If a reviewer prompt exists for your concern, follow its

@@ -14,7 +14,7 @@ export {
 	runAutoReview,
 	VALID_REVIEWER_ROLES,
 } from "./auto-review.js";
-// Re-exports for tests + downstream consumers (e.g. /develop). `runReview`
+// Re-exports for tests + downstream consumers (e.g. modes). `runReview`
 // piggybacks on the binding imported above; the others aren't needed at
 // runtime in this module so we re-export them straight from their sources.
 export type { RunReviewOptions, RunReviewResult } from "./core.js";

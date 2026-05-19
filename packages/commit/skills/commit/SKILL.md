@@ -1,12 +1,12 @@
 ---
 name: commit
-description: End-to-end commit workflow. Analyze the working tree, propose a conventional-commit plan (single or multi-commit), execute the commits after explicit confirmation, push, and create or update a pull request. Auto-appends `Closes #N` when the branch is linked to a tracking issue (typically set by `/develop`'s park path). Invoked by the /commit extension command; can also be used standalone via /skill:commit.
+description: End-to-end commit workflow. Analyze the working tree, propose a conventional-commit plan (single or multi-commit), execute the commits after explicit confirmation, push, and create or update a pull request. Auto-appends `Closes #N` when the branch is linked to a tracking issue (typically set by `/plan`'s park path). Invoked by the /commit extension command; can also be used standalone via /skill:commit.
 ---
 
 # Commit
 
 Analyze changes, plan commits, execute, push, and manage the PR. Closes
-the loop opened by `/develop` — commits generated here auto-link to any
+the loop opened by `/plan` — commits generated here auto-link to any
 tracking issue `/park` wrote to `git config`.
 
 This skill can be invoked two ways:
@@ -233,7 +233,7 @@ branch (follow-up commits, fixes).
 
 ## Related
 
-- `/develop` — plans a change; `/park` writes `branch.<name>.tracking-issue`
+- `/plan` — plans a change; `/park` writes `branch.<name>.tracking-issue`
   which this skill picks up.
 - `/review` — multi-agent code review. Recommended before committing.
 - `/skill:gh` — multi-host routing, fork-aware pushes, head-drift

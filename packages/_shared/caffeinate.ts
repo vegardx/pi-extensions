@@ -4,7 +4,7 @@
  *
  * ## Why
  *
- * Long unattended runs — `/develop`'s auto-verify + auto-review loops,
+ * Long unattended runs — `modes` auto-verify + auto-review loops,
  * `/review`'s seven-reviewer fan-out — can chew through several minutes
  * of LLM + tool work while the user is away from the keyboard. macOS
  * idle-sleep kills the network sockets and the agent silently stalls.

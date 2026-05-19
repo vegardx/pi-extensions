@@ -5,7 +5,7 @@ the agent for a conventional-commit plan (single or multi), executes
 after explicit confirmation, pushes with fork-aware routing and
 head-drift detection, and creates or updates the PR. **Auto-appends
 `Closes #N`** when the branch is linked to a tracking issue — closing
-the loop on `/develop`'s park path.
+the loop on `/plan`'s park path.
 
 Ported from the `commit` plugin in
 [awesome-agents](https://dnb.ghe.com/github/awesome-agents). The
@@ -43,7 +43,7 @@ generation stay on the main agent via `pi.sendMessage` +
 1. **Preflight** — verify repo, working tree has changes, current
    branch is safe. If you're on the default branch, a confirm dialog
    asks whether to continue (you usually want to branch first via
-   `/develop <desc>`).
+   `/plan <desc>`).
 2. **Offer `/review`** — picker: run review first, or commit now. If
    review, the extension calls `runReview(...)` from `pi-ext-review/core`
    directly (in-process via dynamic `import()`), gated on the extension
@@ -94,13 +94,13 @@ generation stay on the main agent via `pi.sendMessage` +
 11. **Return to default** — optional `git checkout + pull` of the
     default branch.
 
-## Integration with `/develop`
+## Integration with `/plan`
 
-This closes the loop on `/develop`'s park path. When the user runs
-`/develop <desc>` and picks Park, the extension persists
+This closes the loop on `/plan`'s park path. When the user runs
+`/plan <desc>` and picks Park, the extension persists
 `git config branch.<name>.tracking-issue <N>` where `<N>` is the
 created issue number. When the user later creates the branch (manually
-or via `/develop <same desc>` + Implement) and runs `/commit`, step 9
+or via `/plan <same desc>` + `/implement`) and runs `/commit`, step 9
 reads that config and step 10 appends `Closes #<N>` to the PR body.
 GitHub auto-closes the issue when the PR merges into the default
 branch.
@@ -157,7 +157,7 @@ from a fork (by forking the repo and opening a PR upstream) and run
 
 ## Related
 
-- `/develop` — plans a change; `/park` writes the tracking issue this
+- `/plan` — plans a change; `/park` writes the tracking issue this
   command reads.
 - `/review` — multi-agent code review, recommended before committing.
 - `/skill:gh` — multi-host routing reference.

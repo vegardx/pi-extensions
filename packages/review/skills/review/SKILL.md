@@ -36,7 +36,7 @@ dependency-only diff, the other six do the same.
 
 ## Pipeline (auto-review mode)
 
-When invoked via the `/develop` auto-review trigger, the pipeline is:
+When invoked via the `modes` auto-review trigger, the pipeline is:
 
 1. **Phase 0 — Scanner registry**: A registry of deterministic
    scanners (`tsc`, `biome`, `eslint`, `knip`, `madge`, `npm-audit`,

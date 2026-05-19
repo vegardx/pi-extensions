@@ -1,7 +1,7 @@
 # pi-ext-caffeinate
 
 macOS keep-awake helper for the unattended runs that other extensions
-in this monorepo do — `/develop`'s auto-verify + auto-review loops,
+in this monorepo do — `modes` auto-verify + auto-review loops,
 `/review`'s seven-reviewer fan-out, etc.
 
 ## What it does
@@ -142,7 +142,7 @@ try {
   `agent_end` — the design is caller-driven so each consumer can
   pick the exact window where the laptop should stay awake. The
   extension is purely the user-facing surface (toggle, footer,
-  status); consumers (`/develop`, `/review`) decide when to hold.
+  status); consumers (`modes`, `/review`) decide when to hold.
 
 The subprocess lifetime is anchored two ways:
 1. `caffeinate -w <pi-pid>` — kernel-side; if pi dies for any reason
