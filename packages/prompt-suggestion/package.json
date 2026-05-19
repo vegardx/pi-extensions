@@ -3,16 +3,18 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "Inline ghost-text prompt suggestions parsed from a sentinel block emitted by the main agent at the end of each turn.",
+  "description": "Inline ghost-text prompt suggestions delivered via a hidden suggest_next_prompt tool call at the end of each agent turn.",
   "pi": { "extensions": ["./index.ts"] },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*",
     "@vegardx/pi-extensions-shared": "*"
   },
   "peerDependenciesMeta": {
     "@mariozechner/pi-coding-agent": { "optional": true },
     "@mariozechner/pi-tui": { "optional": true },
+    "@sinclair/typebox": { "optional": true },
     "@vegardx/pi-extensions-shared": { "optional": true }
   }
 }
