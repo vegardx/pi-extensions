@@ -3,16 +3,14 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
-  "description": "Claude-Code-style inline ghost-text prompt suggestions for pi",
+  "description": "Inline ghost-text prompt suggestions parsed from a sentinel block emitted by the main agent at the end of each turn.",
   "pi": { "extensions": ["./index.ts"] },
   "peerDependencies": {
-    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
     "@vegardx/pi-extensions-shared": "*"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-ai": { "optional": true },
     "@mariozechner/pi-coding-agent": { "optional": true },
     "@mariozechner/pi-tui": { "optional": true },
     "@vegardx/pi-extensions-shared": { "optional": true }

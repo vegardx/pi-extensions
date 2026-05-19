@@ -2,7 +2,6 @@
 
 Several extensions in this monorepo call an LLM on a side task:
 
-- `prompt-suggestion` predicts the next message after every turn.
 - `session-title` names the session for your terminal tab / tmux window.
 - `develop` derives a kebab-case branch slug from a free-form description.
 - `/develop`'s auto-review pass (in `pi-ext-review/auto-review`) runs
@@ -65,7 +64,7 @@ Two top-level keys this monorepo's extensions read from pi's
   user to fully configure both sets.
 - **`extensionConfig.<name>.model`** — per-extension override. Wins
   over the (set, tier) lookup. Use it when one extension should run on
-  something different than your general tier choice (e.g. `prompt-suggestion`
+  something different than your general tier choice (e.g. `session-title`
   on a gateway, but the rest on direct Anthropic).
 
 Any other keys in `settings.json` belong to pi and are ignored by
@@ -81,7 +80,7 @@ candidate that resolves in the registry **and** has usable auth:
 
 1. **Extension-specific explicit override** — a CLI flag, in-session
    command value, or legacy env var that the extension passes in as
-   `opts.explicit`. (Examples: `--suggest-model=...`,
+   `opts.explicit`. (Examples:
    `$PI_SESSION_AUTO_TITLE_MODEL`.)
 2. **`settings.json` → `extensionConfig.<name>.model`** — the
    persistent per-extension escape hatch.
@@ -105,13 +104,12 @@ treat `{ ok: true, apiKey: undefined }` results as unusable via
 [resolver source](../packages/_shared/model-resolver.ts) for details.
 Other consumers accept headers-only auth because they hand the model
 spec off to something that does its own auth (the subagent RPC
-clients in `/review`, prompt-suggestion's `Predictor`).
+clients in `/review`).
 
 ## Per-extension tier and set assignments
 
 | Extension | Set | Tier | Why | Override knob |
 |---|---|---|---|---|
-| `prompt-suggestion` | `primary` | `fast` | Ghost text runs on every `agent_end`. 40-token output, no reasoning. | `/suggest` picker (persistent), `--suggest-model` (session), `extensionConfig.prompt-suggestion.model` |
 | `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
 | `develop` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves. | `$PI_DEVELOP_SLUG_MODEL` (session), `extensionConfig.develop.model` |
 | `/develop` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.develop.autoReview: false` to disable; both heavy tiers must resolve or the pass is skipped. |
@@ -211,7 +209,7 @@ Note the model id can contain slashes (`anthropic/claude-haiku-4.5`);
 the resolver splits only on the **first** slash, so the provider is
 `openrouter` and the model id is `anthropic/claude-haiku-4.5`.
 
-### Verify on one provider, suggestions on another
+### Per-extension override
 
 Mix per-extension with the tier defaults:
 
@@ -224,13 +222,13 @@ Mix per-extension with the tier defaults:
     }
   },
   "extensionConfig": {
-    "prompt-suggestion": { "model": "openrouter/anthropic/claude-haiku-4.5" }
+    "session-title": { "model": "openrouter/anthropic/claude-haiku-4.5" }
   }
 }
 ```
 
-`prompt-suggestion` reaches for openrouter, session-title
-stays on direct Anthropic.
+`session-title` reaches for openrouter, everything else stays on direct
+Anthropic.
 
 ### Local model (Ollama, LM Studio, etc.)
 
@@ -251,7 +249,7 @@ can target it like any other:
 
 Local models cost nothing per call but tend to be slower and less
 capable. Good fit for `fast`-tier extensions (short outputs) such as
-`prompt-suggestion` and `session-title`. The `/develop`
+`session-title`. The `/develop`
 auto-review pass (`heavy`) is only viable on a local model sharp
 enough to read diffs and produce structured JSON — expect to wire
 it up against a hosted model in practice.
@@ -276,7 +274,7 @@ tiers, just set `backgroundModels.primary.fast`:
 }
 ```
 
-Covers both prompt-suggestion and session-title (`fast`-tier consumers).
+Covers `session-title` (`fast`-tier consumer).
 The `/develop` auto-review pass (`heavy`-tier across both `primary` and
 `secondary`) stays skipped until you configure `primary.heavy` and
 `secondary.heavy` — it's strictly opt-in.
@@ -312,8 +310,6 @@ extension and the specific config keys it looked for.
 
 Quick checks:
 
-- `/suggest-status` dumps prompt-suggestion's current resolved model,
-  auth status, gate reasons, and the last few predict attempts.
 - session-title auto-title runs at most once per session and writes
   its status to the session's auto-title state; re-run with `/retitle`
   to force a fresh attempt.
@@ -335,7 +331,7 @@ top-to-bottom against your current state:
 
 If a higher-priority candidate isn't in the registry or has no auth,
 the resolver skips it and continues. That's why a typo'd
-`extensionConfig.prompt-suggestion.model` can produce "huh, it's using my
+`extensionConfig.session-title.model` can produce "huh, it's using my
 session model, not the thing I configured" — the override
 didn't resolve, so step 3 won.
 

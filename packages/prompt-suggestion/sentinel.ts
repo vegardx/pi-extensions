@@ -1,12 +1,11 @@
 /**
- * Inline prompt-suggestion sentinel protocol (#146 spike).
+ * Inline prompt-suggestion sentinel protocol.
  *
  * The main agent is asked (via a system-prompt addendum) to optionally
  * emit a sentinel-wrapped guess of the developer's most likely next
  * message at the very end of each assistant turn. We parse that block
  * out of the last assistant message in `agent_end` and surface it as
- * a ghost-text suggestion — saving the second LLM round-trip the
- * cheap-model predictor would otherwise do.
+ * a ghost-text suggestion — with no second LLM round-trip.
  *
  * Sentinel format (chosen so it is unique enough to ignore-on-collision
  * but visually obvious in a log):
@@ -19,9 +18,6 @@
  * entirely. We parse permissively: leading/trailing whitespace, an
  * optional "NONE" content (treated as no suggestion), and multiple
  * blocks (we take the last one — most relevant to the latest reasoning).
- *
- * This module is intentionally pure (no I/O, no `complete()`) so the
- * existing `Predictor` path stays untouched and the A/B is clean.
  */
 
 const SENTINEL_OPEN = "<<<NEXT_PROMPT>>>";
@@ -33,10 +29,9 @@ const MAX_SUGGESTION_CHARS = 120;
 
 /**
  * Addendum the host should append to the main agent's system prompt
- * when `extensionConfig.promptSuggestion.inline` is `true`. Kept short
- * to keep token overhead negligible. Designed to NOT change agent
- * behaviour for the rest of the turn — only affects the trailing
- * sentinel block.
+ * for inline ghost-text suggestions to surface. Kept short to keep
+ * token overhead negligible. Designed to NOT change agent behaviour
+ * for the rest of the turn — only affects the trailing sentinel block.
  */
 export const INLINE_SUGGESTION_SYSTEM_ADDENDUM = `
 You may optionally append a single sentinel-wrapped guess of the developer's most likely next message at the very end of your reply (after all other content):
@@ -61,7 +56,7 @@ Rules:
  * trim, or unbalanced sentinels.
  *
  * Strict on output: caps at MAX_SUGGESTION_CHARS, strips quotes/punctuation,
- * mirrors what `predictor.sanitize` does so both sources display the same.
+ * mirrors what the addendum tells the agent to produce.
  */
 export function parseSentinelBlock(text: string): string | null {
 	if (!text) return null;
@@ -91,10 +86,9 @@ function finaliseSuggestion(raw: string): string | null {
 	if (!s) return null;
 	if (s.toUpperCase() === "NONE") return null;
 	// Strip ANSI CSI / OSC / ESC-pair sequences and remaining control
-	// chars. Mirrors the predictor's sanitize() because an inline
-	// suggestion that contains escape sequences would render terminal
-	// control codes inside the ghost editor; bidi/format overrides can
-	// visually spoof what the user thinks they're accepting.
+	// chars. An inline suggestion that contains escape sequences would
+	// render terminal control codes inside the ghost editor; bidi/format
+	// overrides can visually spoof what the user thinks they're accepting.
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
 	s = s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "");
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
@@ -120,8 +114,7 @@ function finaliseSuggestion(raw: string): string | null {
 /**
  * Walk an `agent_end` messages array, find the last assistant turn,
  * extract its text content, and parse a sentinel block. Returns the
- * suggestion if present, or `null` if no inline guess is available
- * (in which case the caller falls back to the cheap-model predictor).
+ * suggestion if present, or `null` if no inline guess is available.
  *
  * Also strips the sentinel block from the message in-place when
  * `stripFromMessage` is true so the developer doesn't see it in the
