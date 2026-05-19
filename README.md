@@ -86,7 +86,7 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 | [`derp`](packages/derp) | `/derp <text>` | Fire-and-forget GitHub bug reporter that doesn't interrupt the session. |
 | [`startup`](packages/startup) | `/extensions` | Reports loaded extensions, commands, tools, configs, and active models on session start. |
 | [`session-title`](packages/session-title) | `/title` `/title-position` `/retitle` | Pins a user-configurable title (header or terminal title bar); auto-titles new sessions. |
-| [`prompt-suggestion`](packages/prompt-suggestion) | `/suggest` `/suggest-status` | Inline ghost-text next-message predictions after each turn. |
+| [`prompt-suggestion`](packages/prompt-suggestion) | (none — addendum-driven ghost text) | Inline ghost-text next-message suggestions parsed from a sentinel block emitted by the main agent. Requires pasting `INLINE_SUGGESTION_SYSTEM_ADDENDUM` into your `AGENTS.md`. |
 | [`caffeinate`](packages/caffeinate) | `/caffeinate` | macOS keep-awake helper, refcounted, footer indicator. |
 | [`webfetch`](packages/webfetch) | `webfetch` tool | Fetch a URL and extract main content as clean Markdown (Defuddle + optional LLM summary). |
 | [`gh`](packages/gh) [`triage`](packages/triage) [`context7`](packages/context7) [`exa`](packages/exa) | skills | See the Skills table above. |
