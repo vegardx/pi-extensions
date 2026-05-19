@@ -1,6 +1,6 @@
 # modes
 
-Permission-mode cycle with phase/task plan model and worktree-bound execution. Replaces `/develop`.
+Permission-mode cycle with phase/task plan model and worktree-bound execution.
 
 ## Modes
 

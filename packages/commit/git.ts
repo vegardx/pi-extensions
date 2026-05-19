@@ -95,7 +95,7 @@ export function originUrl(cwd: string): string | null {
 // ---- Tracking issue -------------------------------------------------
 
 /**
- * Read `branch.<name>.tracking-issue` — typically set by `/develop`'s
+ * Read `branch.<name>.tracking-issue` — typically set by `/plan`'s
  * park path. Returns null when the config key is unset.
  */
 export function readTrackingIssue(cwd: string, branch: string): string | null {

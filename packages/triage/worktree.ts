@@ -170,7 +170,7 @@ export interface TriageWorktree {
  * Resolve a worktree to use for `pr.headRefName`.
  *
  * Policy: if the branch is already checked out somewhere — main
- * checkout, leftover triage worktree, /develop park-path, ad-hoc — we
+ * checkout, leftover triage worktree, modes park-path, ad-hoc — we
  * adopt that worktree iff it has no uncommitted changes. A dirty
  * pre-existing worktree throws so the caller can skip the PR with a
  * clear message instead of risking the agent committing the user's WIP.
@@ -186,7 +186,7 @@ export function createTriageWorktree(
 ): TriageWorktree {
 	// Adopt an existing worktree if one already holds this branch. This
 	// is the single source of truth — `existsSync(canonical)` would miss
-	// branches checked out elsewhere (main, /develop, ad-hoc) and would
+	// branches checked out elsewhere (main, modes plan, ad-hoc) and would
 	// false-positive on a stale directory whose branch is no longer ours.
 	const existing = findWorktreeForBranch(repoRoot, pr.headRefName);
 	if (existing) {

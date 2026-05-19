@@ -135,7 +135,7 @@ exist for explicit user invocation.
    - **No fix turn pending** (no findings, or none accepted) —
      dynamic-import `pi-ext-commit/core` immediately and call
      `runCommit(...)` straight away.
-   No slash dispatch — same in-process pattern `/develop` and
+   No slash dispatch — same in-process pattern `modes` and
    `/commit → /review` use, for the same reason
    ([badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549)
    / [#2994](https://github.com/badlogic/pi-mono/issues/2994) /
@@ -307,11 +307,11 @@ Then in pi:
 /review packages/startup/index.ts
 ```
 
-## Auto-review pass (used by `/develop`)
+## Auto-review pass (used by `modes`)
 
 In addition to the interactive `/review` command, this package exports
 `runAutoReview(...)` from `pi-ext-review/auto-review`. It is consumed
-by `/develop` after execution completes, before the post-execution picker.
+by `modes` after execution completes, before the post-execution picker.
 
 Differences from the interactive `/review` command:
 

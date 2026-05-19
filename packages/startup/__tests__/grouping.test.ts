@@ -72,8 +72,8 @@ describe("groupBySource", () => {
 	it("dedupes commands and tools by sourceInfo.path", () => {
 		const grouped = groupBySource(
 			[
-				cmd("develop", "extension", "/repo/packages/develop/index.ts"),
-				cmd("implement", "extension", "/repo/packages/develop/index.ts"),
+				cmd("plan", "extension", "/repo/packages/modes/index.ts"),
+				cmd("implement", "extension", "/repo/packages/modes/index.ts"),
 				cmd("review", "extension", "/repo/packages/review/index.ts"),
 			],
 			[
@@ -83,19 +83,19 @@ describe("groupBySource", () => {
 					"/repo/packages/startup/index.ts",
 				),
 				tool(
-					"verify_step",
-					"/repo/packages/verify/index.ts",
-					"/repo/packages/verify/index.ts",
+					"webfetch_tool",
+					"/repo/packages/webfetch/index.ts",
+					"/repo/packages/webfetch/index.ts",
 				),
 			],
 		);
 
 		expect(grouped).toHaveLength(4);
-		const developEntry = grouped.find((e) =>
-			e.path.endsWith("packages/develop/index.ts"),
+		const modesEntry = grouped.find((e) =>
+			e.path.endsWith("packages/modes/index.ts"),
 		);
-		expect(developEntry?.commands).toEqual(["develop", "implement"]);
-		expect(developEntry?.tools).toEqual([]);
+		expect(modesEntry?.commands).toEqual(["implement", "plan"]);
+		expect(modesEntry?.tools).toEqual([]);
 
 		const startupEntry = grouped.find((e) =>
 			e.path.endsWith("packages/startup/index.ts"),
@@ -107,7 +107,7 @@ describe("groupBySource", () => {
 	it("filters out builtin and sdk tools, and prompt/skill commands", () => {
 		const grouped = groupBySource(
 			[
-				cmd("develop", "extension", "/repo/packages/develop/index.ts"),
+				cmd("plan", "extension", "/repo/packages/modes/index.ts"),
 				cmd("my-prompt", "prompt", "/home/u/.pi/prompts/my-prompt.md"),
 				cmd("my-skill", "skill", "/home/u/.pi/skills/my-skill/SKILL.md"),
 			],
@@ -123,7 +123,7 @@ describe("groupBySource", () => {
 		);
 
 		expect(grouped.map((e) => e.path).sort()).toEqual([
-			"/repo/packages/develop/index.ts",
+			"/repo/packages/modes/index.ts",
 			"/repo/packages/startup/index.ts",
 		]);
 	});
@@ -210,16 +210,16 @@ describe("resolveBackgroundTier", () => {
 // --- buildDeclaredView ------------------------------------------------------
 
 describe("buildDeclaredView", () => {
-	const verifyMeta = {
-		name: "verify",
-		path: "/repo/packages/verify/index.ts",
+	const webfetchMeta = {
+		name: "webfetch",
+		path: "/repo/packages/webfetch/index.ts",
 		doc: "Verify a plan.",
 		configSchema: [
 			{
 				key: "model",
 				type: "string" as const,
 				fallbackChain:
-					"extensionConfig.verify.model → backgroundModels.secondary.normal → ctx.model",
+					"extensionConfig.webfetch.model → backgroundModels.secondary.normal → ctx.model",
 				doc: "Override verifier model.",
 			},
 			{
@@ -238,33 +238,33 @@ describe("buildDeclaredView", () => {
 	it("joins commands/tools by path and resolves both keys + tier", () => {
 		const loadedByPath = new Map<string, LoadedExtension>([
 			[
-				verifyMeta.path,
-				loadedFromPath(verifyMeta.path, ["verify"], ["verify_step"]),
+				webfetchMeta.path,
+				loadedFromPath(webfetchMeta.path, ["webfetch_cmd"], ["webfetch_tool"]),
 			],
 		]);
-		const view = buildDeclaredView(verifyMeta, loadedByPath, {
+		const view = buildDeclaredView(webfetchMeta, loadedByPath, {
 			global: {},
 			project: {
 				extensionConfig: {
-					verify: { model: "p/verify", maxParallel: 8 },
+					webfetch: { model: "p/webfetch", maxParallel: 8 },
 				},
 				backgroundModels: { secondary: { normal: "p/secondary-normal" } },
 			},
 			merged: {
 				extensionConfig: {
-					verify: { model: "p/verify", maxParallel: 8 },
+					webfetch: { model: "p/webfetch", maxParallel: 8 },
 				},
 				backgroundModels: { secondary: { normal: "p/secondary-normal" } },
 			},
 		});
 
-		expect(view.commands).toEqual(["verify"]);
-		expect(view.tools).toEqual(["verify_step"]);
+		expect(view.commands).toEqual(["webfetch_cmd"]);
+		expect(view.tools).toEqual(["webfetch_tool"]);
 		expect(view.configKeys).toHaveLength(2);
 
 		const modelKey = view.configKeys.find((k) => k.schema.key === "model");
 		expect(modelKey?.effective).toEqual({
-			value: "p/verify",
+			value: "p/webfetch",
 			source: "project",
 			isOverride: true,
 		});
@@ -284,7 +284,7 @@ describe("buildDeclaredView", () => {
 	});
 
 	it("uses defaults when no settings layer covers a key", () => {
-		const view = buildDeclaredView(verifyMeta, new Map(), {
+		const view = buildDeclaredView(webfetchMeta, new Map(), {
 			global: {},
 			project: {},
 			merged: {},
@@ -312,7 +312,7 @@ describe("countOverrides", () => {
 	it("counts only declared keys whose value came from a settings layer", () => {
 		const declared: DeclaredExtensionView[] = [
 			{
-				meta: { name: "verify", path: "/v.ts" },
+				meta: { name: "webfetch", path: "/v.ts" },
 				commands: [],
 				tools: [],
 				configKeys: [
@@ -393,7 +393,7 @@ describe("renderHeadline", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
-					meta: { name: "verify", path: "/v.ts" },
+					meta: { name: "webfetch", path: "/v.ts" },
 					commands: [],
 					tools: [],
 					configKeys: [],
@@ -436,14 +436,14 @@ describe("renderLines", () => {
 			declared: [
 				{
 					meta: {
-						name: "verify",
-						path: "/repo/packages/verify/index.ts",
+						name: "webfetch",
+						path: "/repo/packages/webfetch/index.ts",
 						doc: "Verify a plan.",
 						configSchema: [],
 						backgroundModelUse: { tier: "normal", set: "secondary" },
 					},
-					commands: ["verify"],
-					tools: ["verify_step"],
+					commands: ["webfetch_cmd"],
+					tools: ["webfetch_tool"],
 					configKeys: [
 						{
 							schema: {
@@ -458,7 +458,7 @@ describe("renderLines", () => {
 							schema: {
 								key: "model",
 								type: "string",
-								fallbackChain: "extensionConfig.verify.model → …",
+								fallbackChain: "extensionConfig.webfetch.model → …",
 								doc: "Override verifier model.",
 							},
 							effective: {
@@ -501,7 +501,7 @@ describe("renderLines", () => {
 			"  secondary: normal=openrouter/anthropic/claude-sonnet-4.5",
 		);
 		// Extension header
-		expect(lines).toContain("verify:");
+		expect(lines).toContain("webfetch:");
 		// maxParallel has a literal default and no override → annotated with (default)
 		expect(lines).toContain("  maxParallel: 15 (default)");
 		// model is overridden at project level → annotated with source
@@ -509,8 +509,10 @@ describe("renderLines", () => {
 			"  model: openrouter/anthropic/claude-sonnet-4.5 (project)",
 		);
 		// Old verbose lines must not appear
-		expect(lines).not.toContain("  verify  [/repo/packages/verify/index.ts]");
-		expect(lines).not.toContain("    commands: /verify");
+		expect(lines).not.toContain(
+			"  webfetch  [/repo/packages/webfetch/index.ts]",
+		);
+		expect(lines).not.toContain("    commands: /webfetch_cmd");
 		expect(lines).not.toContain("    doc: Verify a plan.");
 	});
 
@@ -549,7 +551,7 @@ describe("renderLines", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
-					meta: { name: "verify", path: "/v.ts" },
+					meta: { name: "webfetch", path: "/v.ts" },
 					commands: [],
 					tools: [],
 					configKeys: [
@@ -558,7 +560,7 @@ describe("renderLines", () => {
 								key: "model",
 								type: "string",
 								fallbackChain:
-									"extensionConfig.verify.model → backgroundModels.primary.fast → ctx.model",
+									"extensionConfig.webfetch.model → backgroundModels.primary.fast → ctx.model",
 								doc: "Override verifier model.",
 							},
 							effective: {
@@ -588,7 +590,7 @@ describe("renderLines", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
-					meta: { name: "verify", path: "/v.ts" },
+					meta: { name: "webfetch", path: "/v.ts" },
 					commands: [],
 					tools: [],
 					configKeys: [
@@ -597,7 +599,7 @@ describe("renderLines", () => {
 								key: "model",
 								type: "string",
 								fallbackChain:
-									"extensionConfig.verify.model → backgroundModels.primary.fast → ctx.model",
+									"extensionConfig.webfetch.model → backgroundModels.primary.fast → ctx.model",
 								doc: "Override verifier model.",
 							},
 							effective: {
@@ -625,7 +627,7 @@ describe("renderLines", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
-					meta: { name: "verify", path: "/v.ts" },
+					meta: { name: "webfetch", path: "/v.ts" },
 					commands: [],
 					tools: [],
 					configKeys: [
@@ -635,7 +637,7 @@ describe("renderLines", () => {
 								type: "number",
 								default: 15,
 								fallbackChain:
-									"extensionConfig.verify.maxParallel → backgroundModels.primary.fast",
+									"extensionConfig.webfetch.maxParallel → backgroundModels.primary.fast",
 								doc: "Max parallel.",
 							},
 							effective: {

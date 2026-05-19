@@ -1,12 +1,12 @@
 /**
  * Pure /commit run — used by both `/commit`'s command handler and
- * `/develop`'s post-loop picker. The picker bypasses slash-command
+ * `modes`' post-loop picker. The picker bypasses slash-command
  * dispatch (`pi.sendUserMessage("/cmd")` is hard-coded to skip slash
  * expansion in pi-coding-agent ≤ 0.73.0; see badlogic/pi-mono#2549/
  * #2994/#3673) and calls `runCommit(...)` directly.
  *
  * `ExtensionCommandContext.waitForIdle()` is unavailable when
- * `/develop` invokes us from an `agent_end` handler, so this module
+ * `modes` invokes us from an `agent_end` handler, so this module
  * implements a local listener-based equivalent built on
  * `pi.on("agent_end")` + `ctx.isIdle()`. It works for the
  * command-handler caller too, so we use it uniformly.
@@ -52,7 +52,7 @@ export const EXT_ID = "commit";
 //
 // We need to wait for the agent to finish a turn we just kicked off via
 // `pi.sendMessage(..., { triggerTurn: true })`. `ExtensionCommandContext`
-// offers `waitForIdle()` for this, but `/develop`'s post-loop picker
+// offers `waitForIdle()` for this, but `modes`' post-loop picker
 // runs from a plain `ExtensionContext` (no `waitForIdle`) inside its
 // `runDetached` microtask. To stay agnostic we install a single
 // `agent_end` listener on first call and queue resolvers behind it.
@@ -604,7 +604,7 @@ export async function runCommit(
 		if (!proceed) {
 			notify(
 				ctx,
-				"aborted — create a feature branch first (`/develop <desc>`).",
+				"aborted — create a feature branch first (`/plan <desc>`).",
 				"warning",
 			);
 			return { ran: false, abortReason: "user-cancelled" };

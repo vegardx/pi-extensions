@@ -12,7 +12,7 @@
  *      `/caffeinate test` to verify the wiring (acquires for 10s).
  *   4. Cleans up the footer on `session_shutdown`.
  *
- * Consumers (`/develop`, `/review`, …) call `acquireKeepAwake(reason, ctx)`
+ * Consumers (`modes`, `/review`, …) call `acquireKeepAwake(reason, ctx)`
  * directly. They do not depend on this extension being installed —
  * the shared helper is a no-op when settings disable it.
  */

@@ -38,7 +38,7 @@ export interface Finding extends RawFinding {
 	/**
 	 * Which background-model tiers contributed this finding. Populated
 	 * only when the caller passes tier-tagged bundles to
-	 * `dedupeFindings` (currently the auto-review pass in `/develop` —
+	 * `dedupeFindings` (currently the auto-review pass in `modes` —
 	 * primary.heavy + secondary.heavy). Empty / unset when tiers are
 	 * irrelevant (the standard interactive `/review` fan-out).
 	 */
@@ -232,7 +232,7 @@ const SEVERITY_RANK: Record<Severity, number> = {
 /**
  * Bundle of raw findings from one reviewer run. The optional `tier`
  * field is set by tier-tagged callers (the auto-review pass in
- * `/develop`); standard `/review` callers omit it. When set, dedupe
+ * `modes`); standard `/review` callers omit it. When set, dedupe
  * tracks tier provenance and computes `crossModelConsensus` per
  * merged finding.
  */
@@ -255,7 +255,7 @@ export interface FindingsBundle {
  * `flaggedByTier` and `crossModelConsensus`. `crossModelConsensus` is
  * `true` iff the finding was flagged by at least one reviewer in BOTH
  * the `primary` and `secondary` tiers — the gate the auto-review pass
- * in `/develop` uses to decide whether to apply a fix without user
+ * in `modes` uses to decide whether to apply a fix without user
  * confirmation. Bundles without `tier` leave both fields unset.
  */
 export function dedupeFindings(
@@ -321,7 +321,7 @@ export function dedupeFindings(
 /**
  * Filter a deduped finding list down to those flagged by both the
  * primary and secondary tier — the cross-model consensus the auto-
- * review pass in `/develop` requires before auto-applying a fix.
+ * review pass in `modes` requires before auto-applying a fix.
  * Findings without tier metadata are excluded (caller didn't pass
  * tier-tagged bundles, so cross-model consensus is undefined).
  */

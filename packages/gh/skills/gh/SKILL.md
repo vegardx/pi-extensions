@@ -1,6 +1,6 @@
 ---
 name: gh
-description: Use this skill for GitHub operations via the gh CLI — PRs, issues, CI/CD, releases, search, and API calls. Explains multi-host auth routing for github.com, corporate GHE (e.g. dnb.ghe.com), and GHES instances. Other workflow commands (/commit, /develop park path, /review PR mode) dispatch through these conventions.
+description: Use this skill for GitHub operations via the gh CLI — PRs, issues, CI/CD, releases, search, and API calls. Explains multi-host auth routing for github.com, corporate GHE (e.g. dnb.ghe.com), and GHES instances. Other workflow commands (/commit, /plan park path, /review PR mode) dispatch through these conventions.
 ---
 
 # GitHub CLI
@@ -236,7 +236,7 @@ gh repo create my-repo --private --clone
 ## Used by
 
 - `/commit` — fork-aware push and PR create/update.
-- `/develop` (park path) — `gh issue create` routed via the current
+- `/plan` (park path) — `gh issue create` routed via the current
   remote's host.
 - `/review` (future PR mode) — fork-aware checkout and head-drift
   detection when reviewing a remote PR.

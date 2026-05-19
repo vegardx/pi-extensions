@@ -79,11 +79,13 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 
 | Package | Surface | What it does |
 | --- | --- | --- |
-| [`modes`](packages/modes) | `/plan` `/implement` `/park` `/ship` `/sync` `/worktree` `/modes-status` | Centrepiece. Phase/task plans, mode cycle, worktree-bound execution, three-tier compaction, async explore/research. Replaces `/develop`. |
+| [`modes`](packages/modes) | `/plan` `/implement` `/park` `/ship` `/sync` `/worktree` `/modes-status` | Centrepiece. Phase/task plans, mode cycle, worktree-bound execution, three-tier compaction, async explore/research. |
 | [`commit`](packages/commit) | `/commit` | Drives the `commit` skill end-to-end. |
 | [`review`](packages/review) | `/review` | Drives the `review` skill — seven specialist reviewers fanned out in parallel. |
 | [`wrap-up`](packages/wrap-up) | `/pause` `/continue` | Session handover doc, branch/repo-aware resume. |
 | [`derp`](packages/derp) | `/derp <text>` | Fire-and-forget GitHub bug reporter that doesn't interrupt the session. |
+| [`idea`](packages/idea) | `/idea <text>` | Low-friction GitHub idea capture — files an issue against the current repo's origin without interrupting the active session. |
+| [`editor`](packages/editor) | `/editor [path[:line[:col]]]` | Opens the configured IDE/editor at cwd or `path:line:col`. Defaults to `code`; honours `$VISUAL`/`$EDITOR`. |
 | [`startup`](packages/startup) | `/extensions` | Reports loaded extensions, commands, tools, configs, and active models on session start. |
 | [`prompt-suggestion`](packages/prompt-suggestion) | (none — addendum-driven ghost text) | Inline ghost-text next-message suggestions parsed from a sentinel block emitted by the main agent. Requires pasting `INLINE_SUGGESTION_SYSTEM_ADDENDUM` into your `AGENTS.md`. |
 | [`caffeinate`](packages/caffeinate) | `/caffeinate` | macOS keep-awake helper, refcounted, footer indicator. |

@@ -1,4 +1,4 @@
-# CLAUDE.md — pi-ext-dev
+# AGENTS.md — pi-ext-dev
 
 Monorepo for pi.dev extensions. npm workspaces, `packages/*`, one extension per package.
 

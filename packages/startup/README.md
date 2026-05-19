@@ -50,7 +50,7 @@ Run `/extensions` to print the same breakdown again on demand:
   Shows `(none found)` when no context files exist on disk.
 - **Declared extensions** — every extension that called
   `declareExtension(...)` from its factory. For each:
-  - source path, registered commands (e.g. `/develop`, `/review`),
+  - source path, registered commands (e.g. `/plan`, `/review`),
     and registered tool names;
   - declared config keys under `extensionConfig.<name>.<key>` with
     each key's *effective* value, the *source* layer it came from

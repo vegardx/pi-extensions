@@ -53,5 +53,5 @@ at this skill. One source of truth for:
 - `/commit` — reads `branch.<name>.tracking-issue` (set by `/park`),
   pushes with the routing rules from this skill, creates or updates the
   PR, appends `Closes #N`.
-- `/develop` park path — uses `gh issue create --body-file` with the
+- `/plan` park path — uses `gh issue create --body-file` with the
   host auto-detected from the current remote.

@@ -1,6 +1,6 @@
 /**
  * Pure /review run — used by both `/review`'s command handler and
- * `/develop`'s post-loop picker. The picker bypasses slash-command
+ * `modes`' post-loop picker. The picker bypasses slash-command
  * dispatch (`pi.sendUserMessage("/cmd")` is hard-coded to skip slash
  * expansion in pi-coding-agent ≤ 0.73.0; see badlogic/pi-mono#2549/
  * #2994/#3673) and calls `runReview(...)` directly.
@@ -773,7 +773,7 @@ async function chainToCommit(
 	}
 
 	// No fix turn pending — dispatch /commit immediately. Mirrors
-	// /develop's post-loop picker dispatch shape.
+	// modes' post-loop picker dispatch shape.
 	try {
 		const mod = await import("pi-ext-commit/core");
 		await mod.runCommit({ ctx, pi, guidance: "", skipReviewOffer: true });

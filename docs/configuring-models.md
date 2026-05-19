@@ -3,7 +3,7 @@
 Several extensions in this monorepo call an LLM on a side task:
 
 - `develop` derives a kebab-case branch slug from a free-form description.
-- `/develop`'s auto-review pass (in `pi-ext-review/auto-review`) runs
+- the `modes` auto-review pass (in `pi-ext-review/auto-review`) runs
   the `code-reviewer` and `code-simplifier` lanes twice each — once
   against `primary.heavy`, once against `secondary.heavy` — and queues
   only the findings both tiers independently flag.
@@ -54,7 +54,7 @@ Two top-level keys this monorepo's extensions read from pi's
 - **`backgroundModels.<set>.<tier>`** — maps each (set, tier) pair to a
   `provider/id` string. Most extensions read from `primary`. Consumers
   that want a different model family for cross-checking (today:
-  `/develop`'s auto-review pass via `pi-ext-review/auto-review`) read
+  the `modes` auto-review pass via `pi-ext-review/auto-review`) read
   from `secondary`.
 - **`primary` / `secondary` are peers, not fallbacks.** A user
   configures one or both. When a `secondary` consumer asks for a tier
@@ -108,7 +108,7 @@ no extension currently uses it. See the
 | Extension | Set | Tier | Why | Override knob |
 |---|---|---|---|---|
 | `develop` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves. | `$PI_DEVELOP_SLUG_MODEL` (session), `extensionConfig.develop.model` |
-| `/develop` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.develop.autoReview: false` to disable; both heavy tiers must resolve or the pass is skipped. |
+| `modes` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.modes.review.enable: false` to disable; both heavy tiers must resolve or the pass is skipped. |
 
 Extensions that don't take a background model and use `ctx.model`
 directly: `commit`, `review` (the interactive `/review` command —
@@ -141,7 +141,7 @@ opus unless an extension declares `heavy`.
 ### Cross-checking with primary + secondary
 
 Configure two model families. Most extensions use `primary`; the
-`/develop` auto-review pass uses both — each reviewer lane runs once
+`modes` auto-review pass uses both — each reviewer lane runs once
 against `primary.heavy` and once against `secondary.heavy`, and only
 findings both tiers flag are queued for the host agent. Set both for
 proper cross-model checking; if `secondary.heavy` isn't set the pass
@@ -245,7 +245,7 @@ can target it like any other:
 
 Local models cost nothing per call but tend to be slower and less
 capable. Good fit for `fast`-tier extensions with short outputs. The
-`/develop` auto-review pass (`heavy`) is only viable on a local model
+`modes` auto-review pass (`heavy`) is only viable on a local model
 sharp enough to read diffs and produce structured JSON — expect to
 wire it up against a hosted model in practice.
 
@@ -270,7 +270,7 @@ tiers, just set `backgroundModels.primary.fast`:
 ```
 
 Covers `develop`'s smart slug (`fast`-tier consumer).
-The `/develop` auto-review pass (`heavy`-tier across both `primary` and
+The `modes` auto-review pass (`heavy`-tier across both `primary` and
 `secondary`) stays skipped until you configure `primary.heavy` and
 `secondary.heavy` — it's strictly opt-in.
 
@@ -368,12 +368,12 @@ whatever comes back.
 A second model family is useful for cross-checking. Run a reviewer
 lane on your primary stack, and run it again on the secondary stack —
 if both flag the same finding, high confidence; if only one does, the
-finding is dropped. That's exactly what `/develop`'s auto-review pass
+finding is dropped. That's exactly what the `modes` auto-review pass
 does between its auto-review pass and the post-loop picker.
 
 Most users will configure only `primary`. The `secondary` set exists
 for users who want cross-model checking and have credentials for a
-second provider. The `/develop` auto-review pass requires both heavy
+second provider. The `modes` auto-review pass requires both heavy
 tiers to resolve; if one doesn't, the pass is skipped. Other `secondary`
 consumers — should any be added later — fall back to `primary` cleanly
 when `secondary` isn't configured, so the schema isn't a tax on
