@@ -336,7 +336,7 @@ describe("countOverrides", () => {
 				],
 			},
 			{
-				meta: { name: "session-title", path: "/s.ts" },
+				meta: { name: "caffeinate", path: "/s.ts" },
 				commands: [],
 				tools: [],
 				configKeys: [

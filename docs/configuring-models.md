@@ -2,7 +2,6 @@
 
 Several extensions in this monorepo call an LLM on a side task:
 
-- `session-title` names the session for your terminal tab / tmux window.
 - `develop` derives a kebab-case branch slug from a free-form description.
 - `/develop`'s auto-review pass (in `pi-ext-review/auto-review`) runs
   the `code-reviewer` and `code-simplifier` lanes twice each — once
@@ -64,7 +63,7 @@ Two top-level keys this monorepo's extensions read from pi's
   user to fully configure both sets.
 - **`extensionConfig.<name>.model`** — per-extension override. Wins
   over the (set, tier) lookup. Use it when one extension should run on
-  something different than your general tier choice (e.g. `session-title`
+  something different than your general tier choice (e.g. `develop`
   on a gateway, but the rest on direct Anthropic).
 
 Any other keys in `settings.json` belong to pi and are ignored by
@@ -80,8 +79,7 @@ candidate that resolves in the registry **and** has usable auth:
 
 1. **Extension-specific explicit override** — a CLI flag, in-session
    command value, or legacy env var that the extension passes in as
-   `opts.explicit`. (Examples:
-   `$PI_SESSION_AUTO_TITLE_MODEL`.)
+   `opts.explicit`. (Example: `$PI_DEVELOP_SLUG_MODEL`.)
 2. **`settings.json` → `extensionConfig.<name>.model`** — the
    persistent per-extension escape hatch.
 3. **`settings.json` → `backgroundModels.<set>.<tier>`** — the user's
@@ -98,19 +96,17 @@ candidate that resolves in the registry **and** has usable auth:
 6. **Nothing usable** → the extension disables its side task for the
    session with a single `notify()`.
 
-Some extensions (today, only `session-title`) ask the resolver to
-treat `{ ok: true, apiKey: undefined }` results as unusable via
-`requireApiKey: true` — see the
-[resolver source](../packages/_shared/model-resolver.ts) for details.
-Other consumers accept headers-only auth because they hand the model
+All current consumers accept headers-only auth — they hand the model
 spec off to something that does its own auth (the subagent RPC
-clients in `/review`).
+clients in `/review`). The resolver supports a `requireApiKey: true`
+option for callers that pass `apiKey` directly to a completion call;
+no extension currently uses it. See the
+[resolver source](../packages/_shared/model-resolver.ts) for details.
 
 ## Per-extension tier and set assignments
 
 | Extension | Set | Tier | Why | Override knob |
 |---|---|---|---|---|
-| `session-title` auto-title | `primary` | `fast` | Runs once per session. 2–5 word output. | `$PI_SESSION_AUTO_TITLE_MODEL` (legacy), `extensionConfig.session-title.model` |
 | `develop` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves. | `$PI_DEVELOP_SLUG_MODEL` (session), `extensionConfig.develop.model` |
 | `/develop` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.develop.autoReview: false` to disable; both heavy tiers must resolve or the pass is skipped. |
 
@@ -222,12 +218,12 @@ Mix per-extension with the tier defaults:
     }
   },
   "extensionConfig": {
-    "session-title": { "model": "openrouter/anthropic/claude-haiku-4.5" }
+    "develop": { "model": "openrouter/anthropic/claude-haiku-4.5" }
   }
 }
 ```
 
-`session-title` reaches for openrouter, everything else stays on direct
+`develop` reaches for openrouter, everything else stays on direct
 Anthropic.
 
 ### Local model (Ollama, LM Studio, etc.)
@@ -248,11 +244,10 @@ can target it like any other:
 ```
 
 Local models cost nothing per call but tend to be slower and less
-capable. Good fit for `fast`-tier extensions (short outputs) such as
-`session-title`. The `/develop`
-auto-review pass (`heavy`) is only viable on a local model sharp
-enough to read diffs and produce structured JSON — expect to wire
-it up against a hosted model in practice.
+capable. Good fit for `fast`-tier extensions with short outputs. The
+`/develop` auto-review pass (`heavy`) is only viable on a local model
+sharp enough to read diffs and produce structured JSON — expect to
+wire it up against a hosted model in practice.
 
 ### Minimal — configure only what you care about
 
@@ -274,7 +269,7 @@ tiers, just set `backgroundModels.primary.fast`:
 }
 ```
 
-Covers `session-title` (`fast`-tier consumer).
+Covers `develop`'s smart slug (`fast`-tier consumer).
 The `/develop` auto-review pass (`heavy`-tier across both `primary` and
 `secondary`) stays skipped until you configure `primary.heavy` and
 `secondary.heavy` — it's strictly opt-in.
@@ -293,11 +288,8 @@ something and that `getApiKeyAndHeaders(model)` produces usable auth.
   under. See pi's
   [`custom-provider.md`](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/custom-provider.md)
   for how to register one.
-- **Headers-only auth**: works for most extensions, but `session-title`
-  auto-title requires `apiKey` because it passes it directly to
-  `completeSimple()`. If your provider auths via headers alone, expect
-  auto-title to skip silently and the git-branch / cwd fallback to
-  stay in place.
+- **Headers-only auth**: works for all current extensions; none pass
+  `apiKey` directly to a completion call.
 
 ## Troubleshooting
 
@@ -307,12 +299,6 @@ Every extension's disable path goes through one `notify()` at
 `session_start`. If you didn't see it, your model probably resolved —
 the issue is elsewhere. If you did see it, the message names the
 extension and the specific config keys it looked for.
-
-Quick checks:
-
-- session-title auto-title runs at most once per session and writes
-  its status to the session's auto-title state; re-run with `/retitle`
-  to force a fresh attempt.
 
 ### The resolved model isn't what you expected
 
@@ -331,7 +317,7 @@ top-to-bottom against your current state:
 
 If a higher-priority candidate isn't in the registry or has no auth,
 the resolver skips it and continues. That's why a typo'd
-`extensionConfig.session-title.model` can produce "huh, it's using my
+`extensionConfig.develop.model` can produce "huh, it's using my
 session model, not the thing I configured" — the override
 didn't resolve, so step 3 won.
 
@@ -360,20 +346,12 @@ It used to. The schema changed to nest tiers under `primary` /
  }
 ```
 
-### `PI_SESSION_AUTO_TITLE_MODELS` seems to be ignored
-
-Because it is — the comma-separated shortlist env var was removed. Pick
-a single model and put it in `PI_SESSION_AUTO_TITLE_MODEL` or
-`settings.json`.
-
 ## Why tiers instead of a single "background model"
 
-Three consumers with different needs:
+Two classes of consumer with different needs:
 
-- Ghost text on every turn wants *fast*.
+- Short-output background calls (smart-slug, future ghost-text) want *fast*.
 - Continuous subagent review wants *reasoning-capable*.
-- Auto-title once per session doesn't care, but grouping with ghost
-  text under `fast` is the obvious default.
 
 A single `backgroundModel` would force users to compromise between
 "cheap enough for ghost text" and "capable enough for verification."

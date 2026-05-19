@@ -73,9 +73,8 @@ export interface ResolveOptions {
 	 * headers: undefined }` (e.g. providers that authenticate purely
 	 * via headers, or configs with missing credentials that still
 	 * report ok). Callers that directly pass `apiKey` to a completion
-	 * call — session-title's `completeSimple`, for example — cannot
-	 * use such a result. Callers that hand the model spec off to
-	 * something else that does its own auth (subagent RPC clients)
+	 * call cannot use such a result. Callers that hand the model spec
+	 * off to something else that does its own auth (subagent RPC clients)
 	 * don't need this.
 	 *
 	 * Default: false. Preserves the headers-only auth path for callers
