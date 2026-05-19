@@ -42,7 +42,7 @@ import type {
 	DialogOption,
 	DialogPreview,
 	DialogResult,
-	StructuredDialogConfig,
+	QuestionsConfig,
 } from "./types.js";
 
 /**
@@ -74,7 +74,7 @@ export function renderCacheIsValid(
  * When `ready` is false, renders the ⚠ Required warning listing the
  * missing item labels — same dimmed treatment as before.
  *
- * Exported for unit testing; the closure in showStructuredDialog calls
+ * Exported for unit testing; the closure in showQuestions calls
  * this and pipes each line through truncateToWidth.
  */
 export function renderSubmitAffordance(
@@ -119,9 +119,9 @@ export function resolveRightPaneContent(
 	return { kind: "none" };
 }
 
-export async function showStructuredDialog(
+export async function showQuestions(
 	ctx: ExtensionContext,
-	config: StructuredDialogConfig,
+	config: QuestionsConfig,
 ): Promise<DialogResult> {
 	if (!ctx.hasUI) {
 		// Non-interactive fallback — return cancelled.

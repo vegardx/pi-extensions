@@ -16,9 +16,9 @@ import {
 	totalTabs,
 	unansweredItems,
 } from "../state.js";
-import type { StructuredDialogConfig } from "../types.js";
+import type { QuestionsConfig } from "../types.js";
 
-function twoItemConfig(): StructuredDialogConfig {
+function twoItemConfig(): QuestionsConfig {
 	return {
 		title: "Test",
 		items: [
@@ -56,7 +56,7 @@ describe("createState", () => {
 
 	it("defaults title to 'Review' when not specified", () => {
 		const { title: _, ...rest } = twoItemConfig();
-		const state = createState(rest as StructuredDialogConfig);
+		const state = createState(rest as QuestionsConfig);
 		expect(state.title).toBe("Review");
 	});
 });

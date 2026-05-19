@@ -2305,7 +2305,7 @@ export default function (pi: ExtensionAPI) {
 		// Show triage dialog for disputed findings if any.
 		if (disputed.length > 0 && ctx.hasUI) {
 			try {
-				const dialogMod = await import("@vegardx/pi-structured-dialog");
+				const dialogMod = await import("@vegardx/pi-questions");
 				const items = disputed.map((f) => ({
 					id: `${f.file}:${f.line ?? 0}:${f.title}`,
 					label: truncateToWidth(f.title, 30),
@@ -2329,7 +2329,7 @@ export default function (pi: ExtensionAPI) {
 					],
 				}));
 
-				const result = await dialogMod.showStructuredDialog(ctx, {
+				const result = await dialogMod.showQuestions(ctx, {
 					title: `Review: ${toFix.length} consensus fixes + ${disputed.length} disputed`,
 					items,
 					requireAll: false,
@@ -2346,7 +2346,7 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 			} catch {
-				// structured-dialog not available; skip triage.
+				// questions not available; skip triage.
 			}
 		}
 
@@ -2394,11 +2394,11 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		questions: PendingQuestion[],
 	): Promise<void> {
-		let dialogMod: typeof import("@vegardx/pi-structured-dialog") | null = null;
+		let dialogMod: typeof import("@vegardx/pi-questions") | null = null;
 		try {
-			dialogMod = await import("@vegardx/pi-structured-dialog");
+			dialogMod = await import("@vegardx/pi-questions");
 		} catch {
-			// Fallback: structured-dialog not available. Feed questions as
+			// Fallback: questions not available. Feed questions as
 			// plain text and let the user reply normally.
 			const fallback = questions
 				.map((q, i) => `${i + 1}. ${q.question}`)
@@ -2434,7 +2434,7 @@ export default function (pi: ExtensionAPI) {
 				: {}),
 		}));
 
-		const result = await dialogMod.showStructuredDialog(ctx, {
+		const result = await dialogMod.showQuestions(ctx, {
 			title: "Questions",
 			items,
 			requireAll: true,
@@ -5299,16 +5299,16 @@ export default function (pi: ExtensionAPI) {
 		ctx: ExtensionContext,
 		errMsg: string,
 	): Promise<void> {
-		let dialogMod: typeof import("@vegardx/pi-structured-dialog") | null = null;
+		let dialogMod: typeof import("@vegardx/pi-questions") | null = null;
 		try {
-			dialogMod = await import("@vegardx/pi-structured-dialog");
+			dialogMod = await import("@vegardx/pi-questions");
 		} catch {
-			// structured-dialog not available; surface as plain notify.
+			// questions not available; surface as plain notify.
 			notify(ctx, `Connection error: ${errMsg}. Retry manually.`, "error");
 			return;
 		}
 
-		const result = await dialogMod.showStructuredDialog(ctx, {
+		const result = await dialogMod.showQuestions(ctx, {
 			title: "Connection error",
 			items: [
 				{

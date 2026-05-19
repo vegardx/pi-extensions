@@ -9,7 +9,7 @@ import type {
 	DialogItem,
 	DialogOption,
 	DialogResult,
-	StructuredDialogConfig,
+	QuestionsConfig,
 } from "./types.js";
 
 export interface DialogState {
@@ -33,7 +33,7 @@ export interface DialogState {
 	textContent: Map<string, string>;
 }
 
-export function createState(config: StructuredDialogConfig): DialogState {
+export function createState(config: QuestionsConfig): DialogState {
 	const textContent = new Map<string, string>();
 	for (const item of config.items) {
 		if (item.textInput?.prefill) {

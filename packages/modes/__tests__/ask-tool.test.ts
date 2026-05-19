@@ -10,8 +10,8 @@
 import type {
 	DialogItem,
 	DialogResult,
-	StructuredDialogConfig,
-} from "@vegardx/pi-structured-dialog";
+	QuestionsConfig,
+} from "@vegardx/pi-questions";
 import {
 	buildResult,
 	createState,
@@ -19,7 +19,7 @@ import {
 	selectOption,
 	setTextContent,
 	submitText,
-} from "@vegardx/pi-structured-dialog";
+} from "@vegardx/pi-questions";
 import type { PendingQuestion, QAPair } from "../index.js";
 
 /**
@@ -120,7 +120,7 @@ describe("ask tool: answer extraction", () => {
 		];
 
 		const items = buildDialogItems(questions);
-		const config: StructuredDialogConfig = {
+		const config: QuestionsConfig = {
 			title: "Questions",
 			items,
 			requireAll: true,
@@ -171,7 +171,7 @@ describe("ask tool: full dialog flow with options + text override", () => {
 		];
 
 		const items = buildDialogItems(questions);
-		const config: StructuredDialogConfig = {
+		const config: QuestionsConfig = {
 			title: "Questions",
 			items,
 			requireAll: true,
@@ -204,7 +204,7 @@ describe("ask tool: full dialog flow with options + text override", () => {
 		];
 
 		const items = buildDialogItems(questions);
-		const config: StructuredDialogConfig = {
+		const config: QuestionsConfig = {
 			title: "Questions",
 			items,
 			requireAll: true,
