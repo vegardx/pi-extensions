@@ -89,7 +89,7 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 | [`caffeinate`](packages/caffeinate) | `/caffeinate` | macOS keep-awake helper, refcounted, footer indicator. |
 | [`webfetch`](packages/webfetch) | `webfetch` tool | Fetch a URL and extract main content as clean Markdown (Defuddle + optional LLM summary). |
 | [`gh`](packages/gh) [`triage`](packages/triage) [`context7`](packages/context7) [`exa`](packages/exa) | skills | See the Skills table above. |
-| [`structured-dialog`](packages/structured-dialog) | shared | Tabbed multi-item TUI primitive shared by `review`, `wrap-up`, and `modes`. Not loaded standalone. |
+| [`questions`](packages/questions) | shared | Tabbed multi-question prompt — options, optional text input, optional per-option preview, submit. Mirrors Claude Code's `AskUserQuestion` shape. Shared by `review`, `wrap-up`, and `modes`. Not loaded standalone. |
 | [`_shared`](packages/_shared) | internal | Model resolver, settings helpers, macOS caffeinate wrapper. Used by other packages, not loaded directly. |
 
 ## Get it running

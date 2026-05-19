@@ -1,5 +1,5 @@
 /**
- * Generic types for the structured-dialog component. Domain-agnostic —
+ * Generic types for the questions component. Domain-agnostic —
  * callers map their domain objects (findings, questions, etc.) into
  * these shapes before handing them to the dialog.
  */
@@ -102,8 +102,8 @@ export interface DialogResult {
 	cancelled: boolean;
 }
 
-/** Configuration for the structured dialog. */
-export interface StructuredDialogConfig {
+/** Configuration for the questions prompt. */
+export interface QuestionsConfig {
 	/** Items to present. Each becomes a tab. */
 	items: DialogItem[];
 	/**

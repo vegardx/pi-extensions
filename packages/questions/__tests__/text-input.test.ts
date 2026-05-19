@@ -12,9 +12,9 @@ import {
 	setTextContent,
 	submitText,
 } from "../state.js";
-import type { StructuredDialogConfig } from "../types.js";
+import type { QuestionsConfig } from "../types.js";
 
-function textInputConfig(): StructuredDialogConfig {
+function textInputConfig(): QuestionsConfig {
 	return {
 		title: "Questions",
 		requireAll: true,
@@ -40,7 +40,7 @@ function textInputConfig(): StructuredDialogConfig {
 	};
 }
 
-function textOnlyConfig(): StructuredDialogConfig {
+function textOnlyConfig(): QuestionsConfig {
 	return {
 		title: "Open question",
 		items: [
@@ -150,7 +150,7 @@ describe("textInput: setTextContent / getTextContent", () => {
 	});
 
 	it("returns false when item has no textInput", () => {
-		const config: StructuredDialogConfig = {
+		const config: QuestionsConfig = {
 			title: "No text",
 			items: [
 				{

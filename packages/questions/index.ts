@@ -1,21 +1,22 @@
 /**
- * Structured dialog — a generic tabbed TUI component for presenting
- * N items with per-item action choices, optional preview panes, and
- * a submit tab. Designed for use with `ctx.ui.custom()`.
+ * Questions — a tabbed multi-question prompt with options, optional
+ * text input, optional per-option preview, and a submit tab. Mirrors
+ * Claude Code's AskUserQuestion shape. Designed for use with
+ * `ctx.ui.custom()`.
  *
  * Usage:
  *
  * ```ts
- * import { showStructuredDialog } from "@vegardx/pi-structured-dialog";
+ * import { showQuestions } from "@vegardx/pi-questions";
  *
- * const result = await showStructuredDialog(ctx, {
+ * const result = await showQuestions(ctx, {
  *   title: "Review findings",
  *   items: [...],
  * });
  * ```
  */
 
-export { showStructuredDialog } from "./dialog.js";
+export { showQuestions } from "./dialog.js";
 export {
 	allAnswered,
 	answeredCount,
@@ -47,5 +48,5 @@ export type {
 	DialogPreview,
 	DialogResult,
 	DialogTextInput,
-	StructuredDialogConfig,
+	QuestionsConfig,
 } from "./types.js";

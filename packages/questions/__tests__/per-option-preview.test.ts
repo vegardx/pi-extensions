@@ -1,5 +1,5 @@
 /**
- * Unit tests for per-option preview pane in structured-dialog (#157).
+ * Unit tests for per-option preview pane in questions (#157).
  *
  * Tests the resolveRightPaneContent pure helper which drives the
  * right-pane content selection. No pi host or Theme needed.
