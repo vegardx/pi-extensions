@@ -12,7 +12,7 @@ Monorepo for pi.dev extensions. npm workspaces, `packages/*`, one extension per 
 
 ## Adding an extension
 
-Create `packages/<name>/` with a `package.json` (per-package `pi` manifest + peerDeps) and an `index.ts` that exports a factory function. See an existing package like `packages/session-title/` for the minimal template.
+Create `packages/<name>/` with a `package.json` (per-package `pi` manifest + peerDeps) and an `index.ts` that exports a factory function. See an existing package like `packages/caffeinate/` for the minimal template.
 
 ## Verification
 
