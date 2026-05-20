@@ -490,10 +490,10 @@ export default defineExtension(
 		doc: "Reports loaded extensions, their declared config knobs, and effective values.",
 		configSchema: [
 			{
-				key: "enabled",
+				key: "showOnSessionStart",
 				type: "boolean",
 				default: true,
-				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /extensions command still works). Default: true.",
+				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /extensions command still works).",
 			},
 		],
 	},
@@ -513,13 +513,13 @@ export default defineExtension(
 
 		pi.on("session_start", (_event, ctx) => {
 			const settings = readRelevantSettings(ctx.cwd);
-			const enabled = getExtensionConfigBoolean(
+			const show = getExtensionConfigBoolean(
 				settings,
 				EXT_ID,
-				"enabled",
+				"showOnSessionStart",
 				true,
 			);
-			if (!enabled) return;
+			if (!show) return;
 			emitReport(ctx);
 		});
 
