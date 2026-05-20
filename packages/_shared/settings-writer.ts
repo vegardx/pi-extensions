@@ -1,0 +1,145 @@
+/**
+ * Atomic raw-JSON writer for `extensionConfig.<name>.<key>` in either
+ * the project (`<cwd>/.pi/settings.json`) or the global
+ * (`<agentDir>/settings.json`) settings file.
+ *
+ * pi's `SettingsManager` doesn't expose setters for `extensionConfig`,
+ * so we read the file as raw JSON, modify the key in place, and write
+ * it back. This mirrors `setEnabledInProjectSettings` in
+ * `packages/caffeinate/index.ts` but generalised to two scopes and
+ * any key.
+ *
+ * Concurrency: `writeFileSync` on its own is not atomic if the process
+ * dies mid-write. We accept that — settings.json is a user-editable
+ * file, the worst case is a corrupt JSON the user has to fix by hand,
+ * and pi itself uses `FileSettingsStorage.withLock` (which we can't
+ * reach from here) for its own writes. Callers that need atomicity
+ * should serialise their own calls.
+ */
+
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
+
+export type SettingsScope = "project" | "global";
+
+/**
+ * Resolves the path to the settings.json for a given scope.
+ *
+ * `agentDir` is optional and defaults to pi's resolution (honouring
+ * `PI_CODING_AGENT_DIR`, falling back to `~/.pi/agent/`). Tests pass
+ * an explicit override.
+ */
+export function settingsPath(
+	scope: SettingsScope,
+	cwd: string,
+	agentDir?: string,
+): string {
+	if (scope === "project") return join(cwd, ".pi", "settings.json");
+	return join(agentDir ?? getAgentDir(), "settings.json");
+}
+
+/**
+ * Reads `<settings>.extensionConfig.<extensionName>.<key>`.
+ *
+ * Returns `undefined` when the file is missing or any of the parent
+ * objects are missing. Returns the raw value otherwise (without type
+ * coercion — caller decides what's acceptable).
+ */
+export function readExtensionConfigKey(
+	scope: SettingsScope,
+	cwd: string,
+	extensionName: string,
+	key: string,
+	agentDir?: string,
+): unknown {
+	const path = settingsPath(scope, cwd, agentDir);
+	let raw: Record<string, unknown>;
+	try {
+		raw = JSON.parse(readFileSync(path, "utf8"));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw err;
+	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const ec = (raw as Record<string, unknown>).extensionConfig;
+	if (!ec || typeof ec !== "object" || Array.isArray(ec)) return undefined;
+	const entry = (ec as Record<string, unknown>)[extensionName];
+	if (!entry || typeof entry !== "object" || Array.isArray(entry))
+		return undefined;
+	return (entry as Record<string, unknown>)[key];
+}
+
+export interface WriteResult {
+	path: string;
+	previous: unknown;
+}
+
+/**
+ * Writes `<settings>.extensionConfig.<extensionName>.<key> = value` to
+ * the settings.json for `scope`. When `value` is `null`, the key is
+ * deleted; if the resulting per-extension entry becomes empty it's
+ * removed too (so resetting the only key on an extension leaves the
+ * file clean).
+ *
+ * Creates the file (and parent dir) if missing. Preserves all other
+ * keys verbatim — we never round-trip through `SettingsManager`,
+ * which would re-emit only the typed subset of fields it knows about
+ * and silently drop the rest.
+ */
+export function writeExtensionConfigKey(
+	scope: SettingsScope,
+	cwd: string,
+	extensionName: string,
+	key: string,
+	value: boolean | string | number | null,
+	agentDir?: string,
+): WriteResult {
+	const path = settingsPath(scope, cwd, agentDir);
+	let raw: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>;
+		}
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+
+	const extensionConfig =
+		raw.extensionConfig &&
+		typeof raw.extensionConfig === "object" &&
+		!Array.isArray(raw.extensionConfig)
+			? (raw.extensionConfig as Record<string, unknown>)
+			: {};
+	const entry =
+		extensionConfig[extensionName] &&
+		typeof extensionConfig[extensionName] === "object" &&
+		!Array.isArray(extensionConfig[extensionName])
+			? (extensionConfig[extensionName] as Record<string, unknown>)
+			: {};
+
+	const previous = entry[key];
+
+	if (value === null) {
+		delete entry[key];
+		if (Object.keys(entry).length === 0) {
+			delete extensionConfig[extensionName];
+		} else {
+			extensionConfig[extensionName] = entry;
+		}
+	} else {
+		entry[key] = value;
+		extensionConfig[extensionName] = entry;
+	}
+
+	if (Object.keys(extensionConfig).length === 0) {
+		delete raw.extensionConfig;
+	} else {
+		raw.extensionConfig = extensionConfig;
+	}
+
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+	return { path, previous };
+}
