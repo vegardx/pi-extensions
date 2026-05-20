@@ -1,21 +1,22 @@
 # Extension toggles
 
-Every extension in this repo is **off by default**. You enable the ones you want, and the rest stay dark. There's no per-extension "default on" override — a fresh install does nothing until you opt in, which keeps half-finished experiments out of the way and makes every loaded extension a deliberate choice.
+Every extension in this repo is **off by default**. You enable the ones you want, and the rest stay dark. A fresh install does nothing until you opt in, which keeps half-finished experiments out of the way and makes every loaded extension a deliberate choice.
+
+**One exception**: `startup` defaults to **on**. It owns the `/extensions` picker and the session-start summary toast — if it were off too, a fresh install would have no way to discover or re-enable anything without hand-editing `settings.json`. You can still set `extensionConfig.startup.enabled = false` to silence it; the default just changes what "unset" means for that one package.
 
 ## The single rule
 
 ```jsonc
 {
   "extensionConfig": {
-    "modes":   { "enabled": true },
-    "review":  { "enabled": true },
-    "commit":  { "enabled": true },
-    "startup": { "enabled": true }
+    "modes":  { "enabled": true },
+    "review": { "enabled": true },
+    "commit": { "enabled": true }
   }
 }
 ```
 
-Anything not listed (or listed with `"enabled": false`) won't load. The wrapper records why ("disabled-by-config") so `/extensions` can show you what's installed but dormant.
+Anything not listed (or listed with `"enabled": false`) won't load — except `startup`, which loads regardless unless you explicitly set it to `false`. The wrapper records the reason on each declaration (`disabled-by-config`, `disabled-by-env`, `disabled-by-missing-deps`) so `/extensions` can show you what's installed but dormant.
 
 ## Three ways to flip an extension
 
@@ -27,7 +28,7 @@ Anything not listed (or listed with `"enabled": false`) won't load. The wrapper 
 
 The env-var name is the package name uppercased with `-` → `_`: `prompt-suggestion` → `PI_EXT_PROMPT_SUGGESTION`. Accepted values: `on/off`, `true/false`, `1/0`, `yes/no` (anything else falls through to settings).
 
-**Precedence: env > project > global > `false`.** Project beats global so a repo can override your usual set.
+**Precedence: env > project > global > default.** The default is `false` for every extension except `startup` (where it's `true`). Project beats global so a repo can override your usual set.
 
 ## The `/extensions` picker
 
@@ -56,13 +57,12 @@ Drop this in `~/.pi/agent/settings.json` to enable the extensions I run daily:
     "modes":              { "enabled": true },
     "prompt-suggestion":  { "enabled": true },
     "review":             { "enabled": true },
-    "startup":            { "enabled": true },
     "wrap-up":            { "enabled": true }
   }
 }
 ```
 
-Add `derp`, `idea`, `triage`, `exa`, or `webfetch` as you want them. They're all optional and degrade cleanly when disabled.
+`startup` isn't in the list because it's already on by default (see the exception above). Add `derp`, `idea`, `triage`, `exa`, or `webfetch` as you want them — they're all optional and degrade cleanly when disabled.
 
 ## Two semantic levels
 
