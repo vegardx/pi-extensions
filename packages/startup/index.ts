@@ -330,24 +330,37 @@ export function countOverrides(
 
 /**
  * Short one-liner for the `session_start` toast. Default-off means
- * "how many of the installed extensions are actually loaded" is the
+ * "how many of the managed extensions are actually loaded" is the
  * useful number to show — a freshly-installed monorepo where nothing
  * is enabled gets a discoverability hint instead of a count.
+ *
+ * Both numerator and denominator only count `declared` extensions:
+ * `unrecognized` ones are loaded by pi but not managed by this
+ * wrapper, so they don't have an enabled state we can report and
+ * showing them in the toggle count would be misleading. They appear
+ * in their own block in the full report.
  */
 export function renderHeadline(summary: StartupSummary): string {
-	const total = summary.declared.length + summary.unrecognized.length;
-	if (total === 0) {
+	const total = summary.declared.length;
+	const unrecognizedTail =
+		summary.unrecognized.length > 0
+			? ` (+${summary.unrecognized.length} unrecognized)`
+			: "";
+	if (total === 0 && summary.unrecognized.length === 0) {
 		return "pi-ext-startup: 0 extensions · /extensions for details";
+	}
+	if (total === 0) {
+		return `pi-ext-startup: 0 managed extensions${unrecognizedTail} · /extensions for details`;
 	}
 	const enabled = summary.declared.filter((d) => d.meta.enabled === true);
 	if (enabled.length === 0) {
-		return `ℹ pi-extensions: 0 of ${total} enabled. Run /extensions to configure.`;
+		return `ℹ pi-extensions: 0 of ${total} enabled${unrecognizedTail}. Run /extensions to configure.`;
 	}
 	const names = enabled
 		.map((d) => d.meta.name)
 		.sort()
 		.join(", ");
-	return `✓ pi-extensions loaded: ${names} (${enabled.length} of ${total} installed) · /extensions for details`;
+	return `✓ pi-extensions loaded: ${names} (${enabled.length} of ${total} installed)${unrecognizedTail} · /extensions for details`;
 }
 
 function formatValue(v: unknown): string {

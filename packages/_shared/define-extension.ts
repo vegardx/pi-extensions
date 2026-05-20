@@ -210,8 +210,16 @@ function resolveEnabled(name: string): EnabledResolution {
 	return { enabled: false, source: "default", loadState: "disabled-by-config" };
 }
 
+// Methods deferred until after the post-load dep check passes for
+// extensions with `dependsOn`. Note that `on` is intentionally NOT
+// deferred — if we queued listener registration, any
+// `on("session_start", ...)` handler in the factory body would only
+// be installed *after* the session_start event has already fired,
+// and the extension would silently miss its own per-session init.
+// Listener registration is harmless even if deps later fail: any
+// `pi.register*` calls the listener makes still go through the
+// proxy below and stay queued, so no real registration leaks.
 const DEFERRED_METHODS = new Set([
-	"on",
 	"registerCommand",
 	"registerTool",
 	"registerShortcut",

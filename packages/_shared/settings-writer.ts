@@ -1,6 +1,6 @@
 /**
- * Atomic raw-JSON writer for `extensionConfig.<name>.<key>` in either
- * the project (`<cwd>/.pi/settings.json`) or the global
+ * Raw-JSON writer for `extensionConfig.<name>.<key>` in either the
+ * project (`<cwd>/.pi/settings.json`) or the global
  * (`<agentDir>/settings.json`) settings file.
  *
  * pi's `SettingsManager` doesn't expose setters for `extensionConfig`,
@@ -9,12 +9,12 @@
  * `packages/caffeinate/index.ts` but generalised to two scopes and
  * any key.
  *
- * Concurrency: `writeFileSync` on its own is not atomic if the process
- * dies mid-write. We accept that — settings.json is a user-editable
- * file, the worst case is a corrupt JSON the user has to fix by hand,
- * and pi itself uses `FileSettingsStorage.withLock` (which we can't
- * reach from here) for its own writes. Callers that need atomicity
- * should serialise their own calls.
+ * Concurrency: `writeFileSync` is not atomic if the process dies
+ * mid-write. We accept that — settings.json is a user-editable file,
+ * the worst case is a corrupt JSON the user has to fix by hand, and
+ * pi itself uses `FileSettingsStorage.withLock` (which we can't reach
+ * from here) for its own writes. Callers that need atomicity should
+ * serialise their own calls.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

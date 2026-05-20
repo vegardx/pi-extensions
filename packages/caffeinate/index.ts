@@ -256,7 +256,7 @@ export default defineExtension(
 		pi.registerCommand(EXT_ID, {
 			description:
 				"Show or toggle keep-awake. Subcommands: `status` (default) shows supported/enabled/active/holders; " +
-				"`on` / `off` flip `extensionConfig.caffeinate.enabled` in the project settings.json; " +
+				"`on` / `off` flip `extensionConfig.caffeinate.autoAcquire` in the project settings.json; " +
 				"`test` acquires for 10s to verify the wiring.",
 			handler: async (args, ctx) => {
 				const arg = (args ?? "").trim();
@@ -292,7 +292,7 @@ export default defineExtension(
 				if (arg === "test") {
 					if (!getKeepAwakeState(ctx).enabled) {
 						ctx.ui.notify(
-							"caffeinate: cannot test — run `/caffeinate on` first (or set extensionConfig.caffeinate.enabled=true in settings.json).",
+							"caffeinate: cannot test — run `/caffeinate on` first (or set extensionConfig.caffeinate.autoAcquire=true in settings.json).",
 							"warning",
 						);
 						return;
