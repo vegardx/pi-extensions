@@ -165,8 +165,10 @@ export function setEnabledInProjectSettings(
 			? (extensionConfig[EXT_ID] as Record<string, unknown>)
 			: {};
 
-	const previous = caffeinateEntry.enabled === true;
-	caffeinateEntry.enabled = enabled;
+	const previous = caffeinateEntry.autoAcquire === true;
+	caffeinateEntry.autoAcquire = enabled;
+	// Drop the legacy key when present so the file ends up canonical.
+	delete caffeinateEntry.enabled;
 	extensionConfig[EXT_ID] = caffeinateEntry;
 	raw.extensionConfig = extensionConfig;
 
@@ -182,10 +184,10 @@ export default defineExtension(
 		doc: "Hold the Mac awake while other extensions run unattended work.",
 		configSchema: [
 			{
-				key: "enabled",
+				key: "autoAcquire",
 				type: "boolean",
 				default: false,
-				doc: "Master opt-in. When false, every acquireKeepAwake() returns a no-op handle and no caffeinate subprocess is ever spawned.",
+				doc: "When true, every acquireKeepAwake() call spawns/refcounts a caffeinate subprocess. When false, all acquires are no-ops.",
 			},
 			{
 				key: "flags",

@@ -173,7 +173,7 @@ function notify(state: KeepAwakeState): void {
 
 function readEnabled(ctx: ExtensionContext): boolean {
 	const settings = readRelevantSettings(ctx.cwd);
-	return getExtensionConfigBoolean(settings, EXT_ID, "enabled", false);
+	return getExtensionConfigBoolean(settings, EXT_ID, "autoAcquire", false);
 }
 
 function readFlags(ctx: ExtensionContext): readonly string[] {

@@ -116,7 +116,7 @@ describe("caffeinate (shared)", () => {
 			try {
 				// enabled in settings — but platform is wrong, so still no-op.
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const lock = acquireKeepAwake("test", ctxFor(cwd));
 				expect(spawner.calls).toHaveLength(0);
@@ -158,7 +158,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: false } },
+					extensionConfig: { caffeinate: { autoAcquire: false } },
 				});
 				const lock = acquireKeepAwake("test", ctxFor(cwd));
 				expect(spawner.calls).toHaveLength(0);
@@ -178,7 +178,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 
 				const a = acquireKeepAwake("alpha", ctxFor(cwd));
@@ -218,7 +218,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const a = acquireKeepAwake("develop", ctxFor(cwd));
 				const b = acquireKeepAwake("develop", ctxFor(cwd));
@@ -245,7 +245,7 @@ describe("caffeinate (shared)", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: {
-						caffeinate: { enabled: true, flags: ["-i", "-d", "-m"] },
+						caffeinate: { autoAcquire: true, flags: ["-i", "-d", "-m"] },
 					},
 				});
 				const lock = acquireKeepAwake("test", ctxFor(cwd));
@@ -273,7 +273,7 @@ describe("caffeinate (shared)", () => {
 			try {
 				writeProjectSettings(cwd, {
 					extensionConfig: {
-						caffeinate: { enabled: true, flags: "not-an-array" },
+						caffeinate: { autoAcquire: true, flags: "not-an-array" },
 					},
 				});
 				const lock = acquireKeepAwake("test", ctxFor(cwd));
@@ -297,7 +297,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const a = acquireKeepAwake("a", ctxFor(cwd));
 				const b = acquireKeepAwake("b", ctxFor(cwd));
@@ -329,7 +329,7 @@ describe("caffeinate (shared)", () => {
 				noop.release();
 
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 
 				const a = acquireKeepAwake("a", ctxFor(cwd));
@@ -367,7 +367,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const lock = acquireKeepAwake("test", ctxFor(cwd));
 				const child = spawner.last;
@@ -393,7 +393,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const lock = acquireKeepAwake("long-run", ctxFor(cwd));
 				const first = spawner.last;
@@ -428,7 +428,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const lock = acquireKeepAwake("test", ctxFor(cwd));
 				const child = spawner.last;
@@ -462,7 +462,7 @@ describe("caffeinate (shared)", () => {
 			const cwd = mkTempCwd();
 			try {
 				writeProjectSettings(cwd, {
-					extensionConfig: { caffeinate: { enabled: true } },
+					extensionConfig: { caffeinate: { autoAcquire: true } },
 				});
 				const state = getKeepAwakeState(ctxFor(cwd));
 				expect(state.enabled).toBe(true);
