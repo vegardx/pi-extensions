@@ -32,7 +32,7 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import {
 	getExtensionConfigString,
 	getExtensionConfigStringArray,
@@ -83,8 +83,8 @@ function getNumberConfig(
 		: defaultValue;
 }
 
-export default function (pi: ExtensionAPI) {
-	declareExtension({
+export default defineExtension(
+	{
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: `Low-friction GitHub idea/improvement capture. \`/idea <text>\` files an issue against the current repo's \`origin\` remote without interrupting the active session. Fails closed on any secret/internal-host hit \u2014 stashes to ~/.pi/agent/idea/pending/ for manual review.`,
@@ -114,16 +114,17 @@ export default function (pi: ExtensionAPI) {
 				doc: 'Prefix prepended to the polished/fallback title. Set to "" to disable.',
 			},
 		],
-	});
-
-	pi.registerCommand(EXT_ID, {
-		description:
-			"Quietly file a GitHub idea/improvement issue against the current repo's origin without interrupting the current turn. Usage: `/idea <free-form description>`.",
-		handler: async (args, ctx) => {
-			await runIdea(ctx, args ?? "");
-		},
-	});
-}
+	},
+	(pi: ExtensionAPI) => {
+		pi.registerCommand(EXT_ID, {
+			description:
+				"Quietly file a GitHub idea/improvement issue against the current repo's origin without interrupting the current turn. Usage: `/idea <free-form description>`.",
+			handler: async (args, ctx) => {
+				await runIdea(ctx, args ?? "");
+			},
+		});
+	},
+);
 
 /**
  * Resolve the model to use for the polish subagent. Uses tier
