@@ -111,6 +111,20 @@ export interface BackgroundModelUseSpec {
 	explanation?: string;
 }
 
+/**
+ * Why this extension's load state is what it is. Set by
+ * `defineExtension` when it resolves the toggle; reused by
+ * `/extensions` to render the per-extension state badge and by
+ * `dependency-check` to skip extensions that already failed.
+ */
+export type ExtensionLoadState =
+	| "loaded"
+	| "disabled-by-config"
+	| "disabled-by-env"
+	| "disabled-by-missing-deps";
+
+export type ExtensionEnabledSource = "project" | "global" | "env" | "default";
+
 export interface ExtensionMetadata {
 	/**
 	 * Short, stable name. Used as the key under `extensionConfig.<name>`
@@ -127,6 +141,32 @@ export interface ExtensionMetadata {
 	doc?: string;
 	configSchema?: readonly ConfigKeySchema[];
 	backgroundModelUse?: BackgroundModelUseSpec;
+	/**
+	 * Resolved enabled state for this session. `true` means the
+	 * factory body ran. `false` means it was gated off and nothing was
+	 * registered. `undefined` (legacy / unset) is treated as enabled
+	 * by callers — defineExtension always sets this explicitly.
+	 */
+	enabled?: boolean;
+	/** Where the enabled decision came from, for the /extensions UI. */
+	enabledSource?: ExtensionEnabledSource;
+	/**
+	 * Coarse load-state. Drives the badge and disabled footer in
+	 * `/extensions` and the session-start summary notify.
+	 */
+	loadState?: ExtensionLoadState;
+	/**
+	 * Hard dependencies — listed extension names that must also be
+	 * loaded for this one to function. If any are missing or disabled,
+	 * `defineExtension` refuses to load this extension.
+	 */
+	dependsOn?: readonly string[];
+	/**
+	 * Soft integrations — listed extensions are leveraged when present
+	 * but optional. Missing ones produce an info-level notify on
+	 * session start; this extension still loads.
+	 */
+	integratesWith?: readonly string[];
 }
 
 // Use a globalThis-anchored Map so the registry is shared even when pi
@@ -158,9 +198,31 @@ export function declareExtension(meta: ExtensionMetadata): ExtensionMetadata {
 			? [...meta.configSchema].sort((a, b) => a.key.localeCompare(b.key))
 			: undefined,
 		backgroundModelUse: meta.backgroundModelUse,
+		enabled: meta.enabled,
+		enabledSource: meta.enabledSource,
+		loadState: meta.loadState,
+		dependsOn: meta.dependsOn ? [...meta.dependsOn] : undefined,
+		integratesWith: meta.integratesWith ? [...meta.integratesWith] : undefined,
 	};
 	registry.set(meta.name, stored);
 	return stored;
+}
+
+/**
+ * Test/internal: mutate the loadState (and optionally enabled) of an
+ * already-declared extension. Used by `dependency-check` to flip an
+ * extension to `"disabled-by-missing-deps"` after the post-load
+ * resolution check, without re-declaring the whole record.
+ */
+export function updateExtensionLoadState(
+	name: string,
+	loadState: ExtensionLoadState,
+	enabled?: boolean,
+): void {
+	const existing = registry.get(name);
+	if (!existing) return;
+	existing.loadState = loadState;
+	if (enabled !== undefined) existing.enabled = enabled;
 }
 
 /**
