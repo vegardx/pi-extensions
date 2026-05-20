@@ -25,6 +25,8 @@ import {
 	readRelevantSettingsLayered,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 
+import { showExtensionsDialog } from "./extensions-dialog/dialog.js";
+
 const EXT_ID = "startup";
 
 // ---------------------------------------------------------------------------
@@ -523,8 +525,16 @@ export default defineExtension(
 
 		pi.registerCommand("extensions", {
 			description:
-				"Show what pi loaded from this monorepo: declared extensions, config schemas, effective values, and active model.",
+				"Open the extensions picker: toggle each extension at project / global scope, see effective state, deps, and config.",
 			handler: async (_args, ctx) => {
+				if (ctx.hasUI) {
+					await showExtensionsDialog(ctx, {
+						declared: getDeclaredExtensions(),
+					});
+					return;
+				}
+				// Headless fallback: keep the text report so non-interactive
+				// callers (CI, piped sessions) still get the per-extension view.
 				emitReport(ctx);
 			},
 		});
