@@ -12,7 +12,11 @@ Monorepo for pi.dev extensions. npm workspaces, `packages/*`, one extension per 
 
 ## Adding an extension
 
-Create `packages/<name>/` with a `package.json` (per-package `pi` manifest + peerDeps) and an `index.ts` that exports a factory function. See an existing package like `packages/caffeinate/` for the minimal template.
+Create `packages/<name>/` with a `package.json` (per-package `pi` manifest + peerDeps) and an `index.ts` that wraps its factory in `defineExtension({ name, path, ... }, (pi) => { ... })`. See `packages/caffeinate/` for the minimal template.
+
+The wrapper handles the default-off toggle (`extensionConfig.<name>.enabled`), env override (`PI_EXT_<NAME>=on|off`), and dependency declarations. **Never call `pi.registerCommand` / `registerTool` outside the factory passed to `defineExtension`** — that bypasses the toggle. The env-disable contract test (`packages/_shared/__tests__/env-disable-contract.test.ts`) catches this for every retrofitted package.
+
+Cross-extension code calls must be **dynamic + probed** (`await import("pi-ext-<name>/...")` after `pi.getCommands()` confirms the sibling is loaded). Static value imports between sibling `pi-ext-*` packages are blocked by `scripts/check-cross-extension-imports.mjs`; type-only imports are fine. Full rationale: [`docs/extension-toggles.md`](docs/extension-toggles.md).
 
 ## Verification
 
