@@ -2,10 +2,6 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
-import {
-	getExtensionConfigBoolean,
-	readRelevantSettings,
-} from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { GhostEditor } from "./ghost-editor.js";
 import { sanitiseSuggestion } from "./sanitise.js";
 
@@ -29,19 +25,9 @@ export default defineExtension(
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Inline ghost-text prompt suggestions delivered via a hidden suggest_next_prompt tool call at the end of each agent turn.",
-		configSchema: [
-			{
-				key: "enabled",
-				type: "boolean",
-				fallbackChain:
-					"extensionConfig.prompt-suggestion.enabled (default true)",
-				doc: "Set to false to disable ghost-text suggestions for this scope.",
-			},
-		],
 	},
 	(pi: ExtensionAPI): void => {
 		let editor: GhostEditor | undefined;
-		let enabled = true;
 		// True only when the most recent user action was a direct editor submission
 		// (i.e. the `input` event fired). Extension-internal agent calls — e.g.
 		// those driven by /commit or /review — bypass `input`, so this stays false
@@ -50,11 +36,7 @@ export default defineExtension(
 
 		pi.on("session_start", async (_event, ctx) => {
 			pendingRealInput = false;
-			const settings = readRelevantSettings(ctx.cwd);
-			enabled =
-				getExtensionConfigBoolean(settings, EXT_ID, "enabled", true) ?? true;
 			editor = undefined;
-			if (!enabled) return;
 			ctx.ui.setEditorComponent((tui, theme, keybindings) => {
 				editor = new GhostEditor(tui, theme, keybindings);
 				return editor;
@@ -115,7 +97,6 @@ export default defineExtension(
 					terminate: true,
 				};
 
-				if (!enabled) return ok;
 				if (!editor) return ok;
 				if (!ctx.hasUI) return ok;
 				// hasPendingMessages — another turn is queued; surfacing a ghost
