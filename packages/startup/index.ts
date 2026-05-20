@@ -8,10 +8,10 @@ import type {
 	SlashCommandInfo,
 	ToolInfo,
 } from "@mariozechner/pi-coding-agent";
+import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import {
 	type BackgroundModelUseSpec,
 	type ConfigKeySchema,
-	declareExtension,
 	type EffectiveValue,
 	type ExtensionMetadata,
 	getDeclaredExtensions,
@@ -481,8 +481,8 @@ export function summarize(
 	};
 }
 
-export default function (pi: ExtensionAPI) {
-	declareExtension({
+export default defineExtension(
+	{
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Reports loaded extensions, their declared config knobs, and effective values.",
@@ -494,38 +494,39 @@ export default function (pi: ExtensionAPI) {
 				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /extensions command still works). Default: true.",
 			},
 		],
-	});
+	},
+	(pi: ExtensionAPI) => {
+		// One multi-line notify, not many. pi's interactive-mode `showStatus`
+		// (where `info` notifications land) replaces the *previous* status text
+		// in place when consecutive info notifies arrive — so a per-line loop
+		// collapses to whichever line happened to be last. A single notify with
+		// embedded newlines renders as one Text block instead.
+		const emitReport = (ctx: ExtensionContext) => {
+			const summary = summarize(pi, ctx);
+			const body = [renderHeadline(summary), "", ...renderLines(summary)].join(
+				"\n",
+			);
+			ctx.ui.notify(body, "info");
+		};
 
-	// One multi-line notify, not many. pi's interactive-mode `showStatus`
-	// (where `info` notifications land) replaces the *previous* status text
-	// in place when consecutive info notifies arrive — so a per-line loop
-	// collapses to whichever line happened to be last. A single notify with
-	// embedded newlines renders as one Text block instead.
-	const emitReport = (ctx: ExtensionContext) => {
-		const summary = summarize(pi, ctx);
-		const body = [renderHeadline(summary), "", ...renderLines(summary)].join(
-			"\n",
-		);
-		ctx.ui.notify(body, "info");
-	};
-
-	pi.on("session_start", (_event, ctx) => {
-		const settings = readRelevantSettings(ctx.cwd);
-		const enabled = getExtensionConfigBoolean(
-			settings,
-			EXT_ID,
-			"enabled",
-			true,
-		);
-		if (!enabled) return;
-		emitReport(ctx);
-	});
-
-	pi.registerCommand("extensions", {
-		description:
-			"Show what pi loaded from this monorepo: declared extensions, config schemas, effective values, and active model.",
-		handler: async (_args, ctx) => {
+		pi.on("session_start", (_event, ctx) => {
+			const settings = readRelevantSettings(ctx.cwd);
+			const enabled = getExtensionConfigBoolean(
+				settings,
+				EXT_ID,
+				"enabled",
+				true,
+			);
+			if (!enabled) return;
 			emitReport(ctx);
-		},
-	});
-}
+		});
+
+		pi.registerCommand("extensions", {
+			description:
+				"Show what pi loaded from this monorepo: declared extensions, config schemas, effective values, and active model.",
+			handler: async (_args, ctx) => {
+				emitReport(ctx);
+			},
+		});
+	},
+);

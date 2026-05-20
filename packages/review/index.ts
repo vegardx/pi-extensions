@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import { EXT_ID, runReview } from "./core.js";
 
 export type {
@@ -29,21 +29,23 @@ export type {
 } from "./static-checker.js";
 export { runReview };
 
-export default function (pi: ExtensionAPI) {
-	declareExtension({
+export default defineExtension(
+	{
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Run seven specialist reviewer subagents over a diff or codebase.",
+		integratesWith: ["commit"],
 		// Uses `ctx.model` directly — no per-extension model override or
 		// background-tier resolution today.
-	});
-
-	pi.registerCommand(EXT_ID, {
-		description:
-			"Multi-agent review: seven specialists (architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker) " +
-			"run in parallel on the same scope. Each one reviews its own lane and returns [] if nothing applies. Walk findings, queue fixes for the agent.",
-		handler: async (args, ctx) => {
-			await runReview({ ctx, pi, arg: args ?? "" });
-		},
-	});
-}
+	},
+	(pi: ExtensionAPI) => {
+		pi.registerCommand(EXT_ID, {
+			description:
+				"Multi-agent review: seven specialists (architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker) " +
+				"run in parallel on the same scope. Each one reviews its own lane and returns [] if nothing applies. Walk findings, queue fixes for the agent.",
+			handler: async (args, ctx) => {
+				await runReview({ ctx, pi, arg: args ?? "" });
+			},
+		});
+	},
+);

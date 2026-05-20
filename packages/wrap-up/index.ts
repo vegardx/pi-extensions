@@ -17,7 +17,7 @@
 
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import {
 	getExtensionConfigBoolean,
 	getExtensionConfigString,
@@ -45,19 +45,8 @@ export function pauseRaceWarning(inFlight: boolean): string | null {
 	);
 }
 
-export default function (pi: ExtensionAPI) {
-	// Tracks whether a /pause turn is currently in-flight so /continue can
-	// warn instead of silently returning "No handover files found".
-	// Cleared on agent_end — that fires when the entire agent run (all tool
-	// calls and follow-up turns) finishes, so the flag stays true for the
-	// full duration of the /pause flow, not just until the first LLM response.
-	let pauseInFlight = false;
-
-	pi.on("agent_end", () => {
-		pauseInFlight = false;
-	});
-
-	declareExtension({
+export default defineExtension(
+	{
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "End-of-session wrap-up: produces a detailed handover document from session history and git state, then prompts about cost-incurring resources before you sign off.",
@@ -75,155 +64,162 @@ export default function (pi: ExtensionAPI) {
 				doc: "When true, the agent writes the handover file immediately without asking. Default: false",
 			},
 		],
-	});
+	},
+	(pi: ExtensionAPI) => {
+		let pauseInFlight = false;
 
-	pi.registerCommand(PAUSE_CMD, {
-		description:
-			"Pause the current session: write a detailed handover document " +
-			"(goal, done, in-progress, exact resume steps, next steps), ask about " +
-			"any running cloud resources, and save to disk for /continue.",
-		handler: async (_args, ctx) => {
-			ctx.ui.notify("Gathering session context…", "info");
+		pi.on("agent_end", () => {
+			pauseInFlight = false;
+		});
 
-			const settings = readRelevantSettings(ctx.cwd);
-			const configuredDir = getExtensionConfigString(
-				settings,
-				EXT_ID,
-				"handoverDir",
-				"",
-			);
-			const autoSave = getExtensionConfigBoolean(
-				settings,
-				EXT_ID,
-				"autoSave",
-				false,
-			);
+		pi.registerCommand(PAUSE_CMD, {
+			description:
+				"Pause the current session: write a detailed handover document " +
+				"(goal, done, in-progress, exact resume steps, next steps), ask about " +
+				"any running cloud resources, and save to disk for /continue.",
+			handler: async (_args, ctx) => {
+				ctx.ui.notify("Gathering session context…", "info");
 
-			const wrapCtx = gatherContext(ctx.cwd, {
-				sessionId: ctx.sessionManager.getSessionId(),
-				sessionFile: ctx.sessionManager.getSessionFile(),
-				sessionName: ctx.sessionManager.getSessionName(),
-			});
+				const settings = readRelevantSettings(ctx.cwd);
+				const configuredDir = getExtensionConfigString(
+					settings,
+					EXT_ID,
+					"handoverDir",
+					"",
+				);
+				const autoSave = getExtensionConfigBoolean(
+					settings,
+					EXT_ID,
+					"autoSave",
+					false,
+				);
 
-			const handover = resolveHandoverConfig(wrapCtx, {
-				configuredDir: configuredDir || undefined,
-				autoSave,
-			});
+				const wrapCtx = gatherContext(ctx.cwd, {
+					sessionId: ctx.sessionManager.getSessionId(),
+					sessionFile: ctx.sessionManager.getSessionFile(),
+					sessionName: ctx.sessionManager.getSessionName(),
+				});
 
-			const resourceSummary =
-				wrapCtx.resources.length > 0
-					? `Detected resource signals: ${wrapCtx.resources.map((r) => r.label).join(", ")}`
-					: "No infrastructure signals detected.";
+				const handover = resolveHandoverConfig(wrapCtx, {
+					configuredDir: configuredDir || undefined,
+					autoSave,
+				});
 
-			ctx.ui.notify(
-				[
-					`Branch: ${wrapCtx.branch ?? "(none)"}`,
-					wrapCtx.prInfo ? "PR: found" : "PR: none",
-					resourceSummary,
-					`Handover: ${handover.fullPath}${autoSave ? " (auto-save on)" : ""}`,
-				].join(" · "),
-				"info",
-			);
+				const resourceSummary =
+					wrapCtx.resources.length > 0
+						? `Detected resource signals: ${wrapCtx.resources.map((r) => r.label).join(", ")}`
+						: "No infrastructure signals detected.";
 
-			pauseInFlight = true;
-			pi.sendMessage(
-				{
-					customType: EXT_ID,
-					content: buildPausePrompt(wrapCtx, handover),
-					display: false,
-					details: {},
-				},
-				{ deliverAs: "followUp", triggerTurn: true },
-			);
-		},
-	});
-
-	pi.registerCommand(CONTINUE_CMD, {
-		description:
-			"Resume from a previous session's handover document. " +
-			"Finds the most relevant handover file, injects it, and asks how to proceed.",
-		handler: async (_args, ctx) => {
-			// Guard: /pause dispatches a fire-and-forget agent turn that
-			// writes the handover file. If the user runs /continue before
-			// that turn finishes, discoverHandovers() will find nothing (or
-			// stale files). Warn early so the user isn't left confused by
-			// "No handover files found" when a pause is clearly in-flight.
-			const raceWarn = pauseRaceWarning(pauseInFlight);
-			if (raceWarn) {
-				ctx.ui.notify(raceWarn, "warning");
-				return;
-			}
-			const settings = readRelevantSettings(ctx.cwd);
-			const configuredDir = getExtensionConfigString(
-				settings,
-				EXT_ID,
-				"handoverDir",
-				"",
-			);
-
-			const candidates = discoverHandovers(ctx.cwd, {
-				configuredDir: configuredDir || undefined,
-			});
-
-			if (candidates.length === 0) {
 				ctx.ui.notify(
-					"No handover files found. Run /pause at the end of a session first.",
-					"warning",
+					[
+						`Branch: ${wrapCtx.branch ?? "(none)"}`,
+						wrapCtx.prInfo ? "PR: found" : "PR: none",
+						resourceSummary,
+						`Handover: ${handover.fullPath}${autoSave ? " (auto-save on)" : ""}`,
+					].join(" · "),
+					"info",
 				);
-				return;
-			}
 
-			let chosen = candidates[0];
+				pauseInFlight = true;
+				pi.sendMessage(
+					{
+						customType: EXT_ID,
+						content: buildPausePrompt(wrapCtx, handover),
+						display: false,
+						details: {},
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			},
+		});
 
-			// If the top candidate has no relevance signal at all, or
-			// multiple candidates tie, let the user pick explicitly.
-			// Require a non-recency signal (branch or repo match, score ≥ 50)
-			// before auto-selecting. A pure-recency hit (score 1–10) is too
-			// weak — it just means the file is recent, not that it belongs to
-			// this repo/branch. Always show the picker in that case.
-			const needsPicker = needsHandoverPicker(candidates);
-			if (needsPicker) {
-				const top = candidates.slice(0, 10);
-				const labels = top.map((c) => {
-					const parts = [c.meta.date];
-					if (c.meta.branch) parts.push(c.meta.branch);
-					if (c.meta.repo) parts.push(c.meta.repo);
-					parts.push(c.meta.session_id);
-					return parts.join(" · ");
+		pi.registerCommand(CONTINUE_CMD, {
+			description:
+				"Resume from a previous session's handover document. " +
+				"Finds the most relevant handover file, injects it, and asks how to proceed.",
+			handler: async (_args, ctx) => {
+				// Guard: /pause dispatches a fire-and-forget agent turn that
+				// writes the handover file. If the user runs /continue before
+				// that turn finishes, discoverHandovers() will find nothing (or
+				// stale files). Warn early so the user isn't left confused by
+				// "No handover files found" when a pause is clearly in-flight.
+				const raceWarn = pauseRaceWarning(pauseInFlight);
+				if (raceWarn) {
+					ctx.ui.notify(raceWarn, "warning");
+					return;
+				}
+				const settings = readRelevantSettings(ctx.cwd);
+				const configuredDir = getExtensionConfigString(
+					settings,
+					EXT_ID,
+					"handoverDir",
+					"",
+				);
+
+				const candidates = discoverHandovers(ctx.cwd, {
+					configuredDir: configuredDir || undefined,
 				});
 
-				// Disambiguate duplicate labels with a numeric suffix
-				const seen = new Map<string, number>();
-				const uniqueLabels = labels.map((label) => {
-					const count = seen.get(label) ?? 0;
-					seen.set(label, count + 1);
-					return count > 0 ? `${label} (${count + 1})` : label;
-				});
+				if (candidates.length === 0) {
+					ctx.ui.notify(
+						"No handover files found. Run /pause at the end of a session first.",
+						"warning",
+					);
+					return;
+				}
 
-				const picked = await ctx.ui.select(
-					"Multiple handovers found — which one?",
-					uniqueLabels,
+				let chosen = candidates[0];
+
+				// If the top candidate has no relevance signal at all, or
+				// multiple candidates tie, let the user pick explicitly.
+				// Require a non-recency signal (branch or repo match, score ≥ 50)
+				// before auto-selecting. A pure-recency hit (score 1–10) is too
+				// weak — it just means the file is recent, not that it belongs to
+				// this repo/branch. Always show the picker in that case.
+				const needsPicker = needsHandoverPicker(candidates);
+				if (needsPicker) {
+					const top = candidates.slice(0, 10);
+					const labels = top.map((c) => {
+						const parts = [c.meta.date];
+						if (c.meta.branch) parts.push(c.meta.branch);
+						if (c.meta.repo) parts.push(c.meta.repo);
+						parts.push(c.meta.session_id);
+						return parts.join(" · ");
+					});
+
+					// Disambiguate duplicate labels with a numeric suffix
+					const seen = new Map<string, number>();
+					const uniqueLabels = labels.map((label) => {
+						const count = seen.get(label) ?? 0;
+						seen.set(label, count + 1);
+						return count > 0 ? `${label} (${count + 1})` : label;
+					});
+
+					const picked = await ctx.ui.select(
+						"Multiple handovers found — which one?",
+						uniqueLabels,
+					);
+					if (picked === undefined) return;
+					const pickedIdx = uniqueLabels.indexOf(picked);
+					if (pickedIdx === -1) return;
+					chosen = candidates[pickedIdx];
+				}
+
+				ctx.ui.notify(
+					`Loading handover: ${chosen.meta.date}${chosen.meta.branch ? ` (${chosen.meta.branch})` : ""}`,
+					"info",
 				);
-				if (picked === undefined) return;
-				const pickedIdx = uniqueLabels.indexOf(picked);
-				if (pickedIdx === -1) return;
-				chosen = candidates[pickedIdx];
-			}
 
-			ctx.ui.notify(
-				`Loading handover: ${chosen.meta.date}${chosen.meta.branch ? ` (${chosen.meta.branch})` : ""}`,
-				"info",
-			);
-
-			pi.sendMessage(
-				{
-					customType: EXT_ID,
-					content: buildContinuePrompt(chosen.body),
-					display: false,
-					details: { handoverFile: chosen.filePath },
-				},
-				{ deliverAs: "followUp", triggerTurn: true },
-			);
-		},
-	});
-}
+				pi.sendMessage(
+					{
+						customType: EXT_ID,
+						content: buildContinuePrompt(chosen.body),
+						display: false,
+						details: { handoverFile: chosen.filePath },
+					},
+					{ deliverAs: "followUp", triggerTurn: true },
+				);
+			},
+		});
+	},
+);

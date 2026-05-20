@@ -32,7 +32,7 @@ import {
 	type KeepAwakeState,
 	subscribeKeepAwake,
 } from "@vegardx/pi-extensions-shared/caffeinate.js";
-import { declareExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
+import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 
 /**
  * Build the footer pill text. Pure so the test suite can pin every
@@ -175,8 +175,8 @@ export function setEnabledInProjectSettings(
 	return { path, previous };
 }
 
-export default function (pi: ExtensionAPI) {
-	declareExtension({
+export default defineExtension(
+	{
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Hold the Mac awake while other extensions run unattended work.",
@@ -194,124 +194,128 @@ export default function (pi: ExtensionAPI) {
 				doc: 'caffeinate(8) flags passed at spawn time. `-w <pi-pid>` is always appended automatically. Default: ["-i", "-m"] (prevent idle sleep and disk-idle sleep; omits display sleep -d and AC-only -s).',
 			},
 		],
-	});
+	},
+	(pi: ExtensionAPI) => {
+		let unsubscribe: (() => void) | null = null;
 
-	let unsubscribe: (() => void) | null = null;
+		const refresh = (ctx: ExtensionContext) => {
+			const state = getKeepAwakeState(ctx);
+			ctx.ui.setStatus(EXT_ID, statusPill(state));
+		};
 
-	const refresh = (ctx: ExtensionContext) => {
-		const state = getKeepAwakeState(ctx);
-		ctx.ui.setStatus(EXT_ID, statusPill(state));
-	};
-
-	pi.on("session_start", (_event, ctx) => {
-		// Subscribe once per session — `session_shutdown` tears it down so
-		// a fresh subscription installs on the next session_start.
-		if (unsubscribe) {
-			unsubscribe();
-			unsubscribe = null;
-		}
-		unsubscribe = subscribeKeepAwake(() => {
-			// Re-render the pill on every refcount/state change. We
-			// re-read state via ctx so `enabled` reflects the live
-			// settings value — the snapshot passed by the shared helper
-			// has no ctx and falls back to `enabled: holders > 0`, which
-			// would show "disabled" after the last holder releases even
-			// when the user opted in.
-			ctx.ui.setStatus(EXT_ID, statusPill(getKeepAwakeState(ctx)));
-		});
-		refresh(ctx);
-
-		// First-run discoverability hint: fire once per machine when the
-		// feature is supported but the user hasn't opted in yet. A flag
-		// file in ~/.pi/agent/ gates it so it never repeats.
-		const hintShown = existsSync(hintFlagPath());
-		if (shouldShowFirstRunHint(getKeepAwakeState(ctx), hintShown)) {
-			try {
-				mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
-				writeFileSync(hintFlagPath(), "1");
-			} catch {
-				// Non-fatal: hint fires but flag write failed. It will
-				// show again next session, which is acceptable.
+		pi.on("session_start", (_event, ctx) => {
+			// Subscribe once per session — `session_shutdown` tears it down so
+			// a fresh subscription installs on the next session_start.
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = null;
 			}
-			ctx.ui.notify(
-				"caffeinate is supported on this Mac but not yet enabled — " +
-					"run /caffeinate on to prevent sleep during long sessions.",
-				"info",
-			);
-		}
-	});
+			unsubscribe = subscribeKeepAwake(() => {
+				// Re-render the pill on every refcount/state change. We
+				// re-read state via ctx so `enabled` reflects the live
+				// settings value — the snapshot passed by the shared helper
+				// has no ctx and falls back to `enabled: holders > 0`, which
+				// would show "disabled" after the last holder releases even
+				// when the user opted in.
+				ctx.ui.setStatus(EXT_ID, statusPill(getKeepAwakeState(ctx)));
+			});
+			refresh(ctx);
 
-	pi.on("session_shutdown", (_event, ctx) => {
-		if (unsubscribe) {
-			unsubscribe();
-			unsubscribe = null;
-		}
-		// Clear the pill so a stale "active" string can't paint over the
-		// next session's footer before its first state event.
-		ctx.ui.setStatus(EXT_ID, undefined);
-	});
-
-	pi.registerCommand(EXT_ID, {
-		description:
-			"Show or toggle keep-awake. Subcommands: `status` (default) shows supported/enabled/active/holders; " +
-			"`on` / `off` flip `extensionConfig.caffeinate.enabled` in the project settings.json; " +
-			"`test` acquires for 10s to verify the wiring.",
-		handler: async (args, ctx) => {
-			const arg = (args ?? "").trim();
-			if (arg === "on" || arg === "off") {
-				const next = arg === "on";
+			// First-run discoverability hint: fire once per machine when the
+			// feature is supported but the user hasn't opted in yet. A flag
+			// file in ~/.pi/agent/ gates it so it never repeats.
+			const hintShown = existsSync(hintFlagPath());
+			if (shouldShowFirstRunHint(getKeepAwakeState(ctx), hintShown)) {
 				try {
-					const { path, previous } = setEnabledInProjectSettings(ctx.cwd, next);
-					if (previous === next) {
-						ctx.ui.notify(`caffeinate: already ${arg} (${path})`, "info");
-					} else {
+					mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+					writeFileSync(hintFlagPath(), "1");
+				} catch {
+					// Non-fatal: hint fires but flag write failed. It will
+					// show again next session, which is acceptable.
+				}
+				ctx.ui.notify(
+					"caffeinate is supported on this Mac but not yet enabled — " +
+						"run /caffeinate on to prevent sleep during long sessions.",
+					"info",
+				);
+			}
+		});
+
+		pi.on("session_shutdown", (_event, ctx) => {
+			if (unsubscribe) {
+				unsubscribe();
+				unsubscribe = null;
+			}
+			// Clear the pill so a stale "active" string can't paint over the
+			// next session's footer before its first state event.
+			ctx.ui.setStatus(EXT_ID, undefined);
+		});
+
+		pi.registerCommand(EXT_ID, {
+			description:
+				"Show or toggle keep-awake. Subcommands: `status` (default) shows supported/enabled/active/holders; " +
+				"`on` / `off` flip `extensionConfig.caffeinate.enabled` in the project settings.json; " +
+				"`test` acquires for 10s to verify the wiring.",
+			handler: async (args, ctx) => {
+				const arg = (args ?? "").trim();
+				if (arg === "on" || arg === "off") {
+					const next = arg === "on";
+					try {
+						const { path, previous } = setEnabledInProjectSettings(
+							ctx.cwd,
+							next,
+						);
+						if (previous === next) {
+							ctx.ui.notify(`caffeinate: already ${arg} (${path})`, "info");
+						} else {
+							ctx.ui.notify(
+								`caffeinate: turned ${arg} — wrote ${path}. Future acquires will ${
+									next ? "spawn caffeinate" : "be no-ops"
+								}; live holders are unaffected.`,
+								"info",
+							);
+						}
+						// Re-paint the pill: the `enabled` flag changed and there
+						// may be no live holders to trigger a state event.
+						refresh(ctx);
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
 						ctx.ui.notify(
-							`caffeinate: turned ${arg} — wrote ${path}. Future acquires will ${
-								next ? "spawn caffeinate" : "be no-ops"
-							}; live holders are unaffected.`,
-							"info",
+							`caffeinate: failed to write settings — ${msg}`,
+							"error",
 						);
 					}
-					// Re-paint the pill: the `enabled` flag changed and there
-					// may be no live holders to trigger a state event.
-					refresh(ctx);
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					ctx.ui.notify(
-						`caffeinate: failed to write settings — ${msg}`,
-						"error",
-					);
+					return;
 				}
-				return;
-			}
-			if (arg === "test") {
-				if (!getKeepAwakeState(ctx).enabled) {
+				if (arg === "test") {
+					if (!getKeepAwakeState(ctx).enabled) {
+						ctx.ui.notify(
+							"caffeinate: cannot test — run `/caffeinate on` first (or set extensionConfig.caffeinate.enabled=true in settings.json).",
+							"warning",
+						);
+						return;
+					}
+					const lock = acquireKeepAwake("caffeinate-test", ctx);
 					ctx.ui.notify(
-						"caffeinate: cannot test — run `/caffeinate on` first (or set extensionConfig.caffeinate.enabled=true in settings.json).",
+						"caffeinate: held for 10s — check the footer pill.",
+						"info",
+					);
+					setTimeout(() => {
+						lock.release();
+						ctx.ui.notify("caffeinate: test hold released.", "info");
+					}, 10_000);
+					return;
+				}
+				if (arg && arg !== "status") {
+					ctx.ui.notify(
+						`caffeinate: unknown subcommand "${arg}" — expected status | on | off | test`,
 						"warning",
 					);
 					return;
 				}
-				const lock = acquireKeepAwake("caffeinate-test", ctx);
-				ctx.ui.notify(
-					"caffeinate: held for 10s — check the footer pill.",
-					"info",
-				);
-				setTimeout(() => {
-					lock.release();
-					ctx.ui.notify("caffeinate: test hold released.", "info");
-				}, 10_000);
-				return;
-			}
-			if (arg && arg !== "status") {
-				ctx.ui.notify(
-					`caffeinate: unknown subcommand "${arg}" — expected status | on | off | test`,
-					"warning",
-				);
-				return;
-			}
-			const state = getKeepAwakeState(ctx);
-			ctx.ui.notify(renderStatusReport(state).join("\n"), "info");
-		},
-	});
-}
+				const state = getKeepAwakeState(ctx);
+				ctx.ui.notify(renderStatusReport(state).join("\n"), "info");
+			},
+		});
+	},
+);
