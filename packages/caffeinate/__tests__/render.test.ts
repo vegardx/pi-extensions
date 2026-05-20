@@ -191,7 +191,7 @@ describe("setEnabledInProjectSettings", () => {
 		expect(previous).toBe(false);
 		const written = JSON.parse(readFileSync(path, "utf8"));
 		expect(written).toEqual({
-			extensionConfig: { caffeinate: { enabled: true } },
+			extensionConfig: { caffeinate: { autoAcquire: true } },
 		});
 	});
 
@@ -218,7 +218,7 @@ describe("setEnabledInProjectSettings", () => {
 		expect(written.extensionConfig.verify.model).toBe("openai/gpt-4o");
 		expect(written.extensionConfig.caffeinate).toEqual({
 			flags: ["-i", "-d"],
-			enabled: true,
+			autoAcquire: true,
 		});
 	});
 
@@ -229,7 +229,7 @@ describe("setEnabledInProjectSettings", () => {
 		const written = JSON.parse(
 			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
 		);
-		expect(written.extensionConfig.caffeinate.enabled).toBe(false);
+		expect(written.extensionConfig.caffeinate.autoAcquire).toBe(false);
 	});
 
 	it("is idempotent when the value already matches", () => {
