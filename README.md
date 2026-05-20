@@ -102,8 +102,11 @@ pi -e ./packages/startup                          # smoke-test one extension
 pi install git:github.com/vegardx/pi-extensions   # install everything
 ```
 
+Extensions are off by default. Enable the ones you want via `/extensions` (interactive picker) or by editing `~/.pi/agent/settings.json` directly — see [`docs/extension-toggles.md`](docs/extension-toggles.md) for the first-time setup snippet.
+
 ## Docs
 
+- [`docs/extension-toggles.md`](docs/extension-toggles.md) — default-off rule, `/extensions` picker, env override, cross-extension contract, first-time setup snippet.
 - [`packages/modes/README.md`](packages/modes/README.md) — modes deep-dive: state diagram, plan model, session lifecycle, compaction, multi-driver execution.
 - [`docs/configuring-models.md`](docs/configuring-models.md) — background-model tiers, resolution order, cross-model checking, providers, gateways.
 - [pi extension API](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md) — upstream reference for writing your own.
