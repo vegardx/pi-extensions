@@ -383,17 +383,23 @@ describe("renderHeadline", () => {
 		layered: { global: {}, project: {}, merged: {} },
 	};
 
-	it("pluralises correctly for empty input and points to /extensions", () => {
+	it("reports 0/0 with the same · /extensions hint when nothing is installed", () => {
 		expect(renderHeadline(empty)).toBe(
 			"pi-ext-startup: 0 extensions · /extensions for details",
 		);
 	});
 
-	it("uses singular form for a count of one", () => {
+	it("hints at /extensions when nothing is enabled but extensions are installed", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
-					meta: { name: "webfetch", path: "/v.ts" },
+					meta: { name: "webfetch", path: "/v.ts", enabled: false },
+					commands: [],
+					tools: [],
+					configKeys: [],
+				},
+				{
+					meta: { name: "modes", path: "/m.ts", enabled: false },
 					commands: [],
 					tools: [],
 					configKeys: [],
@@ -403,7 +409,37 @@ describe("renderHeadline", () => {
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		expect(renderHeadline(summary)).toBe(
-			"pi-ext-startup: 1 extension · /extensions for details",
+			"ℹ pi-extensions: 0 of 2 enabled. Run /extensions to configure.",
+		);
+	});
+
+	it("lists enabled extensions alphabetically with installed total", () => {
+		const summary: StartupSummary = {
+			declared: [
+				{
+					meta: { name: "webfetch", path: "/v.ts", enabled: true },
+					commands: [],
+					tools: [],
+					configKeys: [],
+				},
+				{
+					meta: { name: "modes", path: "/m.ts", enabled: true },
+					commands: [],
+					tools: [],
+					configKeys: [],
+				},
+				{
+					meta: { name: "commit", path: "/c.ts", enabled: false },
+					commands: [],
+					tools: [],
+					configKeys: [],
+				},
+			],
+			unrecognized: [],
+			layered: { global: {}, project: {}, merged: {} },
+		};
+		expect(renderHeadline(summary)).toBe(
+			"✓ pi-extensions loaded: modes, webfetch (2 of 3 installed) · /extensions for details",
 		);
 	});
 });

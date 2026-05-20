@@ -328,10 +328,26 @@ export function countOverrides(
 	return n;
 }
 
-/** Short one-liner for the `session_start` toast. */
+/**
+ * Short one-liner for the `session_start` toast. Default-off means
+ * "how many of the installed extensions are actually loaded" is the
+ * useful number to show — a freshly-installed monorepo where nothing
+ * is enabled gets a discoverability hint instead of a count.
+ */
 export function renderHeadline(summary: StartupSummary): string {
-	const exts = summary.declared.length + summary.unrecognized.length;
-	return `pi-ext-startup: ${exts} ${exts === 1 ? "extension" : "extensions"} · /extensions for details`;
+	const total = summary.declared.length + summary.unrecognized.length;
+	if (total === 0) {
+		return "pi-ext-startup: 0 extensions · /extensions for details";
+	}
+	const enabled = summary.declared.filter((d) => d.meta.enabled === true);
+	if (enabled.length === 0) {
+		return `ℹ pi-extensions: 0 of ${total} enabled. Run /extensions to configure.`;
+	}
+	const names = enabled
+		.map((d) => d.meta.name)
+		.sort()
+		.join(", ");
+	return `✓ pi-extensions loaded: ${names} (${enabled.length} of ${total} installed) · /extensions for details`;
 }
 
 function formatValue(v: unknown): string {
