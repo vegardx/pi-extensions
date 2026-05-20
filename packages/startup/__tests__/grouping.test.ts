@@ -442,6 +442,39 @@ describe("renderHeadline", () => {
 			"✓ pi-extensions loaded: modes, webfetch (2 of 3 installed) · /extensions for details",
 		);
 	});
+
+	it("appends an unrecognized addendum without polluting the enabled count (regression: PR #248 review)", () => {
+		const summary: StartupSummary = {
+			declared: [
+				{
+					meta: { name: "modes", path: "/m.ts", enabled: false },
+					commands: [],
+					tools: [],
+					configKeys: [],
+				},
+				{
+					meta: { name: "webfetch", path: "/v.ts", enabled: false },
+					commands: [],
+					tools: [],
+					configKeys: [],
+				},
+			],
+			unrecognized: [
+				{
+					path: "/u.ts",
+					source: "manifest",
+					scope: "global",
+					origin: "x",
+					commands: [],
+					tools: [],
+				},
+			],
+			layered: { global: {}, project: {}, merged: {} },
+		};
+		expect(renderHeadline(summary)).toBe(
+			"ℹ pi-extensions: 0 of 2 enabled (+1 unrecognized). Run /extensions to configure.",
+		);
+	});
 });
 
 // --- renderLines ------------------------------------------------------------

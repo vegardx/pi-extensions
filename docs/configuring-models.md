@@ -2,7 +2,7 @@
 
 Several extensions in this monorepo call an LLM on a side task:
 
-- `develop` derives a kebab-case branch slug from a free-form description.
+- `modes` derives a kebab-case branch slug from a free-form description.
 - the `modes` auto-review pass (in `pi-ext-review/auto-review`) runs
   the `code-reviewer` and `code-simplifier` lanes twice each — once
   against `primary.heavy`, once against `secondary.heavy` — and queues
@@ -63,8 +63,8 @@ Two top-level keys this monorepo's extensions read from pi's
   user to fully configure both sets.
 - **`extensionConfig.<name>.model`** — per-extension override. Wins
   over the (set, tier) lookup. Use it when one extension should run on
-  something different than your general tier choice (e.g. `develop`
-  on a gateway, but the rest on direct Anthropic).
+  something different than your general tier choice (e.g. `modes` on a
+  gateway, but the rest on direct Anthropic).
 
 Any other keys in `settings.json` belong to pi and are ignored by
 these extensions. The converse is also true: pi doesn't know about
@@ -79,7 +79,7 @@ candidate that resolves in the registry **and** has usable auth:
 
 1. **Extension-specific explicit override** — a CLI flag, in-session
    command value, or legacy env var that the extension passes in as
-   `opts.explicit`. (Example: `$PI_DEVELOP_SLUG_MODEL`.)
+   `opts.explicit`. (Example: `$PI_MODES_SLUG_MODEL`.)
 2. **`settings.json` → `extensionConfig.<name>.model`** — the
    persistent per-extension escape hatch.
 3. **`settings.json` → `backgroundModels.<set>.<tier>`** — the user's
@@ -96,18 +96,18 @@ candidate that resolves in the registry **and** has usable auth:
 6. **Nothing usable** → the extension disables its side task for the
    session with a single `notify()`.
 
-All current consumers accept headers-only auth — they hand the model
-spec off to something that does its own auth (the subagent RPC
-clients in `/review`). The resolver supports a `requireApiKey: true`
-option for callers that pass `apiKey` directly to a completion call;
-no extension currently uses it. See the
+All current consumers that hand the model spec off to a subagent RPC
+(the `/review` lanes) accept headers-only auth. The `modes` smart
+slug resolver, by contrast, calls `completeSimple` directly and
+passes `requireApiKey: true` — a headers-only provider falls back
+to deterministic token-truncation for the slug. See the
 [resolver source](../packages/_shared/model-resolver.ts) for details.
 
 ## Per-extension tier and set assignments
 
 | Extension | Set | Tier | Why | Override knob |
 |---|---|---|---|---|
-| `develop` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves. | `$PI_DEVELOP_SLUG_MODEL` (session), `extensionConfig.develop.model` |
+| `modes` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves or auth is headers-only. | `$PI_MODES_SLUG_MODEL` (session), `extensionConfig.modes.model` |
 | `modes` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.modes.review.enable: false` to disable; both heavy tiers must resolve or the pass is skipped. |
 
 Extensions that don't take a background model and use `ctx.model`
@@ -269,7 +269,7 @@ tiers, just set `backgroundModels.primary.fast`:
 }
 ```
 
-Covers `develop`'s smart slug (`fast`-tier consumer).
+Covers `modes`' smart slug (`fast`-tier consumer).
 The `modes` auto-review pass (`heavy`-tier across both `primary` and
 `secondary`) stays skipped until you configure `primary.heavy` and
 `secondary.heavy` — it's strictly opt-in.

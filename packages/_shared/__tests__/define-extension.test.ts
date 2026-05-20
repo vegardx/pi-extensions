@@ -550,4 +550,38 @@ describe("defineExtension — strict dependsOn enforcement", () => {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
+
+	it("a hard-dep extension's session_start listener fires (regression: PR #248 review)", () => {
+		const cwd = mkTempCwd();
+		try {
+			writeProjectSettings(cwd, {
+				extensionConfig: {
+					app: { enabled: true },
+					core: { enabled: true },
+				},
+			});
+			__setDefineExtensionCwd(cwd, agentDir);
+			const mock = makeMockPi();
+			let sessionStartFired = false;
+			defineExtension({ name: "core", path: "/p/core/index.ts" }, () => {})(
+				mock.pi,
+			);
+			defineExtension(
+				{
+					name: "app",
+					path: "/p/app/index.ts",
+					dependsOn: ["core"],
+				},
+				(api) => {
+					api.on("session_start", () => {
+						sessionStartFired = true;
+					});
+				},
+			)(mock.pi);
+			mock.fireSessionStart();
+			expect(sessionStartFired).toBe(true);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
 });
