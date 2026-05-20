@@ -7,12 +7,14 @@
  *   1. Resolves whether the extension is enabled this session, with
  *      precedence:
  *
- *          env  >  project settings  >  global settings  >  false
+ *          env  >  project settings  >  global settings  >  default
  *
- *      The single hard default is **off**. Each extension must be
- *      explicitly enabled via `extensionConfig.<name>.enabled = true`
- *      in either the project's `.pi/settings.json` or the user's
- *      global `~/.pi/agent/settings.json`, or via the env var
+ *      The default is **`false` for every extension except `startup`**
+ *      (the meta-extension that owns the `/extensions` picker; see
+ *      `DEFAULT_ON_EXTENSIONS` below). Extensions are enabled via
+ *      `extensionConfig.<name>.enabled = true` in either the project's
+ *      `.pi/settings.json` or the user's global
+ *      `~/.pi/agent/settings.json`, or via the env var
  *      `PI_EXT_<NAME>=on|off|true|false` (uppercase, dashes →
  *      underscores).
  *
@@ -178,6 +180,15 @@ interface EnabledResolution {
 	loadState: ExtensionLoadState;
 }
 
+// `startup` is the meta-extension that owns the `/extensions` picker
+// and the session-start summary toast. If it were off by default like
+// every other extension, a fresh install would have no way to discover
+// or re-enable anything without hand-editing settings.json. So `startup`
+// alone defaults to enabled — settings still win (you can still set
+// `extensionConfig.startup.enabled = false` to silence it), and the env
+// override still works for bisecting (`PI_EXT_STARTUP=false`).
+const DEFAULT_ON_EXTENSIONS = new Set(["startup"]);
+
 function resolveEnabled(name: string): EnabledResolution {
 	const env = envOverride ?? process.env;
 	const fromEnv = parseEnvFlag(env[envVarName(name)]);
@@ -207,7 +218,12 @@ function resolveEnabled(name: string): EnabledResolution {
 			loadState: globVal ? "loaded" : "disabled-by-config",
 		};
 	}
-	return { enabled: false, source: "default", loadState: "disabled-by-config" };
+	const defaultEnabled = DEFAULT_ON_EXTENSIONS.has(name);
+	return {
+		enabled: defaultEnabled,
+		source: "default",
+		loadState: defaultEnabled ? "loaded" : "disabled-by-config",
+	};
 }
 
 // Methods deferred until after the post-load dep check passes for

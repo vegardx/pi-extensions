@@ -125,6 +125,46 @@ describe("defineExtension — enabled resolution", () => {
 		}
 	});
 
+	it("defaults to ON for startup so /extensions stays reachable", () => {
+		const cwd = mkTempCwd();
+		try {
+			__setDefineExtensionCwd(cwd, agentDir);
+			const factory = vi.fn();
+			defineExtension(
+				{ name: "startup", path: "/p/startup/index.ts" },
+				factory,
+			)(makeMockPi().pi);
+			expect(factory).toHaveBeenCalledTimes(1);
+			const meta = getDeclaredExtension("startup");
+			expect(meta?.enabled).toBe(true);
+			expect(meta?.loadState).toBe("loaded");
+			expect(meta?.enabledSource).toBe("default");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("startup respects an explicit `enabled: false` in project settings", () => {
+		const cwd = mkTempCwd();
+		try {
+			writeProjectSettings(cwd, {
+				extensionConfig: { startup: { enabled: false } },
+			});
+			__setDefineExtensionCwd(cwd, agentDir);
+			const factory = vi.fn();
+			defineExtension(
+				{ name: "startup", path: "/p/startup/index.ts" },
+				factory,
+			)(makeMockPi().pi);
+			expect(factory).not.toHaveBeenCalled();
+			const meta = getDeclaredExtension("startup");
+			expect(meta?.enabled).toBe(false);
+			expect(meta?.enabledSource).toBe("project");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("loads the factory when project settings enable it", () => {
 		const cwd = mkTempCwd();
 		try {
