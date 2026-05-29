@@ -3682,9 +3682,13 @@ export default defineExtension(
 						},
 					);
 					if (!push.ok) {
+						const detail =
+							push.stderr.trim() ||
+							push.stdout.trim() ||
+							`git exited with code ${push.exitCode}`;
 						notify(
 							ctx,
-							`push to origin/${phase.branch} failed: ${push.stderr.trim()} — ` +
+							`push to origin/${phase.branch} failed: ${detail} — ` +
 								`local commits may not be on PR #${existingPr.number}. ` +
 								"Reconciling plan status to in-review anyway; re-run /ship " +
 								"or /sync once the push succeeds to land them on the PR.",
