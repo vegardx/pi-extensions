@@ -154,14 +154,3 @@ export function formatCost(usd: number): string {
 	if (usd < 100) return `$${usd.toFixed(2)}`;
 	return `$${Math.round(usd)}`;
 }
-
-/**
- * Format a `cache <r> r / <w> w` segment for the footer, given a
- * cumulative {@link TokenUsage}. Returns null when both buckets are
- * zero — callers drop the segment entirely so the footer doesn't
- * show `cache 0 r / 0 w` on every fresh session.
- */
-export function formatCacheSegment(usage: TokenUsage): string | null {
-	if (usage.cacheRead === 0 && usage.cacheWrite === 0) return null;
-	return `cache ${formatTokenCount(usage.cacheRead)} r / ${formatTokenCount(usage.cacheWrite)} w`;
-}
