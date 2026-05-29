@@ -16,6 +16,14 @@ describe("sanitiseSuggestion", () => {
 		expect(sanitiseSuggestion("open the PR")).toBe("open the PR");
 	});
 
+	it("uses the first non-empty line when leading lines are blank", () => {
+		expect(sanitiseSuggestion("\nopen the PR")).toBe("open the PR");
+		expect(sanitiseSuggestion("\r\nopen the PR")).toBe("open the PR");
+		expect(sanitiseSuggestion("  \n\t\nopen the PR\nignored")).toBe(
+			"open the PR",
+		);
+	});
+
 	it("trims surrounding whitespace", () => {
 		expect(sanitiseSuggestion("   open the PR   ")).toBe("open the PR");
 	});
