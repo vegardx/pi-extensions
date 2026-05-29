@@ -148,7 +148,13 @@ import {
 	STEERING_CLASSIFIER,
 	shouldInjectSteeringClassifier,
 } from "./plan/steering.js";
-import { deletePlan, loadPlan, planExists, savePlan } from "./plan/storage.js";
+import {
+	deletePlan,
+	loadPlan,
+	planExists,
+	savePlan,
+	withPlanLock,
+} from "./plan/storage.js";
 import {
 	aggregateAssistantUsage,
 	formatCacheSegment,
@@ -3219,6 +3225,78 @@ export default defineExtension(
 					return;
 				}
 
+				// Atomic (re-)claim. The `evaluateClaim` guard above runs before
+				// the git work; a peer session can claim the phase in that window.
+				// Re-check against fresh on-disk state *inside* the plan lock and
+				// bail if it flipped to a live peer — this is what closes the
+				// check-to-claim TOCTOU race that previously let two sessions
+				// drive the same phase (both saw `available`/`stale`, both
+				// claimed, last write won). `apply` runs on both the locked copy
+				// (which the lock persists) and the local reference, so the
+				// downstream seed/launch work sees the committed state without a
+				// reload.
+				const sessionFile = ctx.sessionManager.getSessionFile() ?? undefined;
+				const claimPlan = plan;
+				const claimPhaseRef = phase;
+				type ClaimResult =
+					| { ok: true }
+					| { ok: false; reason: "occupied"; sessionId: string }
+					| { ok: false; reason: "missing" };
+				const claimAtomically = async (
+					apply: (p: PlanPhase) => void,
+				): Promise<boolean> => {
+					const out = await withPlanLock<ClaimResult>(
+						claimPlan.slug,
+						(fresh) => {
+							const fp = fresh.phases.find((p) => p.id === claimPhaseRef.id);
+							if (!fp) {
+								return {
+									result: { ok: false, reason: "missing" } as const,
+									save: false,
+								};
+							}
+							const d = evaluateClaim(fp, selfSessionId);
+							if (d.kind === "occupied" && !takeover) {
+								return {
+									result: {
+										ok: false,
+										reason: "occupied",
+										sessionId: d.sessionId,
+									} as const,
+									save: false,
+								};
+							}
+							apply(fp);
+							fresh.updatedAt = fp.updatedAt;
+							return { ok: true } as const;
+						},
+					);
+					if (out.ok) {
+						apply(claimPhaseRef);
+						claimPlan.updatedAt = claimPhaseRef.updatedAt;
+						return true;
+					}
+					if (out.reason === "occupied") {
+						notify(
+							ctx,
+							`phase \`${claimPhaseRef.id}\` was claimed by session ${out.sessionId} ` +
+								"while the branch was being prepared. Re-run with " +
+								"`/implement --takeover` to adopt it anyway, or pick a " +
+								"different phase with `/implement <phaseId>`.",
+							"warning",
+						);
+					} else {
+						notify(
+							ctx,
+							`phase \`${claimPhaseRef.id}\` vanished from the plan on disk — aborting.`,
+							"warning",
+						);
+					}
+					if (modeState) modeState.stage = "planning";
+					persist();
+					return false;
+				};
+
 				if (branchPlan.kind === "create") {
 					// First-time activation. Hop to the picked base before creating
 					// the phase branch so it forks from the right ancestor; for the
@@ -3257,17 +3335,17 @@ export default defineExtension(
 						);
 						return;
 					}
-					phase.status = "active";
-					phase.worktreePath = ctx.cwd;
-					phase.updatedAt = new Date().toISOString();
-					claimPhase(
-						phase,
-						ctx.sessionManager.getSessionId(),
-						ctx.sessionManager.getSessionFile() ?? undefined,
-						phase.updatedAt,
-					);
-					plan.updatedAt = phase.updatedAt;
-					savePlan(plan);
+					const claimNow = new Date().toISOString();
+					if (
+						!(await claimAtomically((p) => {
+							p.status = "active";
+							p.worktreePath = ctx.cwd;
+							p.updatedAt = claimNow;
+							claimPhase(p, selfSessionId, sessionFile, claimNow);
+						}))
+					) {
+						return;
+					}
 					if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 				} else {
 					// Resume: phase branch exists and holds work. Plain checkout,
@@ -3286,25 +3364,24 @@ export default defineExtension(
 						);
 						return;
 					}
+					// Re-claim on resume: this session is now the live driver,
+					// regardless of whether the prior driver was self, stale, or
+					// just took over. Atomic re-check inside the plan lock guards
+					// against a peer that claimed the phase during the checkout.
+					const now = new Date().toISOString();
+					if (
+						!(await claimAtomically((p) => {
+							claimPhase(p, selfSessionId, sessionFile, now);
+							p.updatedAt = now;
+						}))
+					) {
+						return;
+					}
 					notify(
 						ctx,
 						`resumed phase ${phase.id} on ${branch} (${phase.status})`,
 						"info",
 					);
-					// Re-claim on resume: this session is now the live driver,
-					// regardless of whether the prior driver was self, stale, or
-					// just took over. Persisted on the next savePlan that already
-					// fires further down the lifecycle.
-					const now = new Date().toISOString();
-					claimPhase(
-						phase,
-						ctx.sessionManager.getSessionId(),
-						ctx.sessionManager.getSessionFile() ?? undefined,
-						now,
-					);
-					phase.updatedAt = now;
-					plan.updatedAt = now;
-					savePlan(plan);
 				}
 			} else {
 				// No plan at all — legacy description-derived branch. /implement
