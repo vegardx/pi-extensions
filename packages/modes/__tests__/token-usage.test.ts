@@ -7,7 +7,6 @@ import {
 	type AssistantishEntry,
 	addUsage,
 	aggregateAssistantUsage,
-	formatCacheSegment,
 	formatCost,
 	formatTokenCount,
 	fromAiUsage,
@@ -213,41 +212,5 @@ describe("formatCost", () => {
 
 	it("rounds at three+ digits", () => {
 		expect(formatCost(123.4)).toBe("$123");
-	});
-});
-
-describe("formatCacheSegment", () => {
-	it("returns null when both buckets are zero", () => {
-		expect(formatCacheSegment(zeroUsage())).toBeNull();
-		expect(
-			formatCacheSegment({
-				input: 100,
-				output: 50,
-				cacheRead: 0,
-				cacheWrite: 0,
-			}),
-		).toBeNull();
-	});
-
-	it("formats both buckets when present", () => {
-		expect(
-			formatCacheSegment({
-				input: 0,
-				output: 0,
-				cacheRead: 12345,
-				cacheWrite: 678,
-			}),
-		).toBe("cache 12.3k r / 678 w");
-	});
-
-	it("renders even when only one bucket is non-zero", () => {
-		expect(
-			formatCacheSegment({
-				input: 0,
-				output: 0,
-				cacheRead: 1500,
-				cacheWrite: 0,
-			}),
-		).toBe("cache 1.5k r / 0 w");
 	});
 });

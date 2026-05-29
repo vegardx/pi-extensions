@@ -155,11 +155,7 @@ import {
 	savePlan,
 	withPlanLock,
 } from "./plan/storage.js";
-import {
-	aggregateAssistantUsage,
-	formatCacheSegment,
-	fromAiUsage,
-} from "./plan/token-usage.js";
+import { aggregateAssistantUsage, fromAiUsage } from "./plan/token-usage.js";
 import { registerPlanTools } from "./plan/tools.js";
 import {
 	buildTransitionOptions,
@@ -1385,24 +1381,6 @@ export default defineExtension(
 		}
 
 		/**
-		 * Cumulative cache-token usage across the current session,
-		 * formatted as `cache 12.3k r / 4.5k w` (read first, then write).
-		 * Returns null when both buckets are zero so the footer can drop
-		 * the segment entirely instead of showing `cache 0 r / 0 w`.
-		 *
-		 * Walks every assistant message's `usage` on every render, mirroring
-		 * pi-mono's own interactive footer. Sub-millisecond for typical
-		 * session sizes; if this becomes a hotspot we'd cache via turn_end.
-		 */
-		function formatCacheUsage(ctx: ExtensionContext): string | null {
-			const entries = ctx.sessionManager.getEntries();
-			const usage = aggregateAssistantUsage(
-				entries as unknown as Parameters<typeof aggregateAssistantUsage>[0],
-			);
-			return formatCacheSegment(usage);
-		}
-
-		/**
 		 * Return a pretty model label for the footer. Prefers the model's display
 		 * `name` (e.g. "Claude Sonnet 4.5"), falls back to the id with any
 		 * provider prefix stripped.
@@ -1411,11 +1389,37 @@ export default defineExtension(
 			const model = ctx.model;
 			if (!model) return null;
 			const pretty = (model as { name?: string }).name?.trim();
-			if (pretty) return pretty;
-			const id = model.id;
-			if (!id) return null;
-			const slash = id.lastIndexOf("/");
-			return slash >= 0 ? id.slice(slash + 1) : id;
+			let label: string;
+			if (pretty) {
+				label = pretty;
+			} else {
+				const id = model.id;
+				if (!id) return null;
+				const slash = id.lastIndexOf("/");
+				label = slash >= 0 ? id.slice(slash + 1) : id;
+			}
+			// Trim to the part we care about: drop the vendor prefix
+			// ("Claude Opus 4.8" → "Opus 4.8") and any trailing region /
+			// parenthetical tag ("Opus 4.8 (EU)" → "Opus 4.8"). We append our
+			// own parenthetical (thinking level) below, so a source paren would
+			// only ever be noise here.
+			label = label
+				.replace(/^claude\s+/i, "")
+				.replace(/\s*\([^)]*\)\s*$/, "")
+				.trim();
+			if (!label) return null;
+			// Surface the active reasoning level so the footer answers "which
+			// thinking mode am I in" at a glance. Hidden when off / unknown.
+			let thinking: string | undefined;
+			try {
+				thinking = pi.getThinkingLevel();
+			} catch {
+				thinking = undefined;
+			}
+			if (thinking && thinking !== "off") {
+				label = `${label} (${thinking})`;
+			}
+			return label;
 		}
 
 		function installFooter(ctx: ExtensionContext): void {
@@ -1446,7 +1450,6 @@ export default defineExtension(
 						// Phase status lives in the widget (glyph + active-phase task
 						// list), so we deliberately don't duplicate it here.
 						const ctxLabel = formatContextUsage(ctx);
-						const cacheLabel = formatCacheUsage(ctx);
 						const modelLabel = formatModelLabel(ctx);
 						const usageLabel =
 							[ctxLabel, modelLabel]
@@ -1460,15 +1463,7 @@ export default defineExtension(
 						const candidates: FooterRightCandidate[] = [];
 
 						if (!modeState) {
-							// Richest: cache + ctx/model when available; fall back
-							// to ctx/model alone, then nothing.
-							if (cacheLabel && usageLabel) {
-								const rich = `${cacheLabel} | ${usageLabel}`;
-								candidates.push({
-									visible: rich,
-									styled: theme.fg("muted", rich),
-								});
-							}
+							// ctx/model when available, then nothing.
 							if (usageLabel) {
 								candidates.push({
 									visible: usageLabel,
@@ -1483,15 +1478,6 @@ export default defineExtension(
 						const sep = theme.fg("muted", " | ");
 						const modeText = theme.bold(theme.fg(color, label));
 
-						if (cacheLabel && usageLabel) {
-							candidates.push({
-								visible: `${cacheLabel} | ${usageLabel} | ${label}`,
-								styled:
-									theme.fg("muted", `${cacheLabel} | ${usageLabel}`) +
-									sep +
-									modeText,
-							});
-						}
 						if (usageLabel) {
 							candidates.push({
 								visible: `${usageLabel} | ${label}`,
@@ -4982,6 +4968,13 @@ export default defineExtension(
 		});
 
 		// ---- Session lifecycle ------------------------------------------------
+
+		// Refresh the footer when the reasoning level changes so the model
+		// label's `(level)` suffix stays current. The footer reads the live
+		// value via pi.getThinkingLevel() on render; this just nudges it.
+		pi.on("thinking_level_select", async () => {
+			footerTui?.requestRender();
+		});
 
 		pi.on("session_start", async (_event, ctx) => {
 			hydrateMode(ctx);
