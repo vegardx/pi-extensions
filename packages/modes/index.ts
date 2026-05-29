@@ -3684,7 +3684,10 @@ export default defineExtension(
 					if (!push.ok) {
 						notify(
 							ctx,
-							`push failed before reconcile: ${push.stderr.trim()} — reconciling plan state anyway`,
+							`push to origin/${phase.branch} failed: ${push.stderr.trim()} — ` +
+								`local commits may not be on PR #${existingPr.number}. ` +
+								"Reconciling plan status to in-review anyway; re-run /ship " +
+								"or /sync once the push succeeds to land them on the PR.",
 							"warning",
 						);
 					}
@@ -3705,10 +3708,16 @@ export default defineExtension(
 						: `phase ${phase.id} already in-review (PR #${existingPr.number}${existingPr.url ? ` ${existingPr.url}` : ""}; nothing to do)`,
 					"info",
 				);
-				// Still run the post-ship summary + completion prompt so the
-				// per-phase summary lands and the auto-loop continues.
+				// Still run the post-ship summary so a prior summariser failure
+				// gets a retry on re-ship (writePhaseSummary is a no-op once
+				// phase.summary exists). Only re-run the completion picker when
+				// the reconcile actually changed something — re-shipping an
+				// already-in-review phase with the same PR shouldn't re-pop the
+				// "what next?" picker (and its PR sweep) on every invocation.
 				await writePhaseSummary(ctx, plan, phase);
-				await runCompletionPromptIfDone(ctx, plan);
+				if (drifted) {
+					await runCompletionPromptIfDone(ctx, plan);
+				}
 				return;
 			}
 
@@ -4002,6 +4011,14 @@ export default defineExtension(
 			plan: Plan,
 			phase: PlanPhase,
 		): Promise<void> {
+			// Summary is frozen once written: re-shipping a phase that gained
+			// more commits keeps the original carry-forward text rather than
+			// re-summarising. Intentional — regenerating on every re-ship would
+			// burn a model call each time and churn the downstream seeds for a
+			// phase that's already left the user's hands. The first write
+			// happens at the /ship that opens the PR, which is the meaningful
+			// boundary. A failed first attempt leaves `summary` unset, so the
+			// next /ship retries (see #247).
 			if (phase.summary) return;
 
 			const summarise = await buildSummariseFn(ctx);
