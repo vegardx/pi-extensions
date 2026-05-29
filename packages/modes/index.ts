@@ -2713,29 +2713,6 @@ export default defineExtension(
 			return sanitised;
 		}
 
-		function validatePositiveInt(
-			ctx: ExtensionContext,
-			raw: unknown,
-			key: string,
-			fallback: number,
-		): number {
-			if (raw === undefined) return fallback;
-			if (
-				typeof raw === "number" &&
-				Number.isFinite(raw) &&
-				raw >= 1 &&
-				Number.isInteger(raw)
-			) {
-				return raw;
-			}
-			notify(
-				ctx,
-				`${key}: expected positive integer, got ${JSON.stringify(raw)}; using default ${fallback}`,
-				"warning",
-			);
-			return fallback;
-		}
-
 		/**
 		 * Map a `ResearchOutcome` into the `{ content, details }` shape the
 		 * tool runtime expects. Timeout outcomes also fire a one-shot
