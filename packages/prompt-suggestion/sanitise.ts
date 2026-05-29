@@ -47,7 +47,11 @@ You may optionally call the suggest_next_prompt tool exactly once at the very en
  */
 export function sanitiseSuggestion(raw: string): string | null {
 	if (!raw) return null;
-	let s = raw.split("\n")[0]?.trim() ?? "";
+	let s =
+		raw
+			.split("\n")
+			.map((line) => line.trim())
+			.find((line) => line.length > 0) ?? "";
 	if (!s) return null;
 	if (s.toUpperCase() === "NONE") return null;
 	// biome-ignore lint/suspicious/noControlCharactersInRegex: must strip control chars by design
