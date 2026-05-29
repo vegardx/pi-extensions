@@ -25,7 +25,7 @@
  *
  * ## Opt-in
  *
- * `acquireKeepAwake` checks `extensionConfig.caffeinate.enabled` in
+ * `acquireKeepAwake` checks `extensionConfig.caffeinate.autoAcquire` in
  * settings.json. When unset or `false`, every acquire returns a no-op
  * handle — consumers don't need to special-case the "user hasn't
  * opted in" path. Same for non-darwin platforms.
@@ -61,7 +61,7 @@ export const DEFAULT_FLAGS: readonly string[] = ["-i", "-m"];
  * as immutable; mutators publish a fresh snapshot.
  */
 export interface KeepAwakeState {
-	/** True when `extensionConfig.caffeinate.enabled` is `true` in the layered settings. */
+	/** True when `extensionConfig.caffeinate.autoAcquire` is `true` in the layered settings. */
 	enabled: boolean;
 	/**
 	 * True when the host platform is `darwin`. On other platforms every
@@ -277,11 +277,11 @@ const NOOP_HANDLE: KeepAwakeHandle = Object.freeze({
  *
  * Returns a no-op handle (and never spawns) when:
  *   - the host is not macOS, or
- *   - `extensionConfig.caffeinate.enabled` is not `true` in the
+ *   - `extensionConfig.caffeinate.autoAcquire` is not `true` in the
  *     project/global settings layered view at the time of acquire.
  *
  * The opt-in check happens **once per acquire**, by design. Toggling
- * `enabled` mid-session affects future acquires but does not retro-
+ * `autoAcquire` mid-session affects future acquires but does not retro-
  * actively release existing holders — a long-running consumer that
  * acquired before the toggle keeps the laptop awake until it
  * releases. That's the expected behavior: a flag flip should not
