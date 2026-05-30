@@ -1,7 +1,6 @@
 import {
 	applyExecutionMode,
 	computeActiveTools,
-	EXPLORE_TOOLS,
 	PLAN_ONLY_TOOLS,
 } from "../index.js";
 
@@ -15,8 +14,7 @@ const FULL_TOOLS = [
 	"ls",
 	"websearch",
 	"ask",
-	"research",
-	...EXPLORE_TOOLS,
+	"delegate",
 ];
 
 describe("computeActiveTools — plan mode", () => {
@@ -31,11 +29,12 @@ describe("computeActiveTools — plan mode", () => {
 		expect(tools).toContain("plan");
 	});
 
-	it("contains all PLAN_ONLY_TOOLS entries", () => {
+	it("contains all PLAN_ONLY_TOOLS entries (incl. delegate)", () => {
 		const tools = computeActiveTools("plan", FULL_TOOLS);
 		for (const t of PLAN_ONLY_TOOLS) {
 			expect(tools).toContain(t);
 		}
+		expect(tools).toContain("delegate");
 	});
 });
 
@@ -46,21 +45,19 @@ describe("computeActiveTools — auto/ask/hack mode", () => {
 		expect(tools).toContain("edit");
 	});
 
-	it("strips explore_* tools", () => {
+	it("keeps delegate available in non-plan modes (researcher target)", () => {
 		const tools = computeActiveTools("auto", FULL_TOOLS);
-		for (const t of EXPLORE_TOOLS) {
-			expect(tools).not.toContain(t);
-		}
+		expect(tools).toContain("delegate");
 	});
 
-	it("always includes phase/task/plan and research even if absent from priorTools", () => {
+	it("always includes phase/task/plan and delegate even if absent from priorTools", () => {
 		// Simulate priorTools that pre-date plan support.
 		const priorWithout = ["read", "bash", "write", "edit"];
 		const tools = computeActiveTools("ask", priorWithout);
 		expect(tools).toContain("phase");
 		expect(tools).toContain("task");
 		expect(tools).toContain("plan");
-		expect(tools).toContain("research");
+		expect(tools).toContain("delegate");
 	});
 
 	it("does not duplicate phase/task/plan when already in priorTools", () => {
@@ -72,13 +69,16 @@ describe("computeActiveTools — auto/ask/hack mode", () => {
 		expect(count("plan")).toBe(1);
 	});
 
-	it("hack mode: same as auto — write/edit present, explore_* absent", () => {
+	it("does not duplicate delegate when already in priorTools", () => {
+		const tools = computeActiveTools("auto", FULL_TOOLS);
+		expect(tools.filter((t) => t === "delegate").length).toBe(1);
+	});
+
+	it("hack mode: same as auto — write/edit present, delegate present", () => {
 		const tools = computeActiveTools("hack", FULL_TOOLS);
 		expect(tools).toContain("write");
 		expect(tools).toContain("edit");
-		for (const t of EXPLORE_TOOLS) {
-			expect(tools).not.toContain(t);
-		}
+		expect(tools).toContain("delegate");
 	});
 });
 
@@ -98,7 +98,6 @@ describe("plan → executing transition (regression)", () => {
 			"ls",
 			"websearch",
 			"ask",
-			"research",
 		];
 		const tools = computeActiveTools("auto", priorToolsCapturedBeforePlanMode);
 		expect(tools).toContain("write");
@@ -120,8 +119,7 @@ const FULL_TOOLS_FOR_EXEC = [
 	"ls",
 	"websearch",
 	"ask",
-	"research",
-	...EXPLORE_TOOLS,
+	"delegate",
 ];
 
 describe("applyExecutionMode", () => {
@@ -151,14 +149,12 @@ describe("applyExecutionMode", () => {
 		expect(state.mode).toBe("ask");
 	});
 
-	it("strips explore_* tools from the active set", () => {
+	it("keeps delegate in the active set", () => {
 		const state = { mode: "plan", priorTools: FULL_TOOLS_FOR_EXEC };
 		const spy = vi.fn();
 		applyExecutionMode(state, "auto", spy);
 		const [tools] = spy.mock.calls[0] as [string[]];
-		for (const t of EXPLORE_TOOLS) {
-			expect(tools).not.toContain(t);
-		}
+		expect(tools).toContain("delegate");
 	});
 
 	it("works when transitioning from a non-plan mode (e.g. /implement from ask)", () => {

@@ -7,7 +7,7 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution.
 | Mode | Tools | Bash | Confirmation | Plan needed | Compaction |
 |------|------|------|--------------|-------------|------------|
 | `hack` | all | all | none — full tool access | no | none — user owns context length |
-| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `phase`, `task`, `plan`, `explore_ask`, `explore_check`, `explore_wait`, `research`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
+| `plan` | read-only (`read`, `bash`, `grep`, `find`, `ls`, `websearch`, `webfetch`, `phase`, `task`, `plan`, `delegate`) | blocked if write-capable | none — writes are refused outright | — (creates one) | — |
 | `ask` | all | all | none during execution; the post-exec picker pauses you at the commit/ship boundary | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 | `auto` | all | all | none — fully autonomous; commits, ships, advances phases without prompting | yes (works the active phase) | three-tier (plan→implement, mid-phase, phase-end) |
 
@@ -516,28 +516,28 @@ The agent uses three tools to manage the plan:
 
 State persists in `~/.pi/plans/<slug>/plan.json`.
 
-### Async explore (plan mode)
+### Delegation (`delegate`)
 
-Plan mode delegates codebase questions to a persistent sub-agent through a
-three-tool **mailbox** rather than a single blocking call. The orchestrator
-fires questions, keeps planning, then drains answers when ready. Slow
-turns no longer stall the main agent and never wipe accumulated context.
+Both web research and codebase questions are delegated to specialist
+sub-agents through a single **blocking** tool. The sub-agent's raw
+results (search pages, file dumps) never enter the caller's context —
+only the distilled, size-capped answer comes back.
 
-| Tool | Blocking? | Returns |
-|------|-----------|---------|
-| `explore_ask({ question })` | no | `{ id, status: "queued" }` — fire and forget |
-| `explore_check({ id?, drain? })` | no | `{ tasks[], notifications[] }` — drain by default |
-| `explore_wait({ id, timeoutMs? })` | yes (opt-in) | terminal `Task` record |
+| Call | Target | Available in |
+|------|--------|--------------|
+| `delegate({ to: "researcher", question, timeoutMs? })` | web research | plan / auto / ask |
+| `delegate({ to: "explorer", question })` | codebase questions | plan mode only |
 
-The sub-agent itself can push unsolicited messages back via a
-`notify({ text, kind? })` tool registered inside its own process — calls
-are observed via the RPC event stream and surface on the next
-`explore_check`. Use this when the sub-agent uncovers something the
-orchestrator should know *before* the answer is finished.
+`delegate` blocks until the answer returns; correlation is the return
+value, not a polled mailbox. Emit several `delegate` calls in one turn
+to run them concurrently (pi executes a turn's tool calls in parallel).
+The answer is capped at `extensionConfig.modes.delegate.maxAnswerChars`
+(default 6000) so delegation stays context-slimming.
 
-A `wait` timeout returns a synthetic terminal record but does **not**
-kill the sub-agent: the next `explore_check` / `explore_wait` may still
-observe the eventual completion.
+Internally a pool of ephemeral specialists services these calls; when a
+pool is at capacity a `delegate` call simply waits a little longer. The
+queue and scaling are an implementation detail — the caller only ever
+sees a function that returns an answer.
 
 ## Plan-mode write protection
 
@@ -579,8 +579,9 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
 | `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
-| `researchTimeoutMs` | `90000` | Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
-| `explore.parallelism` | `1` | Max in-flight `explore_ask` jobs across the seed worker and ephemeral children combined. `1` keeps the single-FIFO behaviour from before #159b. Increase to fan out unrelated questions in parallel. Non-integer / non-positive values fall back to the default with a warning. |
+| `researchTimeoutMs` | `90000` | Hard timeout (ms) for the `researcher` delegation (`delegate({ to: "researcher" })`) sub-agent call. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
+| `delegate.maxAnswerChars` | `6000` | Hard cap on a delegated answer's size before it crosses back into the caller's context. Keeps `delegate` context-slimming. |
+| `explore.parallelism` | `1` | Max in-flight `explorer` delegations across the seed worker and ephemeral children combined. `1` keeps the single-FIFO behaviour from before #159b. Increase to fan out unrelated questions in parallel. Non-integer / non-positive values fall back to the default with a warning. |
 | `explore.queueDepthThreshold` | `4` | When the seed FIFO has this many queued jobs, `related: true` asks burst-route to children even when the seed is busy — better to fan out and finish than wait. Only meaningful when `explore.parallelism > 1`. |
 
 > **Autoreview is off by default.** The pipeline (`/review`, post-execution batch) runs end-to-end but the surrounding triage and feedback flow needs more design work before it's on for everyone — see the `TODO(autoreview)` block on `runBatchReview` for the open issues. Opt in per-repo by setting `extensionConfig.modes.review.enable: true`.
