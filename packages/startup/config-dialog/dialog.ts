@@ -1,21 +1,25 @@
 /**
- * Interactive `/config` dialog — a three-page panel over the settings
+ * Interactive `/config` dialog — a four-page panel over the settings
  * this monorepo cares about:
  *
  *   - **Extensions**: flip `extensionConfig.<name>.enabled` per scope.
  *   - **Models**: set `backgroundModels.<set>.<tier>` per scope via a
  *     filterable model picker.
+ *   - **Settings**: edit every declared `extensionConfig.<ext>.<key>`
+ *     knob per scope — booleans cycle, enum/model open a picker,
+ *     string/number/string[] use a text-input overlay.
  *   - **Context**: read-only list of the AGENTS.md / CLAUDE.md files
  *     pi loads for this session.
  *
- * Pages share the project / global scope tabs (Extensions and Models
- * write to the same two settings.json files; Context is scope-agnostic
- * and read-only). Every write lands in settings.json immediately —
- * Esc / Ctrl+C don't roll back.
+ * Pages share the project / global scope tabs (Extensions, Models and
+ * Settings write to the same two settings.json files; Context is
+ * scope-agnostic and read-only). Every write lands in settings.json
+ * immediately — Esc / Ctrl+C don't roll back.
  *
  * Render and state are split: `config-state.ts`, `extensions-state.ts`,
- * and `models-state.ts` hold the pure, exhaustively-tested models; this
- * file owns the TUI bindings (key handling, layout, theme calls).
+ * `models-state.ts`, and `knobs-state.ts` hold the pure, exhaustively-
+ * tested models; this file owns the TUI bindings (key handling, layout,
+ * theme calls).
  */
 
 import type { ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
@@ -33,7 +37,7 @@ import {
 } from "@vegardx/pi-extensions-shared/settings-writer.js";
 import type { ContextFileInfo } from "../index.js";
 
-import { buildRows, readModelRows } from "./build-rows.js";
+import { buildRows, readKnobRows, readModelRows } from "./build-rows.js";
 import {
 	atTopRow,
 	type ConfigPage,
@@ -56,6 +60,31 @@ import {
 	resetCurrent,
 	type ScopedValue,
 } from "./extensions-state.js";
+import {
+	closeOverlay as closeKnobOverlay,
+	currentKnob,
+	editCurrent as editKnob,
+	effectiveKnob,
+	inputAppend,
+	inputBackspace,
+	inputCommit,
+	inputMoveLeft,
+	inputMoveRight,
+	isModelKey,
+	type KnobRow,
+	type KnobsState,
+	type ScopedValue as KnobValue,
+	pickerAppend as knobPickerAppend,
+	pickerBackspace as knobPickerBackspace,
+	pickerMoveDown as knobPickerMoveDown,
+	pickerMoveUp as knobPickerMoveUp,
+	pickerOptions as knobPickerOptions,
+	pickerSelect as knobPickerSelect,
+	scopeValue as knobScopeValue,
+	knobsMoveDown,
+	knobsMoveUp,
+	resetCurrent as resetKnob,
+} from "./knobs-state.js";
 import {
 	closePicker,
 	currentModelRow,
@@ -106,11 +135,17 @@ export async function showConfigDialog(
 		declared: opts.declared,
 	});
 	const modelRows = readModelRows({ cwd: ctx.cwd, agentDir: opts.agentDir });
+	const knobRows = readKnobRows({
+		cwd: ctx.cwd,
+		agentDir: opts.agentDir,
+		declared: opts.declared,
+	});
 
 	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 		const state = createConfigState({
 			extensionRows,
 			modelRows,
+			knobRows,
 			availableModels: opts.availableModels,
 			contextFiles: opts.contextFiles,
 			page: opts.initialPage,
@@ -157,6 +192,64 @@ export async function showConfigDialog(
 			}
 		}
 
+		function persistKnob(row: KnobRow): void {
+			const value = knobScopeValue(row, state.scope);
+			try {
+				writeExtensionConfigKey(
+					state.scope,
+					ctx.cwd,
+					row.extName,
+					row.key,
+					value as boolean | string | number | string[] | null,
+					opts.agentDir,
+				);
+			} catch (err) {
+				notifyError(ctx, state.scope, err);
+			}
+		}
+
+		function handleKnobOverlayInput(data: string): void {
+			const ks = state.knobs;
+			const overlay = ks.overlay;
+			if (!overlay) return;
+			if (matchesKey(data, Key.escape)) {
+				if (closeKnobOverlay(ks)) refresh();
+				return;
+			}
+			if (overlay.kind === "picker") {
+				if (matchesKey(data, Key.up)) {
+					if (knobPickerMoveUp(ks)) refresh();
+				} else if (matchesKey(data, Key.down)) {
+					if (knobPickerMoveDown(ks)) refresh();
+				} else if (matchesKey(data, Key.backspace)) {
+					if (knobPickerBackspace(ks)) refresh();
+				} else if (matchesKey(data, Key.enter)) {
+					const sel = knobPickerSelect(ks, state.scope);
+					if (sel) persistKnob(sel.row);
+					refresh();
+				} else {
+					const ch = printableChar(data);
+					if (ch && knobPickerAppend(ks, ch)) refresh();
+				}
+				return;
+			}
+			// text input overlay
+			if (matchesKey(data, Key.left)) {
+				if (inputMoveLeft(ks)) refresh();
+			} else if (matchesKey(data, Key.right)) {
+				if (inputMoveRight(ks)) refresh();
+			} else if (matchesKey(data, Key.backspace)) {
+				if (inputBackspace(ks)) refresh();
+			} else if (matchesKey(data, Key.enter)) {
+				const res = inputCommit(ks, state.scope);
+				if (res?.type === "set") persistKnob(res.row);
+				refresh();
+			} else {
+				const ch = printableChar(data);
+				if (ch && inputAppend(ks, ch)) refresh();
+			}
+		}
+
 		function handlePickerInput(data: string): void {
 			const ms = state.models;
 			if (matchesKey(data, Key.escape)) {
@@ -192,6 +285,10 @@ export async function showConfigDialog(
 			// can type a filter freely.
 			if (state.page === "models" && state.models.picker) {
 				handlePickerInput(data);
+				return;
+			}
+			if (state.page === "settings" && state.knobs.overlay) {
+				handleKnobOverlayInput(data);
 				return;
 			}
 
@@ -291,6 +388,21 @@ export async function showConfigDialog(
 					}
 					return;
 				}
+			} else if (state.page === "settings") {
+				if (matchesKey(data, Key.enter) || data === " ") {
+					const outcome = editKnob(state.knobs, state.scope);
+					if (outcome.type === "cycled") persistKnob(outcome.row);
+					refresh();
+					return;
+				}
+				if (data === "r") {
+					const res = resetKnob(state.knobs, state.scope);
+					if (res) {
+						persistKnob(res.row);
+						refresh();
+					}
+					return;
+				}
 			}
 		}
 
@@ -323,6 +435,18 @@ export async function showConfigDialog(
 				} else {
 					renderModelsTable(state, theme, width, add);
 				}
+			} else if (state.page === "settings") {
+				if (state.knobs.overlay?.kind === "picker") {
+					renderKnobPicker(state.knobs, theme, width, add);
+				} else {
+					renderKnobsTable(state, theme, width, add);
+					lines.push("");
+					if (state.knobs.overlay?.kind === "input") {
+						renderKnobInput(state.knobs, theme, width, add);
+					} else {
+						renderKnobDetail(state.knobs, theme, width, add);
+					}
+				}
 			} else {
 				renderContext(state.context.files, theme, width, add);
 			}
@@ -354,12 +478,14 @@ export async function showConfigDialog(
 function pageMoveUp(state: ConfigState): boolean {
 	if (state.page === "extensions") return moveUp(state.extensions);
 	if (state.page === "models") return modelsMoveUp(state.models);
+	if (state.page === "settings") return knobsMoveUp(state.knobs);
 	return contextMoveUp(state);
 }
 
 function pageMoveDown(state: ConfigState): boolean {
 	if (state.page === "extensions") return moveDown(state.extensions);
 	if (state.page === "models") return modelsMoveDown(state.models);
+	if (state.page === "settings") return knobsMoveDown(state.knobs);
 	return contextMoveDown(state);
 }
 
@@ -445,12 +571,10 @@ function renderPageTabs(
 		return theme.fg("muted", text);
 	};
 	const hint = menuFocused ? "←/→ switch page · ↓ enter" : "↑ to focus menu";
+	const dot = theme.fg("dim", "·");
 	add(
 		truncateToWidth(
-			` ${tab("Extensions", "extensions")} ${theme.fg("dim", "·")} ${tab(
-				"Models",
-				"models",
-			)} ${theme.fg("dim", "·")} ${tab("Context", "context")}  ${theme.fg(
+			` ${tab("Extensions", "extensions")} ${dot} ${tab("Models", "models")} ${dot} ${tab("Settings", "settings")} ${dot} ${tab("Context", "context")}  ${theme.fg(
 				"dim",
 				hint,
 			)}`,
@@ -468,6 +592,16 @@ function renderFooter(
 	let help: string;
 	if (state.page === "models" && state.models.picker) {
 		help = " type to filter • ↑↓ select • enter set • esc cancel";
+	} else if (
+		state.page === "settings" &&
+		state.knobs.overlay?.kind === "picker"
+	) {
+		help = " type to filter • ↑↓ select • enter set • esc cancel";
+	} else if (
+		state.page === "settings" &&
+		state.knobs.overlay?.kind === "input"
+	) {
+		help = " type a value • ←/→ caret • enter commit • esc cancel";
 	} else if (state.focus === "menu") {
 		help = " ←/→ switch page • ↓ enter list • q/Esc close";
 	} else if (state.page === "extensions") {
@@ -476,6 +610,9 @@ function renderFooter(
 	} else if (state.page === "models") {
 		help =
 			" ↑↓ rows • ←/→ project/global • enter pick model • r clear • Tab page • q/Esc close";
+	} else if (state.page === "settings") {
+		help =
+			" ↑↓ rows • ←/→ project/global • space/enter edit • r reset • Tab page • q/Esc close";
 	} else {
 		help = " ↑↓ scroll • Tab page • q/Esc close";
 	}
@@ -579,22 +716,22 @@ function scopedColour(value: ScopedValue): "success" | "warning" | "dim" {
 }
 
 function formatScoped(value: ScopedValue): string {
-	if (value === true) return "● on";
-	if (value === false) return "○ off";
-	return "—";
+	if (value === true) return "true";
+	if (value === false) return "false";
+	return "undef";
 }
 
 function effectiveCell(theme: Theme, row: ExtensionRow): string {
-	const symbol = row.effective
-		? theme.fg("success", "● enabled")
-		: theme.fg("dim", "○ disabled");
-	return `${symbol}${theme.fg("muted", ` (${row.effectiveSource})`)}`;
+	const label = row.effective
+		? theme.fg("success", "true")
+		: theme.fg("dim", "false");
+	return `${label}${theme.fg("muted", ` (${row.effectiveSource})`)}`;
 }
 
 function effectiveDescription(theme: Theme, row: ExtensionRow): string {
 	const s = row.effective
-		? theme.fg("success", "enabled")
-		: theme.fg("dim", "disabled");
+		? theme.fg("success", "true")
+		: theme.fg("dim", "false");
 	return `${s} ${theme.fg("muted", `(via ${row.effectiveSource})`)}`;
 }
 
@@ -693,6 +830,179 @@ function renderPicker(
 	shown.forEach((opt, idx) => {
 		const i = start + idx;
 		const selected = i === cursor;
+		const marker = selected ? theme.fg("accent", "▸") : " ";
+		const body = selected
+			? theme.bg("selectedBg", theme.fg("text", ` ${pad(opt, width - 6)}`))
+			: theme.fg("text", ` ${opt}`);
+		add(truncateToWidth(` ${marker}${body}`, width));
+	});
+	if (opts.length > shown.length) {
+		add(
+			`  ${theme.fg("dim", `… ${opts.length - shown.length} more (type to filter)`)}`,
+		);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Render helpers — Settings page
+// ---------------------------------------------------------------------------
+
+function formatKnobValue(value: KnobValue): string {
+	if (value === null) return "—";
+	if (typeof value === "boolean") return value ? "true" : "false";
+	if (Array.isArray(value)) return `[${value.join(", ")}]`;
+	return String(value);
+}
+
+function knobColour(value: KnobValue): "success" | "warning" | "dim" {
+	if (value === null) return "dim";
+	if (value === false) return "warning";
+	return "success";
+}
+
+function knobCell(theme: Theme, value: KnobValue, highlight: boolean): string {
+	const text = pad(formatKnobValue(value), 16);
+	if (highlight)
+		return theme.bg("selectedBg", theme.fg(knobColour(value), text));
+	return theme.fg(knobColour(value), text);
+}
+
+function renderKnobsTable(
+	state: ConfigState,
+	theme: Theme,
+	width: number,
+	add: (s: string) => void,
+): void {
+	const ks = state.knobs;
+	const bodyFocused = state.focus === "body";
+	if (ks.rows.length === 0) {
+		add(`  ${theme.fg("dim", "(no configurable knobs declared)")}`);
+		return;
+	}
+	const keyWidth = Math.min(
+		30,
+		Math.max(8, ...ks.rows.map((r) => visibleWidth(r.key))),
+	);
+	const header = `    ${pad("key", keyWidth)}  ${pad("project", 16)}  ${pad("global", 16)}  effective`;
+	let lastExt: string | undefined;
+	for (let i = 0; i < ks.rows.length; i++) {
+		const row = ks.rows[i];
+		if (row.extName !== lastExt) {
+			add(theme.fg("accent", `  ${row.extName}`));
+			add(theme.fg("muted", header));
+			lastExt = row.extName;
+		}
+		const selected = bodyFocused && i === ks.cursor;
+		const cursor = selected ? theme.fg("accent", "▸") : " ";
+		const key = pad(row.key, keyWidth);
+		const projectCell = knobCell(
+			theme,
+			row.project,
+			state.scope === "project" && selected,
+		);
+		const globalCell = knobCell(
+			theme,
+			row.global,
+			state.scope === "global" && selected,
+		);
+		const eff = effectiveKnob(row);
+		const effText =
+			eff.value === null
+				? theme.fg("dim", "—")
+				: `${theme.fg("text", formatKnobValue(eff.value))} ${theme.fg(
+						"muted",
+						`(${eff.source})`,
+					)}`;
+		add(
+			truncateToWidth(
+				` ${cursor} ${theme.fg("text", key)}  ${projectCell}  ${globalCell}  ${effText}`,
+				width,
+			),
+		);
+	}
+}
+
+function renderKnobDetail(
+	ks: KnobsState,
+	theme: Theme,
+	width: number,
+	add: (s: string) => void,
+): void {
+	const row = currentKnob(ks);
+	if (!row) return;
+	add(`  ${theme.fg("accent", row.key)} ${theme.fg("muted", `· ${row.type}`)}`);
+	for (const line of wrap(row.doc, width - 4)) {
+		add(`  ${theme.fg("muted", line)}`);
+	}
+	if ((row.type === "enum" || row.type === "string[]") && row.enumValues) {
+		add(`  ${theme.fg("muted", "choices:")}   ${row.enumValues.join(", ")}`);
+	} else if (isModelKey(row.key)) {
+		add(
+			`  ${theme.fg("muted", "choices:")}   ${theme.fg("dim", `${ks.availableModels.length} configured models (filterable)`)}`,
+		);
+	}
+	if (row.default !== undefined) {
+		add(
+			`  ${theme.fg("muted", "default:")}   ${formatKnobValue(row.default as KnobValue)}`,
+		);
+	}
+	const eff = effectiveKnob(row);
+	add(
+		`  ${theme.fg("muted", "effective:")} ${formatKnobValue(eff.value)} ${theme.fg("muted", `(via ${eff.source})`)}`,
+	);
+}
+
+function renderKnobInput(
+	ks: KnobsState,
+	theme: Theme,
+	width: number,
+	add: (s: string) => void,
+): void {
+	if (ks.overlay?.kind !== "input") return;
+	const o = ks.overlay;
+	const row = ks.rows[o.rowIndex];
+	const label = row ? `${row.extName}.${row.key}` : "?";
+	add(
+		`  ${theme.fg("accent", `Set ${label}`)} ${theme.fg("muted", `(${row?.type ?? ""})`)}`,
+	);
+	if (row?.type === "string[]") {
+		add(`  ${theme.fg("dim", "comma/space-separated; empty = []")}`);
+	}
+	const before = o.buffer.slice(0, o.caret);
+	const after = o.buffer.slice(o.caret);
+	add(
+		truncateToWidth(
+			`  ${theme.fg("muted", "value:")} ${theme.fg("text", before)}${theme.fg("accent", "▏")}${theme.fg("text", after)}`,
+			width,
+		),
+	);
+	if (o.error) add(`  ${theme.fg("warning", o.error)}`);
+}
+
+function renderKnobPicker(
+	ks: KnobsState,
+	theme: Theme,
+	width: number,
+	add: (s: string) => void,
+): void {
+	if (ks.overlay?.kind !== "picker") return;
+	const o = ks.overlay;
+	const row = ks.rows[o.rowIndex];
+	const label = row ? `${row.extName}.${row.key}` : "?";
+	add(`  ${theme.fg("accent", `Set ${label}`)}`);
+	add(
+		`  ${theme.fg("muted", "filter:")} ${theme.fg("text", o.query || " ")}${theme.fg("dim", "▏")}`,
+	);
+	const opts = knobPickerOptions(ks);
+	const MAX = 12;
+	const start = Math.min(
+		Math.max(0, o.cursor - Math.floor(MAX / 2)),
+		Math.max(0, opts.length - MAX),
+	);
+	const shown = opts.slice(start, start + MAX);
+	shown.forEach((opt, idx) => {
+		const i = start + idx;
+		const selected = i === o.cursor;
 		const marker = selected ? theme.fg("accent", "▸") : " ";
 		const body = selected
 			? theme.bg("selectedBg", theme.fg("text", ` ${pad(opt, width - 6)}`))

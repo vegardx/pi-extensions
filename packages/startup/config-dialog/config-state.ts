@@ -27,12 +27,17 @@ import {
 	setScope as setExtensionsScope,
 } from "./extensions-state.js";
 import {
+	createKnobsState,
+	type KnobRow,
+	type KnobsState,
+} from "./knobs-state.js";
+import {
 	createModelsState,
 	type ModelRow,
 	type ModelsState,
 } from "./models-state.js";
 
-export type ConfigPage = "extensions" | "models" | "context";
+export type ConfigPage = "extensions" | "models" | "settings" | "context";
 
 /**
  * Which zone owns keyboard input. The page menu (`menu`) and the table
@@ -47,6 +52,7 @@ export type ConfigFocus = "menu" | "body";
 export const PAGE_ORDER: readonly ConfigPage[] = [
 	"extensions",
 	"models",
+	"settings",
 	"context",
 ];
 
@@ -61,12 +67,14 @@ export interface ConfigState {
 	scope: DialogScope;
 	extensions: ExtensionsState;
 	models: ModelsState;
+	knobs: KnobsState;
 	context: ContextPageState;
 }
 
 export interface ConfigInit {
 	extensionRows: ExtensionRow[];
 	modelRows: ModelRow[];
+	knobRows?: KnobRow[];
 	availableModels: string[];
 	contextFiles: ContextFileInfo[];
 	page?: ConfigPage;
@@ -85,6 +93,10 @@ export function createConfigState(init: ConfigInit): ConfigState {
 		models: createModelsState({
 			rows: init.modelRows,
 			available: init.availableModels,
+		}),
+		knobs: createKnobsState({
+			rows: init.knobRows ?? [],
+			availableModels: init.availableModels,
 		}),
 		context: {
 			files: init.contextFiles,
@@ -131,7 +143,7 @@ export function setConfigScope(
 
 /** Whether the active page exposes the project / global scope tabs. */
 export function pageUsesScope(page: ConfigPage): boolean {
-	return page === "extensions" || page === "models";
+	return page === "extensions" || page === "models" || page === "settings";
 }
 
 /** Move keyboard focus to the page menu. Returns false if already there. */
@@ -156,5 +168,6 @@ export function focusBody(state: ConfigState): boolean {
 export function atTopRow(state: ConfigState): boolean {
 	if (state.page === "extensions") return state.extensions.cursor <= 0;
 	if (state.page === "models") return state.models.cursor <= 0;
+	if (state.page === "settings") return state.knobs.cursor <= 0;
 	return state.context.cursor <= 0;
 }

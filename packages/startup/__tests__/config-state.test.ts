@@ -69,10 +69,12 @@ describe("config-state — pages", () => {
 		expect(s.page).toBe("extensions");
 	});
 
-	it("nextPage cycles extensions → models → context → extensions", () => {
+	it("nextPage cycles extensions → models → settings → context → extensions", () => {
 		const s = createConfigState(init());
 		nextPage(s);
 		expect(s.page).toBe("models");
+		nextPage(s);
+		expect(s.page).toBe("settings");
 		nextPage(s);
 		expect(s.page).toBe("context");
 		nextPage(s);
@@ -83,6 +85,8 @@ describe("config-state — pages", () => {
 		const s = createConfigState(init());
 		prevPage(s);
 		expect(s.page).toBe("context");
+		prevPage(s);
+		expect(s.page).toBe("settings");
 		prevPage(s);
 		expect(s.page).toBe("models");
 	});
@@ -96,6 +100,7 @@ describe("config-state — pages", () => {
 	it("pageUsesScope is true for extensions/models, false for context", () => {
 		expect(pageUsesScope("extensions")).toBe(true);
 		expect(pageUsesScope("models")).toBe(true);
+		expect(pageUsesScope("settings")).toBe(true);
 		expect(pageUsesScope("context")).toBe(false);
 	});
 });

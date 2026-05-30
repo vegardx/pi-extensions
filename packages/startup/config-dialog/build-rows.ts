@@ -27,6 +27,12 @@ import type {
 	ExtensionRow,
 	ScopedValue,
 } from "./extensions-state.js";
+import {
+	buildKnobRows,
+	type KnobRow,
+	type KnobSchema,
+	type ScopedValue as KnobValue,
+} from "./knobs-state.js";
 import { buildModelRows, type ModelRow } from "./models-state.js";
 
 /**
@@ -102,4 +108,54 @@ export function readModelRows(opts: {
 		);
 		return value ?? null;
 	});
+}
+
+/**
+ * Coerce a raw settings value to a knob `ScopedValue`. Missing/null →
+ * `null` (unset); primitives and string arrays pass through; anything
+ * else (a malformed shape) is treated as unset.
+ */
+function coerceKnobValue(raw: unknown): KnobValue {
+	if (raw === undefined || raw === null) return null;
+	if (
+		typeof raw === "string" ||
+		typeof raw === "number" ||
+		typeof raw === "boolean"
+	) {
+		return raw;
+	}
+	if (Array.isArray(raw) && raw.every((v) => typeof v === "string")) {
+		return raw as string[];
+	}
+	return null;
+}
+
+/**
+ * Build the knob rows for the Settings page: every declared extension's
+ * `configSchema` knobs, joined against the raw project + global values.
+ * Extensions are sorted by name; within each, `declareExtension` already
+ * sorted keys. Extensions with no schema contribute no rows.
+ */
+export function readKnobRows(opts: BuildRowsOptions): KnobRow[] {
+	const schemas: KnobSchema[] = [];
+	const sorted = [...opts.declared].sort((a, b) =>
+		a.name.localeCompare(b.name),
+	);
+	for (const meta of sorted) {
+		for (const k of meta.configSchema ?? []) {
+			schemas.push({
+				extName: meta.name,
+				key: k.key,
+				type: k.type,
+				enumValues: k.enumValues,
+				default: k.default,
+				doc: k.doc,
+			});
+		}
+	}
+	return buildKnobRows(schemas, (extName, key, scope) =>
+		coerceKnobValue(
+			readExtensionConfigKey(scope, opts.cwd, extName, key, opts.agentDir),
+		),
+	);
 }
