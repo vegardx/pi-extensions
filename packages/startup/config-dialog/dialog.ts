@@ -35,9 +35,12 @@ import type { ContextFileInfo } from "../index.js";
 
 import { buildRows, readModelRows } from "./build-rows.js";
 import {
+	atTopRow,
 	type ConfigPage,
 	type ConfigState,
 	createConfigState,
+	focusBody,
+	focusMenu,
 	nextPage,
 	pageUsesScope,
 	prevPage,
@@ -185,8 +188,8 @@ export async function showConfigDialog(
 		}
 
 		function handleInput(data: string): void {
-			// Picker overlay swallows all input (including p/g/q) so the
-			// user can type a filter freely.
+			// Picker overlay swallows all input (including q) so the user
+			// can type a filter freely.
 			if (state.page === "models" && state.models.picker) {
 				handlePickerInput(data);
 				return;
@@ -196,6 +199,9 @@ export async function showConfigDialog(
 				done(undefined);
 				return;
 			}
+
+			// Tab/Shift+Tab switch pages from either zone (kept as aliases
+			// for the arrow-driven menu navigation).
 			if (matchesKey(data, Key.tab)) {
 				nextPage(state);
 				refresh();
@@ -207,24 +213,55 @@ export async function showConfigDialog(
 				return;
 			}
 
-			if (pageUsesScope(state.page)) {
-				if (matchesKey(data, Key.left) || data === "p") {
-					if (setConfigScope(state, "project")) refresh();
-					return;
-				}
-				if (matchesKey(data, Key.right) || data === "g") {
-					if (setConfigScope(state, "global")) refresh();
-					return;
-				}
+			if (state.focus === "menu") {
+				handleMenuInput(data);
+				return;
 			}
+			handleBodyInput(data);
+		}
 
+		// Menu zone: arrows switch page, down/enter drop into the body.
+		function handleMenuInput(data: string): void {
+			if (matchesKey(data, Key.left)) {
+				prevPage(state);
+				refresh();
+				return;
+			}
+			if (matchesKey(data, Key.right)) {
+				nextPage(state);
+				refresh();
+				return;
+			}
+			if (matchesKey(data, Key.down) || matchesKey(data, Key.enter)) {
+				if (focusBody(state)) refresh();
+			}
+		}
+
+		// Body zone: up/down move rows (up off the top row pops to the
+		// menu), left/right flip the project/global column.
+		function handleBodyInput(data: string): void {
 			if (matchesKey(data, Key.up)) {
-				if (pageMoveUp(state)) refresh();
+				if (atTopRow(state)) {
+					if (focusMenu(state)) refresh();
+				} else if (pageMoveUp(state)) {
+					refresh();
+				}
 				return;
 			}
 			if (matchesKey(data, Key.down)) {
 				if (pageMoveDown(state)) refresh();
 				return;
+			}
+
+			if (pageUsesScope(state.page)) {
+				if (matchesKey(data, Key.left)) {
+					if (setConfigScope(state, "project")) refresh();
+					return;
+				}
+				if (matchesKey(data, Key.right)) {
+					if (setConfigScope(state, "global")) refresh();
+					return;
+				}
 			}
 
 			if (state.page === "extensions") {
@@ -269,13 +306,15 @@ export async function showConfigDialog(
 			lines.push("");
 			renderPageTabs(state, theme, width, add);
 			lines.push("");
-			if (pageUsesScope(state.page)) {
-				renderScopeTabs(state, theme, width, add);
-				lines.push("");
-			}
 
 			if (state.page === "extensions") {
-				renderExtensionsTable(state.extensions, theme, width, add);
+				renderExtensionsTable(
+					state.extensions,
+					state.focus === "body",
+					theme,
+					width,
+					add,
+				);
 				lines.push("");
 				renderExtensionDetail(state.extensions, theme, width, add);
 			} else if (state.page === "models") {
@@ -392,12 +431,20 @@ function renderPageTabs(
 	width: number,
 	add: (s: string) => void,
 ): void {
+	const menuFocused = state.focus === "menu";
 	const tab = (label: string, page: ConfigPage) => {
-		const text = ` ${label} `;
-		return state.page === page
-			? theme.bg("selectedBg", theme.fg("text", text))
-			: theme.fg("muted", text);
+		const active = state.page === page;
+		const text = active && menuFocused ? `▸${label} ` : ` ${label} `;
+		if (active) {
+			// Brighter (text fg) when the menu owns focus; muted-but-marked
+			// when focus is in the body so the active page is still legible.
+			return menuFocused
+				? theme.bg("selectedBg", theme.bold(theme.fg("text", text)))
+				: theme.bg("selectedBg", theme.fg("text", text));
+		}
+		return theme.fg("muted", text);
 	};
+	const hint = menuFocused ? "←/→ switch page · ↓ enter" : "↑ to focus menu";
 	add(
 		truncateToWidth(
 			` ${tab("Extensions", "extensions")} ${theme.fg("dim", "·")} ${tab(
@@ -405,38 +452,7 @@ function renderPageTabs(
 				"models",
 			)} ${theme.fg("dim", "·")} ${tab("Context", "context")}  ${theme.fg(
 				"dim",
-				"Tab to switch",
-			)}`,
-			width,
-		),
-	);
-}
-
-function renderScopeTabs(
-	state: ConfigState,
-	theme: Theme,
-	width: number,
-	add: (s: string) => void,
-): void {
-	const tab = (label: string, active: boolean) => {
-		const text = ` ${label} `;
-		return active
-			? theme.bg("selectedBg", theme.fg("text", text))
-			: theme.fg("muted", text);
-	};
-	const project = tab(
-		"Project (./.pi/settings.json)",
-		state.scope === "project",
-	);
-	const global = tab(
-		"Global  (~/.pi/agent/settings.json)",
-		state.scope === "global",
-	);
-	add(
-		truncateToWidth(
-			` ${project} ${theme.fg("dim", "·")} ${global}  ${theme.fg(
-				"dim",
-				"←/→ or p/g to switch",
+				hint,
 			)}`,
 			width,
 		),
@@ -452,14 +468,16 @@ function renderFooter(
 	let help: string;
 	if (state.page === "models" && state.models.picker) {
 		help = " type to filter • ↑↓ select • enter set • esc cancel";
+	} else if (state.focus === "menu") {
+		help = " ←/→ switch page • ↓ enter list • q/Esc close";
 	} else if (state.page === "extensions") {
 		help =
-			" Tab page • ←/→ scope • ↑↓ select • space/enter cycle • r reset • q/Esc close";
+			" ↑↓ rows • ←/→ project/global • space/enter cycle • r reset • Tab page • q/Esc close";
 	} else if (state.page === "models") {
 		help =
-			" Tab page • ←/→ scope • ↑↓ select • enter pick model • r clear • q/Esc close";
+			" ↑↓ rows • ←/→ project/global • enter pick model • r clear • Tab page • q/Esc close";
 	} else {
-		help = " Tab page • ↑↓ scroll • q/Esc close";
+		help = " ↑↓ scroll • Tab page • q/Esc close";
 	}
 	add(truncateToWidth(theme.fg("dim", help), width));
 	if (state.page !== "context") {
@@ -481,6 +499,7 @@ function renderFooter(
 
 function renderExtensionsTable(
 	state: DialogState,
+	bodyFocused: boolean,
 	theme: Theme,
 	width: number,
 	add: (s: string) => void,
@@ -494,7 +513,7 @@ function renderExtensionsTable(
 	add(theme.fg("muted", header));
 	for (let i = 0; i < state.rows.length; i++) {
 		const row = state.rows[i];
-		const selected = i === state.cursor;
+		const selected = bodyFocused && i === state.cursor;
 		const cursor = selected ? theme.fg("accent", "▸") : " ";
 		const name = pad(row.name, nameWidth);
 		const projectCell = scopedCell(
@@ -590,6 +609,7 @@ function renderModelsTable(
 	add: (s: string) => void,
 ): void {
 	const ms = state.models;
+	const bodyFocused = state.focus === "body";
 	if (ms.available.length === 0) {
 		// Still show the rows below so current values are visible; the
 		// picker just won't have anything to choose from.
@@ -605,7 +625,7 @@ function renderModelsTable(
 	add(theme.fg("muted", header));
 	for (let i = 0; i < ms.rows.length; i++) {
 		const row = ms.rows[i];
-		const selected = i === ms.cursor;
+		const selected = bodyFocused && i === ms.cursor;
 		const cursor = selected ? theme.fg("accent", "▸") : " ";
 		const label = pad(`${row.set}.${row.tier}`, labelWidth);
 		const projectCell = modelCell(
