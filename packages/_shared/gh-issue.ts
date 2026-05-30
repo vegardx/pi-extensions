@@ -14,8 +14,8 @@
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 export interface IssueDraft {
 	title: string;
@@ -124,10 +124,11 @@ export function isAuthError(stderr: string): boolean {
 
 /**
  * Default pending-report directory for an extension:
- * `~/.pi/agent/<extId>/pending/`.
+ * `<agentDir>/<extId>/pending/`. Anchored on `getAgentDir()` so it
+ * honours PI_CODING_AGENT_DIR / XDG instead of a hardcoded ~/.pi.
  */
 export function defaultPendingDir(extId: string): string {
-	return join(homedir(), ".pi", "agent", extId, "pending");
+	return join(getAgentDir(), extId, "pending");
 }
 
 /**

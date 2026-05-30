@@ -106,9 +106,9 @@ describe("loadCrashReportsForSession", () => {
 });
 
 describe("defaultCrashReportDir", () => {
-	it("composes ~/.pi/agent/modes/crash-reports", () => {
-		expect(defaultCrashReportDir("/home/u")).toBe(
-			"/home/u/.pi/agent/modes/crash-reports",
+	it("composes <agent-dir>/modes/crash-reports", () => {
+		expect(defaultCrashReportDir("/home/u/agent")).toBe(
+			"/home/u/agent/modes/crash-reports",
 		);
 	});
 });
