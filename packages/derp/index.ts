@@ -31,6 +31,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import {
+	getExtensionConfigNumber,
 	getExtensionConfigString,
 	getExtensionConfigStringArray,
 	type RelevantSettings,
@@ -68,10 +69,11 @@ function getNumberConfig(
 	key: string,
 	defaultValue: number,
 ): number {
-	const raw = settings.extensionConfig?.[EXT_ID]?.[key];
-	return typeof raw === "number" && Number.isFinite(raw) && raw > 0
-		? raw
-		: defaultValue;
+	// getExtensionConfigNumber walks dotted keys (e.g. "polish.timeoutMs")
+	// and fails closed to the default; we keep the positivity guard since a
+	// non-positive timeout / entry count is meaningless here.
+	const raw = getExtensionConfigNumber(settings, EXT_ID, key, defaultValue);
+	return raw > 0 ? raw : defaultValue;
 }
 
 export default defineExtension(
@@ -88,13 +90,13 @@ export default defineExtension(
 				doc: "Labels applied to the created issue. Set to [] to skip. Unknown labels trigger one retry without --label.",
 			},
 			{
-				key: "polishTimeoutMs",
+				key: "polish.timeoutMs",
 				type: "number",
 				default: 30000,
 				doc: "Hard timeout for the polish subagent. On timeout, derp falls back to a deterministic template and still attempts to file (subject to redaction).",
 			},
 			{
-				key: "recentEntries",
+				key: "polish.contextEntries",
 				type: "number",
 				default: 6,
 				doc: "How many tail entries from the current session to feed into the polish subagent.",
@@ -171,8 +173,12 @@ export async function runDerp(
 		"titlePrefix",
 		"[derp] ",
 	);
-	const recentEntryCount = getNumberConfig(settings, "recentEntries", 6);
-	const polishTimeoutMs = getNumberConfig(settings, "polishTimeoutMs", 30000);
+	const recentEntryCount = getNumberConfig(
+		settings,
+		"polish.contextEntries",
+		6,
+	);
+	const polishTimeoutMs = getNumberConfig(settings, "polish.timeoutMs", 30000);
 
 	const entries = ctx.sessionManager.getEntries();
 	const polishFn = deps.polish ?? polishReport;

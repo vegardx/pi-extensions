@@ -35,7 +35,7 @@ const RESEARCH_TOOLS: readonly string[] = ["websearch", "webfetch"];
 
 /**
  * Fallback timeout when neither the per-call `timeoutMs` nor the
- * `extensionConfig.modes.researchTimeoutMs` setting is provided.
+ * `extensionConfig.modes.research.timeoutMs` setting is provided.
  *
  * 90s matches the historical hard-coded value before the timeout
  * became configurable (issue #167).
