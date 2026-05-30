@@ -411,8 +411,8 @@ function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 
 /**
  * Multi-line breakdown for `/config`. Pure: takes a summary,
- * returns lines. The factory pipes these through `ctx.ui.notify`
- * one by one.
+ * returns lines. The factory joins these into a single `ctx.ui.notify`
+ * call (one multi-line notification).
  */
 export function renderLines(summary: StartupSummary): string[] {
 	const lines: string[] = [];

@@ -3,7 +3,7 @@
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
-	"description": "Reports what pi loaded from this monorepo on session start: declared extensions (with their commands, tools, config schemas, and effective values from settings.json), the active session model, and configured background-model tiers. Provides /config (alias /extensions) — an interactive panel to toggle extensions, set background models, and review context files at project / global scope.",
+	"description": "Reports what pi loaded from this monorepo on session start: declared extensions (with their commands, tools, config schemas, and effective values from settings.json), the active session model, and configured background-model tiers. Provides /config — an interactive panel to toggle extensions, set background models, and review context files at project / global scope.",
 	"pi": {
 		"extensions": ["./index.ts"]
 	},
