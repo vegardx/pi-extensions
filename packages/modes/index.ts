@@ -2226,6 +2226,15 @@ export default defineExtension(
 		let summaryBudgetWarnFired = false;
 
 		let compactionInFlight = false;
+		/**
+		 * Set when a mid-phase compaction is *abandoned* (timeout/abort) while
+		 * pi may still be running it in the background. pi's `compact()` aborts
+		 * the agent and replaces its compaction controller on each call, so
+		 * firing a second compaction before the orphaned one settles races two
+		 * `agent.state.messages` rebuilds. We suppress new mid-phase
+		 * compactions until this timestamp to keep concurrency at one.
+		 */
+		let compactionCooldownUntil = 0;
 		/** Guard preventing double-fire of the exec-complete auto-loop from both
 		 *  the agent_end path and the compaction-fallback path (#138). */
 		let postExecInFlight = false;
@@ -2627,6 +2636,19 @@ export default defineExtension(
 				// the next overflow.
 				const msg = err instanceof Error ? err.message : String(err);
 				notify(ctx, `mid-phase compaction skipped (${msg})`, "warning");
+				// Timeout/abort mean we stopped awaiting but pi may still be
+				// compacting in the background. Hold off on re-triggering until
+				// the orphan should have settled, so we don't stack two
+				// concurrent compactions. (Real onError settles pi → no orphan.)
+				if (msg === "aborted" || msg.includes("timed out")) {
+					compactionCooldownUntil =
+						Date.now() +
+						readCompactionNumber(
+							ctx,
+							"timeoutMs",
+							DEFAULT_COMPACTION_TIMEOUT_MS,
+						);
+				}
 			} finally {
 				pendingCompactionKind = null;
 			}
@@ -5378,6 +5400,10 @@ export default defineExtension(
 				seedTokens: seedUsed,
 			});
 			if (!fire || !plan || !activePhase) return;
+
+			// An abandoned (timed-out/aborted) compaction may still be running in
+			// pi; don't stack a second one until it should have settled.
+			if (Date.now() < compactionCooldownUntil) return;
 
 			compactionInFlight = true;
 			try {
