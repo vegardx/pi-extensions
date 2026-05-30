@@ -525,7 +525,7 @@ only the distilled, size-capped answer comes back.
 
 | Call | Target | Available in |
 |------|--------|--------------|
-| `delegate({ to: "researcher", question, timeoutMs? })` | web research | plan / auto / ask |
+| `delegate({ to: "researcher", question, timeoutMs? })` | web research | all modes (plan / ask / auto / hack) |
 | `delegate({ to: "explorer", question })` | codebase questions | plan mode only |
 
 `delegate` blocks until the answer returns; correlation is the return
