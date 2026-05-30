@@ -191,6 +191,34 @@ describe("readRelevantSettings", () => {
 		});
 	});
 
+	it("deep-merges nested extensionConfig groups across layers (leaf-level precedence)", () => {
+		withIsolatedAgentDir(() => {
+			const cwd = mkTempCwd();
+			try {
+				writeGlobalSettings({
+					extensionConfig: {
+						modes: { review: { enable: true, agents: ["code-reviewer"] } },
+					},
+				});
+				writeProjectSettings(cwd, {
+					extensionConfig: {
+						modes: { review: { enable: false } },
+					},
+				});
+
+				const review = readRelevantSettings(cwd).extensionConfig?.modes
+					?.review as Record<string, unknown> | undefined;
+				// Project overrides the leaf it sets...
+				expect(review?.enable).toBe(false);
+				// ...but the global sibling leaf survives instead of being wiped
+				// by a shallow object replacement.
+				expect(review?.agents).toEqual(["code-reviewer"]);
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		});
+	});
+
 	it("treats malformed JSON as absent rather than throwing", () => {
 		withIsolatedAgentDir(() => {
 			const cwd = mkTempCwd();
