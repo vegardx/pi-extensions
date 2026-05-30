@@ -185,6 +185,65 @@ describe("DelegateAgents.research", () => {
 	});
 });
 
+describe("DelegateAgents.cappedResearch", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		vi.mocked(resolveModel).mockResolvedValue(RESOLVED_MODEL as never);
+	});
+
+	it("caps concurrent research subprocesses at maxConcurrent", async () => {
+		let active = 0;
+		let maxActive = 0;
+		const gates: Array<() => void> = [];
+		vi.mocked(runSubagent).mockImplementation(async (input) => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			await new Promise<void>((r) => gates.push(r));
+			active--;
+			return { tag: input.tag, rawText: "ok" } as never;
+		});
+
+		const agents = new DelegateAgents(MOCK_CTX);
+		const calls = [0, 1, 2, 3].map(() =>
+			agents.cappedResearch("q", { maxConcurrent: 2 }),
+		);
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		// Only 2 of the 4 started; the other 2 are blocked in the gate.
+		expect(maxActive).toBe(2);
+		expect(runSubagent).toHaveBeenCalledTimes(2);
+
+		// Drain: release running gates, let queued calls take freed slots.
+		for (let i = 0; i < 8 && gates.length > 0; i++) {
+			gates.shift()?.();
+			await new Promise((r) => setImmediate(r));
+		}
+		await Promise.all(calls);
+		expect(maxActive).toBe(2); // never exceeded the cap
+		expect(runSubagent).toHaveBeenCalledTimes(4);
+	});
+
+	it("runs all in parallel when uncapped", async () => {
+		let active = 0;
+		let maxActive = 0;
+		const gates: Array<() => void> = [];
+		vi.mocked(runSubagent).mockImplementation(async (input) => {
+			active++;
+			maxActive = Math.max(maxActive, active);
+			await new Promise<void>((r) => gates.push(r));
+			active--;
+			return { tag: input.tag, rawText: "ok" } as never;
+		});
+		const agents = new DelegateAgents(MOCK_CTX);
+		const calls = [0, 1, 2, 3].map(() => agents.cappedResearch("q"));
+		await new Promise((r) => setImmediate(r));
+		await new Promise((r) => setImmediate(r));
+		expect(maxActive).toBe(4);
+		for (const g of gates.splice(0)) g();
+		await Promise.all(calls);
+	});
+});
+
 describe("DelegateAgents.researchAsk / researchCheck / researchWait (#159a)", () => {
 	beforeEach(() => {
 		vi.resetAllMocks();

@@ -2625,6 +2625,29 @@ export default defineExtension(
 			return text.slice(0, room) + marker;
 		}
 
+		const DEFAULT_DELEGATE_MAX_CONCURRENT = 4;
+
+		/**
+		 * Read `extensionConfig.modes.delegate.maxConcurrent` — the cap on
+		 * concurrent researcher subprocesses. Backpressure for a burst of
+		 * parallel delegate(researcher) calls (the agent loop runs a turn's
+		 * tool calls via Promise.all with no cap of its own).
+		 */
+		function readDelegateMaxConcurrent(ctx: ExtensionContext): number {
+			const settings = readRelevantSettings(ctx.cwd);
+			const extCfg = settings.extensionConfig?.[EXT_ID] as
+				| Record<string, unknown>
+				| undefined;
+			const delegateCfg = extCfg?.delegate as
+				| Record<string, unknown>
+				| undefined;
+			const raw = delegateCfg?.maxConcurrent;
+			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+				return Math.floor(raw);
+			}
+			return DEFAULT_DELEGATE_MAX_CONCURRENT;
+		}
+
 		/**
 		 * Read `extensionConfig.modes.explore.{parallelism,queueDepthThreshold}`.
 		 *
@@ -4665,9 +4688,13 @@ export default defineExtension(
 						rawOverride > 0
 							? rawOverride
 							: readResearchTimeoutMs(ctx);
-					const outcome = await ensureDelegateAgents(ctx).research(
+					const outcome = await ensureDelegateAgents(ctx).cappedResearch(
 						params.question,
-						{ timeoutMs, signal },
+						{
+							timeoutMs,
+							signal,
+							maxConcurrent: readDelegateMaxConcurrent(ctx),
+						},
 					);
 					if (!outcome.ok) return formatResearchOutcome(ctx, outcome);
 					const text = capDelegatedAnswer(outcome.text, cap);
