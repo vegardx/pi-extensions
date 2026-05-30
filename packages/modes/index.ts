@@ -185,19 +185,7 @@ export const PLAN_ONLY_TOOLS = [
 	"websearch",
 	"webfetch",
 	"ask",
-	"explore_ask",
-	"explore_check",
-	"explore_wait",
-	"research",
-	"research_ask",
-	"research_check",
-	"research_wait",
-] as const;
-
-export const EXPLORE_TOOLS = [
-	"explore_ask",
-	"explore_check",
-	"explore_wait",
+	"delegate",
 ] as const;
 
 /**
@@ -210,19 +198,12 @@ export function computeActiveTools(mode: Mode, priorTools: string[]): string[] {
 	if (mode === "plan") {
 		return [...PLAN_ONLY_TOOLS, ...planTools];
 	}
-	// Restore prior tools and ensure phase/task/plan + research are included.
-	// The explore_* triad is plan-mode only so it is removed.
-	const alwaysInclude = [
-		...planTools,
-		"research",
-		"research_ask",
-		"research_check",
-		"research_wait",
-	];
+	// Restore prior tools and ensure phase/task/plan + delegate are present.
+	// delegate works in every mode (researcher target); explorer routing is
+	// gated to plan mode at execute time.
+	const alwaysInclude = [...planTools, "delegate"];
 	const extra = alwaysInclude.filter((t) => !priorTools.includes(t));
-	return [...priorTools, ...extra].filter(
-		(t) => !EXPLORE_TOOLS.includes(t as (typeof EXPLORE_TOOLS)[number]),
-	);
+	return [...priorTools, ...extra];
 }
 
 /**
@@ -576,39 +557,6 @@ export default defineExtension(
 		function truncate(s: string, n: number): string {
 			const flat = s.replace(/\s+/g, " ").trim();
 			return flat.length > n ? `${flat.slice(0, n - 1)}…` : flat;
-		}
-
-		function formatTask(task: ExploreTask): string {
-			const header = `[${task.id}] ${task.status}`;
-			if (task.status === "done" && task.text) {
-				return `${header}\n\n${task.text}`;
-			}
-			if (task.error) {
-				return `${header}: ${task.error}`;
-			}
-			return header;
-		}
-
-		function formatCheckResult(result: {
-			tasks: ExploreTask[];
-			notifications: ExploreNotification[];
-		}): string {
-			if (result.tasks.length === 0 && result.notifications.length === 0) {
-				return "[explore_check] mailbox empty";
-			}
-			const parts: string[] = [];
-			for (const t of result.tasks) {
-				parts.push(formatTask(t));
-			}
-			if (result.notifications.length > 0) {
-				parts.push("--- notifications ---");
-				for (const n of result.notifications) {
-					const tag = n.kind ? `[${n.kind}]` : "[notify]";
-					const from = n.taskId ? ` (during ${n.taskId})` : "";
-					parts.push(`${tag}${from} ${n.text}`);
-				}
-			}
-			return parts.join("\n\n");
 		}
 
 		// Questions queued by the `ask` tool during a single agent turn.
@@ -2645,6 +2593,34 @@ export default defineExtension(
 			return DEFAULT_RESEARCH_TIMEOUT_MS;
 		}
 
+		const DEFAULT_DELEGATE_MAX_CHARS = 6000;
+
+		/**
+		 * Read `extensionConfig.modes.delegate.maxAnswerChars` — the hard cap
+		 * on a delegated answer's size before it crosses back into the
+		 * caller's context. Keeps delegation context-slimming honest.
+		 */
+		function readDelegateMaxChars(ctx: ExtensionContext): number {
+			const settings = readRelevantSettings(ctx.cwd);
+			const extCfg = settings.extensionConfig?.[EXT_ID] as
+				| Record<string, unknown>
+				| undefined;
+			const delegateCfg = extCfg?.delegate as
+				| Record<string, unknown>
+				| undefined;
+			const raw = delegateCfg?.maxAnswerChars;
+			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+				return Math.floor(raw);
+			}
+			return DEFAULT_DELEGATE_MAX_CHARS;
+		}
+
+		/** Hard-cap a delegated answer; append a marker when truncated. */
+		function capDelegatedAnswer(text: string, cap: number): string {
+			if (text.length <= cap) return text;
+			return `${text.slice(0, cap)}\n\n[…delegated answer truncated at ${cap} chars]`;
+		}
+
 		/**
 		 * Read `extensionConfig.modes.explore.{parallelism,queueDepthThreshold}`.
 		 *
@@ -4639,313 +4615,97 @@ export default defineExtension(
 		// ---- Delegate tools: explore + research ----------------------------
 
 		pi.registerTool({
-			name: "explore_ask",
-			label: "Ask Explorer",
+			name: "delegate",
+			label: "Delegate",
 			description:
-				"Queue a question for the codebase-exploration sub-agent. Returns " +
-				"immediately with a task id — does NOT block while the sub-agent " +
-				"works. Use explore_check to drain answers, or explore_wait to " +
-				"opt-in to blocking on a specific id. The sub-agent is persistent: " +
-				"it remembers prior questions in this session.",
-			promptSnippet: "Queue a codebase question (non-blocking)",
+				"Delegate a question to a specialist sub-agent and get back a " +
+				'concise, distilled answer (blocking). to="researcher" for web ' +
+				'research; to="explorer" for codebase questions (plan mode only). ' +
+				"The sub-agent's raw results never enter your context — you only " +
+				"get the answer. Fire several delegate calls in one turn to run " +
+				"them concurrently.",
+			promptSnippet:
+				"Delegate a question to a specialist; returns a distilled answer",
 			promptGuidelines: [
-				"Use explore_ask when you want to start a codebase lookup but keep planning. " +
-					"It returns { id } right away — the sub-agent works in the background.",
-				"Fire several explore_ask calls back-to-back when you have multiple " +
-					"questions; they queue in order on the persistent sub-agent.",
-				"Pass `related: false` when the question is genuinely orthogonal to your " +
-					"recent explore_ask calls (e.g. a separate subsystem). The mailbox can " +
-					"then dispatch it against a fresh child agent in parallel with the seed. " +
-					"Default `related: true` keeps everything on the seed FIFO so context " +
-					"accumulates.",
-				"Available in plan mode only.",
+				"Use delegate to push heavy lookups (web search, codebase " +
+					"exploration) into a sub-agent so its raw output never bloats your " +
+					"context — you receive only the distilled answer.",
+				'to="researcher": web research (plan/auto/ask). to="explorer": ' +
+					"codebase questions (plan mode only).",
+				"delegate blocks until the answer returns. Emit multiple delegate " +
+					"calls in a single turn to run them in parallel.",
 			],
 			parameters: Type.Object({
-				question: Type.String({
-					description: "What to find out about the codebase.",
+				to: Type.Union([Type.Literal("researcher"), Type.Literal("explorer")], {
+					description:
+						'Which specialist: "researcher" (web search) or "explorer" ' +
+						"(codebase questions, plan mode only).",
 				}),
-				related: Type.Optional(
-					Type.Boolean({
-						description:
-							"Default true. Set to false when the question is orthogonal to recent " +
-							"asks; lets the mailbox spawn a parallel child worker if the seed is busy.",
-					}),
-				),
-			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				try {
-					const { id } = await ensureExploreMailbox(ctx).ask(params.question, {
-						related: params.related,
-					});
-					return {
-						content: [
-							{
-								type: "text",
-								text: `[explore_ask] queued as ${id}`,
-							},
-						],
-						details: { id, status: "queued", question: params.question },
-					};
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return {
-						content: [{ type: "text", text: `[explore_ask error: ${msg}]` }],
-						details: { error: msg },
-					};
-				}
-			},
-		});
-
-		pi.registerTool({
-			name: "explore_check",
-			label: "Check Explorer",
-			description:
-				"Drain the explore mailbox: returns completed/in-flight task records " +
-				"and any notify() messages the sub-agent emitted mid-turn. Non-blocking. " +
-				"By default removes terminal tasks (done/error/timeout) and notifications " +
-				"so each one is reported once. Pass { id } to peek at a single task without " +
-				"draining.",
-			promptSnippet: "Drain completed explore answers and notifications",
-			promptGuidelines: [
-				"Call explore_check periodically while planning to fold in completed answers.",
-				"Notifications are unsolicited messages from the sub-agent — treat them like " +
-					"hints, not requests. Read them, decide, move on.",
-				"Available in plan mode only.",
-			],
-			parameters: Type.Object({
-				id: Type.Optional(
-					Type.String({
-						description: "Peek at a single task id; never drains.",
-					}),
-				),
-				drain: Type.Optional(
-					Type.Boolean({
-						description:
-							"Default true. When false, leaves terminal tasks/notifications in place.",
-					}),
-				),
-			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const mailbox = ensureExploreMailbox(ctx);
-				const opts: { id?: string; drain?: boolean } = {};
-				if (params.id !== undefined) opts.id = params.id;
-				if (params.drain !== undefined) opts.drain = params.drain;
-				const result = mailbox.check(opts);
-				return {
-					content: [{ type: "text", text: formatCheckResult(result) }],
-					details: result,
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "explore_wait",
-			label: "Wait for Explorer",
-			description:
-				"Block until the named explore task reaches a terminal state, or the " +
-				"timeout fires. Use this only when you genuinely cannot continue " +
-				"planning without that specific answer — prefer explore_check for " +
-				"polling. A timeout returns a synthetic terminal record but does NOT " +
-				"kill the sub-agent: the next check/wait may still observe the real " +
-				"completion.",
-			promptSnippet: "Block on a specific explore task (opt-in)",
-			promptGuidelines: [
-				"Default timeout is 120s. Pass timeoutMs only when you need a different bound.",
-				"Available in plan mode only.",
-			],
-			parameters: Type.Object({
-				id: Type.String({ description: "Task id returned by explore_ask." }),
-				timeoutMs: Type.Optional(
-					Type.Number({ description: "Wait timeout in ms (default 120000)." }),
-				),
-			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const mailbox = ensureExploreMailbox(ctx);
-				const task = await mailbox.wait(params.id, params.timeoutMs);
-				return {
-					content: [{ type: "text", text: formatTask(task) }],
-					details: task,
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "research",
-			label: "Research",
-			description:
-				"Ask the research agent to look up documentation, libraries, APIs, or " +
-				"prior art on the web. Returns a concise structured summary. Use this " +
-				"instead of web searching directly to keep this context lean. The agent " +
-				"is stateless — each question spawns a fresh process.",
-			promptSnippet: "Ask a research sub-agent to look up a topic on the web",
-			promptGuidelines: [
-				"Use research(question) when you need external information — library docs, " +
-					"API references, best practices, or prior art. The sub-agent searches the " +
-					"web and returns a focused summary without polluting this context.",
-				"Each call is independent and stateless — fire multiple research() calls " +
-					"in parallel when you have several questions; they run concurrently.",
-				"Available in plan mode and auto/ask mode.",
-			],
-			parameters: Type.Object({
-				question: Type.String({
-					description: "What to research.",
-				}),
+				question: Type.String({ description: "The question to delegate." }),
 				timeoutMs: Type.Optional(
 					Type.Number({
 						description:
-							"Hard timeout in milliseconds for this call. Overrides " +
-							"`extensionConfig.modes.researchTimeoutMs`. On timeout the " +
-							"call returns a structured failure (does not throw) so you " +
-							"can recover; the user is notified once.",
-					}),
-				),
-			}),
-			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-				// Validate model-supplied timeoutMs: 0, negative, or non-finite
-				// values would cause immediate or misleading timeouts. Fall back to
-				// the configured default when the override is unusable.
-				const rawOverride = params.timeoutMs;
-				const timeoutMs =
-					rawOverride != null && Number.isFinite(rawOverride) && rawOverride > 0
-						? rawOverride
-						: readResearchTimeoutMs(ctx);
-				const outcome = await ensureDelegateAgents(ctx).research(
-					params.question,
-					{
-						timeoutMs,
-						signal,
-					},
-				);
-				return formatResearchOutcome(ctx, outcome);
-			},
-		});
-
-		// ---- Non-blocking research mailbox tools (#159a) ----------------------
-		//
-		// `research_ask` returns immediately with a task id; `research_check`
-		// drains terminal jobs + any notifications; `research_wait` opt-in
-		// blocks on a single id. Mirrors the explore_* surface so agents that
-		// already know one knows the other. The legacy blocking `research`
-		// tool above is preserved — callers that want a single sync
-		// look-up-and-return keep using it.
-
-		pi.registerTool({
-			name: "research_ask",
-			label: "Ask Research",
-			description:
-				"Queue a question for the research sub-agent. Returns immediately " +
-				"with a task id — does NOT block while the sub-agent searches the " +
-				"web. Use research_check to drain answers, or research_wait to opt " +
-				"in to blocking on a specific id. Multiple research_ask calls run " +
-				"in parallel — each spawns its own subprocess. Use this instead " +
-				"of `research` when you want to keep planning while the answer " +
-				"comes back.",
-			promptSnippet: "Queue a non-blocking research question",
-			promptGuidelines: [
-				"Use research_ask + research_check for parallel web lookups: fire " +
-					"several questions, keep working, drain answers when ready. The " +
-					"task id you get back is what you pass to research_check({id}) or " +
-					"research_wait(id).",
-				"Each research_ask spawns its own subprocess, so they run " +
-					"concurrently. There's no FIFO — you'll see all asked-and-running " +
-					"jobs in the mailbox at once.",
-				"On failure (timeout, no model, empty output), the task still " +
-					"reaches `done` status — read `task.outcome.ok` to branch.",
-			],
-			parameters: Type.Object({
-				question: Type.String({ description: "What to research." }),
-				timeoutMs: Type.Optional(
-					Type.Number({
-						description:
-							"Hard timeout in milliseconds for this call. Overrides " +
+							"Hard timeout in ms (researcher only). Overrides " +
 							"`extensionConfig.modes.researchTimeoutMs`.",
 					}),
 				),
 			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const rawOverride = params.timeoutMs;
-				const timeoutMs =
-					rawOverride != null && Number.isFinite(rawOverride) && rawOverride > 0
-						? rawOverride
-						: readResearchTimeoutMs(ctx);
-				const { id } = await ensureDelegateAgents(ctx).researchAsk(
-					params.question,
-					{ timeoutMs },
-				);
-				return {
-					content: [{ type: "text", text: `research_ask: queued ${id}` }],
-					details: { id },
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "research_check",
-			label: "Check Research",
-			description:
-				"Drain the research mailbox: returns completed/in-flight task records " +
-				"and any notifications. Non-blocking. Default removes terminal tasks " +
-				"so each one is reported once. Pass { id } to peek at a single task " +
-				"without draining.",
-			promptSnippet: "Drain pending research answers",
-			parameters: Type.Object({
-				id: Type.Optional(
-					Type.String({
-						description:
-							"Optional id to peek at a single task without draining.",
-					}),
-				),
-				drain: Type.Optional(
-					Type.Boolean({
-						description:
-							"Default true. Set to false to leave terminal tasks + notifications in place.",
-					}),
-				),
-			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const result = ensureDelegateAgents(ctx).researchCheck({
-					...(params.id !== undefined ? { id: params.id } : {}),
-					...(params.drain !== undefined ? { drain: params.drain } : {}),
-				});
-				if (result.tasks.length === 0 && result.notifications.length === 0) {
+			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+				const cap = readDelegateMaxChars(ctx);
+				if (params.to === "researcher") {
+					const rawOverride = params.timeoutMs;
+					const timeoutMs =
+						rawOverride != null &&
+						Number.isFinite(rawOverride) &&
+						rawOverride > 0
+							? rawOverride
+							: readResearchTimeoutMs(ctx);
+					const outcome = await ensureDelegateAgents(ctx).research(
+						params.question,
+						{ timeoutMs, signal },
+					);
+					if (!outcome.ok) return formatResearchOutcome(ctx, outcome);
+					const text = capDelegatedAnswer(outcome.text, cap);
 					return {
-						content: [{ type: "text", text: "[research_check] mailbox empty" }],
-						details: result,
+						content: [{ type: "text", text }],
+						details: { to: "researcher", elapsedMs: outcome.elapsedMs },
 					};
 				}
+				// explorer — plan mode only (where the explore mailbox is wired)
+				if (modeState?.mode !== "plan") {
+					return {
+						content: [
+							{
+								type: "text",
+								text:
+									'[delegate] to:"explorer" is only available in plan mode. ' +
+									'Use to:"researcher" for web research.',
+							},
+						],
+						details: {
+							error: "explorer-not-available",
+							mode: modeState?.mode ?? null,
+						},
+					};
+				}
+				const mailbox = ensureExploreMailbox(ctx);
+				const { id } = await mailbox.ask(params.question);
+				const task = await mailbox.wait(id);
+				if (task.status === "error" || task.status === "timeout") {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `[delegate explorer ${task.status}] ${task.error ?? "no answer"}`,
+							},
+						],
+						details: { to: "explorer", status: task.status, error: task.error },
+					};
+				}
+				const text = capDelegatedAnswer(task.text ?? "", cap);
 				return {
-					content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-					details: result,
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "research_wait",
-			label: "Wait for Research",
-			description:
-				"Block until the named research task reaches a terminal state, or the " +
-				"timeout fires. Use only when you genuinely cannot continue without " +
-				"that specific answer — prefer research_check for polling. A timeout " +
-				"returns a synthetic terminal record but does NOT cancel the underlying " +
-				"subprocess.",
-			promptSnippet: "Block on a single research task",
-			parameters: Type.Object({
-				id: Type.String({ description: "Task id from research_ask." }),
-				timeoutMs: Type.Optional(
-					Type.Number({
-						description: "Wait deadline in ms. Default 120000 (2min).",
-					}),
-				),
-			}),
-			async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-				const result = await ensureDelegateAgents(ctx).researchWait(
-					params.id,
-					params.timeoutMs,
-				);
-				return {
-					content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-					details: result,
+					content: [{ type: "text", text }],
+					details: { to: "explorer" },
 				};
 			},
 		});
@@ -5192,14 +4952,13 @@ export default defineExtension(
 							"Do NOT ask questions inline in your response when using the `ask` tool —",
 							"the dialog replaces inline questions.",
 							"",
-							"To keep this context lean, delegate heavy lookups to persistent sub-agents:",
-							"  explore_ask(question)        → queue a codebase question (returns immediately)",
-							"  explore_check({ id?, drain? })→ drain completed answers + sub-agent notifications",
-							"  explore_wait(id, timeoutMs?) → block on one specific answer (opt-in)",
-							"  research(question)           → searches the web; one-shot per call",
-							"Fire several explore_ask calls in a row when you have multiple questions, ",
-							"keep planning, then explore_check to fold the answers in. Use explore_wait ",
-							"only when you cannot proceed without that specific answer.",
+							"To keep this context lean, delegate heavy lookups to a specialist",
+							"sub-agent — its raw results never enter your context, you get only",
+							"the distilled answer:",
+							'  delegate({ to: "researcher", question })  → web research',
+							'  delegate({ to: "explorer", question })    → codebase questions (plan mode)',
+							"delegate blocks until the answer returns. Fire several delegate calls",
+							"in one turn to run them concurrently.",
 						].join("\n"),
 						details: { modeMarker: "plan" as const },
 						display: false,
@@ -5310,7 +5069,8 @@ export default defineExtension(
 					"Execute each deliverable in order. Call task(toggle, phaseId, taskId)",
 					"after completing each one. Do not stop to ask for confirmation unless",
 					"genuinely stuck.",
-					"If you need to look up a library, API, or external reference: research(question).",
+					"If you need to look up a library, API, or external reference: " +
+						'delegate({ to: "researcher", question }).',
 				);
 				if (includeClassifier) {
 					lines.push("", STEERING_CLASSIFIER);
