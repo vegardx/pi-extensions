@@ -419,6 +419,16 @@ export function parseClassifyResponse(raw: string): ClassifyResult {
 }
 
 /**
+ * Hard ceiling on the Tier-3 LLM classifier call. The fast model should
+ * answer in well under a second; if the provider stalls (network, auth,
+ * rate-limit, a hung custom-provider endpoint) this bounds the wait so a
+ * single ambiguous plan-mode bash command can't brick the session. On
+ * timeout completeSimple rejects and the catch fails open to "allow" —
+ * the static denylist has already blocked known-dangerous patterns.
+ */
+const CLASSIFIER_TIMEOUT_MS = 8000;
+
+/**
  * Classify a bash command for plan mode.
  *
  * 1. Try the static allowlist/denylist (instant, no LLM needed).
@@ -468,6 +478,11 @@ export async function classifyBashCommand(
 		};
 	}
 
+	const timeoutSignal = AbortSignal.timeout(CLASSIFIER_TIMEOUT_MS);
+	const signal = ctx.signal
+		? AbortSignal.any([ctx.signal, timeoutSignal])
+		: timeoutSignal;
+
 	try {
 		const response = await completeSimple(
 			resolved.model,
@@ -485,9 +500,12 @@ export async function classifyBashCommand(
 			{
 				apiKey: resolved.apiKey,
 				headers: resolved.headers,
-				maxTokens: 100,
+				// Tiny JSON verdict, but "minimal" reasoning can still emit a few
+				// thinking tokens; 100 risked truncation → invalid JSON → a
+				// spurious block. 512 leaves comfortable headroom.
+				maxTokens: 512,
 				reasoning: "minimal",
-				signal: ctx.signal,
+				signal,
 			},
 		);
 
