@@ -77,9 +77,10 @@ counter focuses on per-extension `extensionConfig` knobs).
 ## The interactive `/config` panel
 
 In an interactive session, `/config` opens a
-four-page panel. `Tab` / `Shift+Tab` cycle pages; `←/→` or `p`/`g`
-switch the project / global scope on the pages that write settings;
-`q` / `Esc` close. Every edit writes to `settings.json` immediately
+four-page panel. `Tab` / `Shift+Tab` cycle pages; `←/→` switch the
+project / global scope on the pages that write settings; `q` closes;
+`Esc` closes unless a nested picker/input/detail view is open, where it
+cancels or goes back. Every edit writes to `settings.json` immediately
 (effects take a session restart).
 
 - **Extensions** — a project × global matrix of
@@ -94,8 +95,11 @@ switch the project / global scope on the pages that write settings;
   layer. `enter` opens a filterable picker of the session's
   auth-configured models (`modelRegistry.getAvailable()`) plus a clear
   option; `r` clears the active-scope value directly.
-- **Settings** — every declared `extensionConfig.<ext>.<key>` knob,
-  grouped by extension, with project / global / effective columns.
+- **Settings** — a two-step view for declared
+  `extensionConfig.<ext>.<key>` knobs. First choose a configurable
+  extension (`↑/↓`, then `enter` / `space` / `→`); the detail view then
+  shows that extension's project / global / effective columns. `Esc` or
+  `←` leaves the detail view and returns to extension selection.
   Editing dispatches on the knob type: booleans cycle
   `undef → true → false → undef` in place; `enum` and model keys open a
   filterable picker (plus a clear option); `string` / `number` /
