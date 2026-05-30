@@ -81,6 +81,8 @@ import {
 } from "./plan/completion.js";
 import { findConnectionError } from "./plan/connection-error.js";
 import {
+	DEFAULT_DELEGATE_MAX_CHARS,
+	DEFAULT_DELEGATE_MAX_CONCURRENT,
 	DEFAULT_RESEARCH_TIMEOUT_MS,
 	DelegateAgents,
 	type ResearchOutcome,
@@ -427,6 +429,30 @@ export default defineExtension(
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
 				doc: "Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. Default 90000 (90s).",
+			},
+			{
+				key: "delegate.maxAnswerChars",
+				type: "number",
+				default: DEFAULT_DELEGATE_MAX_CHARS,
+				doc: "Hard cap (characters) on a delegated answer before it crosses back into the caller's context. Longer answers are truncated with a marker. Keeps delegation context-slimming honest. Default 6000.",
+			},
+			{
+				key: "delegate.maxConcurrent",
+				type: "number",
+				default: DEFAULT_DELEGATE_MAX_CONCURRENT,
+				doc: "Cap on concurrent researcher subprocesses spawned by `delegate(researcher)`. Backpressure for a burst of parallel calls. Must be >= 1; fractional or smaller values fall back to the default. Default 4.",
+			},
+			{
+				key: "explore.parallelism",
+				type: "number",
+				default: DEFAULT_PARALLELISM,
+				doc: "How many codebase-explore sub-agents run at once when the queue is shallow. Raising it trades more concurrent token spend for faster fan-out. Positive integers only; other values fall back to the default. Default 1.",
+			},
+			{
+				key: "explore.queueDepthThreshold",
+				type: "number",
+				default: DEFAULT_QUEUE_DEPTH_THRESHOLD,
+				doc: "Queued-task depth at which the explore mailbox scales up to `explore.parallelism` workers. Below it a single worker handles the queue. Positive integers only. Default 4.",
 			},
 		],
 	},
@@ -2619,8 +2645,6 @@ export default defineExtension(
 			return DEFAULT_RESEARCH_TIMEOUT_MS;
 		}
 
-		const DEFAULT_DELEGATE_MAX_CHARS = 6000;
-
 		/**
 		 * Read `extensionConfig.modes.delegate.maxAnswerChars` — the hard cap
 		 * on a delegated answer's size before it crosses back into the
@@ -2650,8 +2674,6 @@ export default defineExtension(
 			const room = Math.max(0, cap - marker.length);
 			return text.slice(0, room) + marker;
 		}
-
-		const DEFAULT_DELEGATE_MAX_CONCURRENT = 4;
 
 		/**
 		 * Read `extensionConfig.modes.delegate.maxConcurrent` — the cap on

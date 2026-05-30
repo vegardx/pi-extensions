@@ -42,6 +42,18 @@ const RESEARCH_TOOLS: readonly string[] = ["websearch", "webfetch"];
  */
 export const DEFAULT_RESEARCH_TIMEOUT_MS = 90_000;
 
+/**
+ * Hard cap (characters) on a delegated answer before it crosses back
+ * into the caller's context. Keeps delegation context-slimming honest.
+ */
+export const DEFAULT_DELEGATE_MAX_CHARS = 6000;
+
+/**
+ * Cap on concurrent researcher subprocesses — backpressure for a burst
+ * of parallel `delegate(researcher)` calls.
+ */
+export const DEFAULT_DELEGATE_MAX_CONCURRENT = 4;
+
 export interface ResearchOptions {
 	/**
 	 * Hard timeout in milliseconds. When unset, falls back to
