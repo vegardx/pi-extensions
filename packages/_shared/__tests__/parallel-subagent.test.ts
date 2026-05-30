@@ -1,9 +1,13 @@
 import type {
 	IdleWaitable,
+	SubagentClient,
 	SubagentOutcome,
 	SubagentTask,
 } from "../parallel-subagent.js";
-import { awaitIdleOrAbort } from "../parallel-subagent.js";
+import {
+	awaitIdleOrAbort,
+	runSubagentWithClient,
+} from "../parallel-subagent.js";
 
 // ---- Type-level checks for the public SubagentTask interface ----------
 //
@@ -55,6 +59,78 @@ describe("SubagentTask interface", () => {
 		};
 		expect(outcome.tag).toBe(7);
 		expect(outcome.rawText).toBe("hello");
+	});
+});
+
+describe("runSubagentWithClient", () => {
+	function task(timeoutMs = 25): SubagentTask<number> {
+		return {
+			tag: 1,
+			task: "noop",
+			systemPromptPath: "/dev/null",
+			provider: "p",
+			model: "m",
+			cwd: "/tmp",
+			timeoutMs,
+		};
+	}
+
+	function client(overrides: Partial<SubagentClient> = {}): SubagentClient {
+		return {
+			start: vi.fn().mockResolvedValue(undefined),
+			prompt: vi.fn().mockResolvedValue(undefined),
+			waitForIdle: vi.fn().mockResolvedValue(undefined),
+			getLastAssistantText: vi.fn().mockResolvedValue("answer"),
+			stop: vi.fn().mockResolvedValue(undefined),
+			...overrides,
+		};
+	}
+
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("times out a hanging start and still asks the client to stop", async () => {
+		const c = client({
+			start: vi.fn(() => new Promise<void>(() => {})),
+		});
+		const resultPromise = runSubagentWithClient(task(10), c);
+
+		await vi.advanceTimersByTimeAsync(10);
+		const result = await resultPromise;
+
+		expect(result.error).toContain("subagent timed out after 10ms");
+		expect(c.stop).toHaveBeenCalledOnce();
+	});
+
+	it("times out a hanging prompt", async () => {
+		const c = client({
+			prompt: vi.fn(() => new Promise<void>(() => {})),
+		});
+		const resultPromise = runSubagentWithClient(task(10), c);
+
+		await vi.advanceTimersByTimeAsync(10);
+		const result = await resultPromise;
+
+		expect(result.error).toContain("subagent timed out after 10ms");
+		expect(c.stop).toHaveBeenCalledOnce();
+	});
+
+	it("does not let a hanging stop block the returned outcome", async () => {
+		const c = client({
+			stop: vi.fn(() => new Promise<void>(() => {})),
+		});
+		const resultPromise = runSubagentWithClient(task(100), c);
+
+		await vi.advanceTimersByTimeAsync(2_000);
+		const result = await resultPromise;
+
+		expect(result.rawText).toBe("answer");
+		expect(c.stop).toHaveBeenCalledOnce();
 	});
 });
 

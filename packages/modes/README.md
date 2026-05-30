@@ -559,10 +559,6 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
         "summaryTokens": 100000,
         "phaseTokens": 10000
       },
-      "review": {
-        "enable": false,
-        "agents": ["code-reviewer", "code-simplifier", "security-analyst"]
-      },
       "park": { "githubProject": "owner/repo/projects/N" }
     }
   }
@@ -571,27 +567,25 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 
 | Key | Default | Doc |
 |---|---|---|
-| `mode.default` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
+| `mode.default` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `ask` \| `hack`. Persisted sessions keep their saved mode. |
 | `compaction.workingTokens` | `150000` | Working budget covering `sys + work` (system prompt + tool schemas + live messages). Mid-phase compaction fires when `sys + work` exceeds this. Summary tokens live in their own budget. |
 | `compaction.summaryTokens` | `100000` | Cumulative cross-phase carry-forward budget (Σ `phase.summary` chars across shipped phases). Soft-warns once when exceeded; not enforced. Total target ceiling = `workingTokens + summaryTokens` — should fit the active model's `contextWindow`. |
-| `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
-| `compaction.phaseTokens` | `10000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
-| `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
-| `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
-| `park.githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
-| `research.timeoutMs` | `90000` | Hard timeout (ms) for the `researcher` delegation (`delegate({ to: "researcher" })`) sub-agent call. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
-| `delegate.maxAnswerChars` | `6000` | Hard cap on a delegated answer's size before it crosses back into the caller's context. Keeps `delegate` context-slimming. |
-| `delegate.maxConcurrent` | `4` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel, so without this a burst would spawn one subprocess each. Excess calls block until a slot frees. |
-| `explore.parallelism` | `1` | Max in-flight `explorer` delegations across the seed worker and ephemeral children combined. `1` keeps the single-FIFO behaviour from before #159b. Increase to fan out unrelated questions in parallel. Non-integer / non-positive values fall back to the default with a warning. |
+| `compaction.planMaxContextTokens` | unset | Optional footer cap (denominator) used while in plan mode. Leave unset to use the active model's `contextWindow`. Plan mode is exempt from mid-phase compaction. |
+| `compaction.phaseTokens` | `10000` | Safety `maxTokens` cap for one phase-boundary summary. `summaryTokens` is the cumulative soft budget; this only catches a runaway single summary. |
+| `park.githubProject` | unset | GitHub Project to assign issues to when `/park` creates them. Leave unset to skip assignment. |
+| `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. |
+| `delegate.maxAnswerChars` | `6000` | Safety backstop on a delegated answer's size before it crosses back into the caller's context. Subagents are still prompted to be concise and complete. |
+| `delegate.maxConcurrent` | `10` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel. Excess calls block until a slot frees. |
+| `explore.parallelism` | `2` | Max in-flight `explorer` delegations across the seed worker and clean ephemeral children combined. This is a numeric cap, not a boolean. Set `1` for single-FIFO behavior. |
 | `explore.queueDepthThreshold` | `4` | When the seed FIFO has this many queued jobs, `related: true` asks burst-route to children even when the seed is busy — better to fan out and finish than wait. Only meaningful when `explore.parallelism > 1`. |
 
-> **Autoreview is off by default.** The pipeline (`/review`, post-execution batch) runs end-to-end but the surrounding triage and feedback flow needs more design work before it's on for everyone — see the `TODO(autoreview)` block on `runBatchReview` for the open issues. Opt in per-repo by setting `extensionConfig.modes.review.enable: true`.
+> Local modes autoreview settings were removed. Prefer GitHub/Copilot review workflows for PR feedback; the post-exec picker can watch Copilot review on open PRs.
 
 > **Breaking change:** the previous `compaction.maxContextTokens` setting has been replaced by `compaction.workingTokens` (semantically the same trigger threshold), and the new `compaction.summaryTokens` budgets the rolling compaction summary. There is no compatibility alias — rename the key in your config.
 
 Optional peer dependencies:
 
-- `pi-ext-review` — auto-review pass after execution and `/review` in the post-exec picker
+- `pi-ext-review` — standalone `/review` command
 - `pi-ext-commit` — `/commit` in the post-exec picker
 
 ## Context management

@@ -19,6 +19,36 @@ const COMMAND_ENV_VAR = "VISUAL";
 const COMMAND_ENV_VAR_FALLBACK = "EDITOR";
 const DEFAULT_COMMAND = "code";
 
+export const EDITOR_PRESETS = [
+	"auto",
+	"code",
+	"cursor",
+	"windsurf",
+	"intellij",
+	"nvim",
+	"sublime",
+	"custom",
+] as const;
+
+export type EditorPreset = (typeof EDITOR_PRESETS)[number];
+
+interface PresetConfig {
+	command: string;
+	args: readonly string[];
+}
+
+const PRESET_CONFIGS: Record<
+	Exclude<EditorPreset, "auto" | "custom">,
+	PresetConfig
+> = {
+	code: { command: "code", args: ["-g", "{path}:{line}:{col}"] },
+	cursor: { command: "cursor", args: ["-g", "{path}:{line}:{col}"] },
+	windsurf: { command: "windsurf", args: ["-g", "{path}:{line}:{col}"] },
+	intellij: { command: "idea", args: ["--line", "{line}", "{path}"] },
+	nvim: { command: "nvim", args: ["+{line}", "{path}"] },
+	sublime: { command: "subl", args: ["{path}:{line}:{col}"] },
+};
+
 export interface EditorConfig {
 	command: string;
 	args: string[];
@@ -67,17 +97,36 @@ export function resolveEditorConfig(
 		EXT_ID,
 		"command",
 		"",
+	).trim();
+	const rawPreset = getExtensionConfigString(
+		settings,
+		EXT_ID,
+		"preset",
+		"auto",
 	);
+	const preset: EditorPreset = EDITOR_PRESETS.includes(
+		rawPreset as EditorPreset,
+	)
+		? (rawPreset as EditorPreset)
+		: "auto";
+	const presetConfig =
+		preset === "auto" || preset === "custom"
+			? undefined
+			: PRESET_CONFIGS[preset];
 	const command =
 		explicitCommand.length > 0
 			? explicitCommand
-			: (envOrUndefined(env, COMMAND_ENV_VAR) ??
+			: (presetConfig?.command ??
+				envOrUndefined(env, COMMAND_ENV_VAR) ??
 				envOrUndefined(env, COMMAND_ENV_VAR_FALLBACK) ??
 				DEFAULT_COMMAND);
 
-	const args = getExtensionConfigStringArray(settings, EXT_ID, "args", [
-		...DEFAULT_ARGS,
-	]);
+	const args = getExtensionConfigStringArray(
+		settings,
+		EXT_ID,
+		"args",
+		presetConfig ? [...presetConfig.args] : [...DEFAULT_ARGS],
+	);
 
 	const detach = getExtensionConfigBoolean(settings, EXT_ID, "detach", true);
 

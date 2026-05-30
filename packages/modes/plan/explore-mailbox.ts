@@ -9,9 +9,9 @@
  *     exploration context. New `explore_ask` jobs default to dispatching
  *     against the seed (FIFO).
  *   - Children: when the caller marks a question `related: false` AND
- *     the seed is busy, the mailbox spawns a short-lived child agent
- *     pre-loaded with a Q/A snapshot of recent seed exchanges. The
- *     child runs in parallel with the seed.
+ *     the seed is busy, the mailbox spawns a short-lived clean child agent
+ *     pre-loaded with a stable codebase overview. The child runs in
+ *     parallel with the seed.
  *   - Graceful degradation: when no child spawner is configured, or
  *     when the child enqueue throws, the question falls back to the
  *     seed FIFO. Existing single-question flows keep their original
@@ -21,10 +21,7 @@
  * heuristic. This implementation chooses **explicit `related: boolean`**
  * — cheapest, predictable, no extra LLM calls. The agent decides via
  * the `explore_ask` parameter; the mailbox doesn't introspect the
- * question text. The context-snapshot scope is the **last 6 Q/A pairs
- * char-budgeted to ~3000 characters**, fed via the child's first prompt
- * (we have no API to mutate the system prompt of an already-spawned
- * agent).
+ * question text. Children receive a stable overview, not seed history.
  *
  * Internals: two {@link AsyncJobMailbox} instances backing one public
  * `ExploreMailbox`:
@@ -93,12 +90,10 @@ export interface AskOptions {
 }
 
 /**
- * Default values for {@link ExploreMailboxOptions}. `parallelism: 1`
- * preserves pre-#159c behaviour: the child mailbox stays disabled even
- * when {@link MailboxDeps.spawnChildAgent} is configured (the seed +
- * one running child would already exceed the cap).
+ * Default values for {@link ExploreMailboxOptions}. `parallelism: 2`
+ * allows the persistent seed plus one clean child for orthogonal work.
  */
-export const DEFAULT_PARALLELISM = 1;
+export const DEFAULT_PARALLELISM = 2;
 export const DEFAULT_QUEUE_DEPTH_THRESHOLD = 4;
 
 export interface ExploreMailboxOptions {
@@ -107,9 +102,9 @@ export interface ExploreMailboxOptions {
 	 * and any children. The seed counts as one slot; the remaining
 	 * `parallelism - 1` slots are available to children.
 	 *
-	 * `1` (default) keeps the pre-#159c single-FIFO behaviour: even
-	 * `related: false` asks queue behind the seed because there's no
-	 * spare slot for a child.
+	 * `1` restores single-FIFO behaviour: even `related: false` asks queue
+	 * behind the seed because there's no spare slot for a child. The default
+	 * is `2` (seed + one child).
 	 */
 	parallelism?: number;
 	/**
@@ -161,12 +156,13 @@ export interface MailboxDeps {
 	spawnAgent(ctx: ExtensionContext): Promise<SpawnedAgent>;
 	/**
 	 * Spawn a short-lived child sub-agent for orthogonal queries.
-	 * Optional: when omitted, `related: false` falls back to the seed
-	 * FIFO. The child agent shares the seed's system prompt and tool
-	 * set; the snapshot is delivered via the first prompt (we cannot
-	 * mutate the system prompt post-spawn).
+	 * Optional: when omitted, `related: false` falls back to the seed FIFO.
+	 * Children stay clean (`--no-session`) and receive shared overview text
+	 * in their first prompt instead of inheriting seed conversation history.
 	 */
 	spawnChildAgent?(ctx: ExtensionContext): Promise<SpawnedAgent>;
+	/** Stable codebase overview injected into clean children. */
+	getOverview?(): Promise<string | null>;
 }
 
 // ---- Defaults ---------------------------------------------------------------
@@ -188,13 +184,10 @@ const EXPLORE_AGENT_PROMPT = join(PROMPTS_DIR, "explore-agent.md");
 const NOTIFY_EXTENSION_PATH = join(PROMPTS_DIR, "explore-notify-tool.ts");
 
 const DEFAULT_WAIT_TIMEOUT_MS = 120_000;
+const DEFAULT_OVERVIEW_WAIT_MS = 1_500;
 
-/** Max prior Q/A pairs surfaced to a child as context. */
-const SNAPSHOT_MAX_PAIRS = 6;
-/** Approximate char budget for the rendered Q/A snapshot. */
-const SNAPSHOT_CHAR_BUDGET = 3000;
-/** Per-entry char cap before truncation when assembling a snapshot. */
-const SNAPSHOT_PER_ENTRY_BUDGET = 600;
+/** Max overview chars injected into a child prompt. */
+const OVERVIEW_CHAR_BUDGET = 12_000;
 
 // ---- Helpers ----------------------------------------------------------------
 
@@ -223,47 +216,20 @@ function truncate(text: string, max: number): string {
 	return `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-interface JournalEntry {
-	question: string;
-	answer: string;
-}
-
-/**
- * Render a Q/A journal as a system-context block prefix. Returns an
- * empty string when the journal is empty so callers can prepend
- * unconditionally.
- */
-export function renderJournalForChild(journal: JournalEntry[]): string {
-	if (journal.length === 0) return "";
-
-	const recent = journal.slice(-SNAPSHOT_MAX_PAIRS);
-
-	const blocks: string[] = [];
-	let used = 0;
-	for (let i = recent.length - 1; i >= 0; i--) {
-		const entry = recent[i];
-		if (!entry) continue;
-		const q = truncate(entry.question, SNAPSHOT_PER_ENTRY_BUDGET);
-		const a = truncate(entry.answer, SNAPSHOT_PER_ENTRY_BUDGET);
-		const block = `Q: ${q}\nA: ${a}`;
-		if (used + block.length + 2 > SNAPSHOT_CHAR_BUDGET && blocks.length > 0) {
-			break;
-		}
-		blocks.unshift(block);
-		used += block.length + 2;
-	}
-
-	const body = blocks.join("\n\n");
+export function renderOverviewForChild(
+	overview: string,
+	question: string,
+): string {
+	const body = truncate(overview.trim(), OVERVIEW_CHAR_BUDGET);
+	if (!body) return question;
 	return [
-		"---- prior exploration context (read-only) ----",
-		"The seed explore agent ran these queries earlier in this session.",
-		"Treat them as background — do NOT redo their work; build on it.",
-		"",
+		"---- codebase overview (read-only) ----",
 		body,
-		"---- end prior exploration context ----",
+		"---- end codebase overview ----",
 		"",
-		"Now answer the next question:",
+		"Answer this specific question using the overview as orientation. Verify details with tools when needed:",
 		"",
+		question,
 	].join("\n");
 }
 
@@ -341,9 +307,6 @@ export class ExploreMailbox {
 	 * sufficient because the seed mailbox runs `maxConcurrent: 1`.
 	 */
 	private currentDispatch: CurrentDispatch | null = null;
-
-	/** Q/A journal of completed seed exchanges (newest at end). */
-	private readonly journal: JournalEntry[] = [];
 
 	private readonly externalListeners = new Set<
 		(state: MailboxState<ExploreTask, ExploreNotification>) => void
@@ -594,14 +557,6 @@ export class ExploreMailbox {
 			const text = (await agent.getLastText()) ?? "";
 			handle.update({ lastToolSummary: undefined });
 
-			// Record into the journal so future children get context.
-			this.journal.push({ question: handle.job.question, answer: text });
-			// Cap the journal at the same window the renderer reads so we
-			// don't accumulate entries no consumer ever sees.
-			if (this.journal.length > SNAPSHOT_MAX_PAIRS) {
-				this.journal.splice(0, this.journal.length - SNAPSHOT_MAX_PAIRS);
-			}
-
 			return { text };
 		} finally {
 			handle.signal.removeEventListener("abort", onAbort);
@@ -611,10 +566,9 @@ export class ExploreMailbox {
 
 	/**
 	 * Child dispatcher: spawns a fresh ephemeral agent, prompts it
-	 * with a snapshot-prefixed question, captures notify() calls via
+	 * with an overview-prefixed question, captures notify() calls via
 	 * a per-job event listener, returns the answer, then disposes the
-	 * agent. Child results do NOT feed back into the journal (only
-	 * seed exchanges accumulate context).
+	 * agent. Child results do not feed back into seed context.
 	 */
 	private async dispatchChild(
 		handle: DispatchHandle<ExploreTask, ExploreNotification>,
@@ -659,9 +613,10 @@ export class ExploreMailbox {
 			if (handle.signal.aborted) {
 				throw new Error("aborted before dispatch");
 			}
-			const prefix = renderJournalForChild(this.journal);
-			const finalPrompt =
-				prefix.length > 0 ? prefix + handle.job.question : handle.job.question;
+			const overview = (await this.getOverviewBestEffort())?.trim() ?? "";
+			const finalPrompt = overview
+				? renderOverviewForChild(overview, handle.job.question)
+				: handle.job.question;
 			await agent.prompt(finalPrompt);
 			await ended;
 
@@ -678,6 +633,23 @@ export class ExploreMailbox {
 					/* best-effort */
 				}
 			}
+		}
+	}
+
+	private async getOverviewBestEffort(): Promise<string | null> {
+		const getOverview = this.deps.getOverview;
+		if (!getOverview) return null;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<null>((resolve) => {
+			timer = setTimeout(() => resolve(null), DEFAULT_OVERVIEW_WAIT_MS);
+			timer.unref?.();
+		});
+		try {
+			return await Promise.race([getOverview(), timeout]);
+		} catch {
+			return null;
+		} finally {
+			if (timer) clearTimeout(timer);
 		}
 	}
 

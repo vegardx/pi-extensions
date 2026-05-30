@@ -37,10 +37,10 @@ const RESEARCH_TOOLS: readonly string[] = ["websearch", "webfetch"];
  * Fallback timeout when neither the per-call `timeoutMs` nor the
  * `extensionConfig.modes.research.timeoutMs` setting is provided.
  *
- * 90s matches the historical hard-coded value before the timeout
- * became configurable (issue #167).
+ * Two minutes gives web-heavy research agents enough time for a small
+ * search/fetch loop while still bounding a stuck subprocess.
  */
-export const DEFAULT_RESEARCH_TIMEOUT_MS = 90_000;
+export const DEFAULT_RESEARCH_TIMEOUT_MS = 120_000;
 
 /**
  * Hard cap (characters) on a delegated answer before it crosses back
@@ -52,7 +52,7 @@ export const DEFAULT_DELEGATE_MAX_CHARS = 6000;
  * Cap on concurrent researcher subprocesses — backpressure for a burst
  * of parallel `delegate(researcher)` calls.
  */
-export const DEFAULT_DELEGATE_MAX_CONCURRENT = 4;
+export const DEFAULT_DELEGATE_MAX_CONCURRENT = 10;
 
 export interface ResearchOptions {
 	/**

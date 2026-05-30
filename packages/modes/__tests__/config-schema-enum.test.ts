@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { getDeclaredExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
-import { VALID_REVIEWER_ROLES } from "pi-ext-review/auto-review";
 import modesExtension, {
 	resolveDefaultMode,
 	resolveImplementDefault,
@@ -47,17 +46,20 @@ describe("modes configSchema enum knobs", () => {
 		expect(resolveImplementDefault("plan").valid).toBe(false);
 	});
 
-	it("review.agents enumValues match the review allowlist (no drift)", () => {
-		const k = knob("review.agents");
-		expect(k.type).toBe("string[]");
-		expect(new Set(k.enumValues)).toEqual(new Set(VALID_REVIEWER_ROLES));
+	it("does not advertise deprecated local autoreview knobs", () => {
+		const schema = getDeclaredExtension("modes")?.configSchema ?? [];
+		expect(schema.some((k) => k.key === "review.enable")).toBe(false);
+		expect(schema.some((k) => k.key === "review.agents")).toBe(false);
 	});
 
-	it("review.agents default is a subset of its enumValues", () => {
-		const k = knob("review.agents");
-		const allowed = new Set(k.enumValues);
-		for (const role of (k.default as string[]) ?? []) {
-			expect(allowed.has(role)).toBe(true);
-		}
+	it("uses unset semantics for optional no-value knobs", () => {
+		expect(knob("park.githubProject").default).toBeUndefined();
+		expect(knob("compaction.planMaxContextTokens").default).toBeUndefined();
+	});
+
+	it("advertises updated delegation and explore defaults", () => {
+		expect(knob("research.timeoutMs").default).toBe(120000);
+		expect(knob("delegate.maxConcurrent").default).toBe(10);
+		expect(knob("explore.parallelism").default).toBe(2);
 	});
 });

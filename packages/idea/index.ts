@@ -107,13 +107,12 @@ export default defineExtension(
 				key: "polish.contextEntries",
 				type: "number",
 				default: 6,
-				doc: "How many tail entries from the current session to feed into the polish subagent.",
+				doc: "How many most-recent session entries to include as context for the polish subagent.",
 			},
 			{
 				key: "titlePrefix",
 				type: "string",
-				default: "[idea] ",
-				doc: 'Prefix prepended to the polished/fallback title. Set to "" to disable.',
+				doc: "Optional prefix prepended to the polished/fallback title. Leave unset for no prefix.",
 			},
 			{
 				key: "model",
@@ -175,7 +174,7 @@ export async function runIdea(
 		settings,
 		EXT_ID,
 		"titlePrefix",
-		"[idea] ",
+		"",
 	);
 	const recentEntryCount = getNumberConfig(
 		settings,

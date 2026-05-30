@@ -44,14 +44,10 @@ export interface SubagentTask<Tag = string> {
 	/** Abort signal wired to the active agent turn, if any. */
 	signal?: AbortSignal;
 	/**
-	 * `waitForIdle` timeout in milliseconds. When unset, the
-	 * underlying `RpcClient` falls back to its 60s default.
-	 *
-	 * Callers that batch a lot of work into one subagent (e.g.
-	 * `/verify`'s single-subagent fan-in over a long plan) should
-	 * scale this with payload size: 60s is plenty for a 1-step
-	 * verify, but a 13-step plan with a large embedded diff
-	 * routinely needs 4–5 minutes against a fast-tier model.
+	 * End-to-end deadline in milliseconds. The deadline covers startup,
+	 * prompt delivery, idle wait, answer capture, and best-effort shutdown.
+	 * When unset, the underlying `RpcClient.waitForIdle` fallback is still
+	 * used for the idle phase, but startup/prompt/shutdown get local caps.
 	 */
 	timeoutMs?: number;
 }
@@ -69,6 +65,16 @@ export interface SubagentOutcome<Tag = string> {
 }
 
 const DEFAULT_TOOLS: readonly string[] = ["read", "grep", "find", "ls"];
+const DEFAULT_STEP_TIMEOUT_MS = 60_000;
+const STOP_TIMEOUT_MS = 2_000;
+
+export interface SubagentClient {
+	start(): Promise<void>;
+	prompt(task: string): Promise<void>;
+	waitForIdle(timeoutMs?: number): Promise<void>;
+	getLastAssistantText(): Promise<string | null | undefined>;
+	stop(): Promise<void>;
+}
 
 /**
  * Spawn one subagent, send the task, collect the reply, tear down.
@@ -102,41 +108,110 @@ export async function runSubagent<Tag>(
 		],
 	});
 
-	const aborted = new Promise<never>((_resolve, reject) => {
-		if (!input.signal) return;
-		if (input.signal.aborted) {
-			reject(new Error("aborted"));
-			return;
-		}
-		input.signal.addEventListener("abort", () => reject(new Error("aborted")), {
-			once: true,
-		});
-	});
+	return runSubagentWithClient(input, client);
+}
+
+export async function runSubagentWithClient<Tag>(
+	input: SubagentTask<Tag>,
+	client: SubagentClient,
+): Promise<SubagentOutcome<Tag>> {
+	const deadline = createDeadline(input.signal, input.timeoutMs);
 
 	try {
-		await Promise.race([client.start(), aborted]);
+		await runBounded("start", deadline, () => client.start());
 	} catch (err) {
 		await tryStop(client);
-		return {
-			tag: input.tag,
-			rawText: "",
-			error: err instanceof Error ? err.message : String(err),
-		};
+		deadline.dispose();
+		return failure(input.tag, err);
 	}
 
 	try {
-		await Promise.race([client.prompt(input.task), aborted]);
-		await awaitIdleOrAbort(client, input.timeoutMs, aborted);
-		const raw = (await client.getLastAssistantText()) ?? "";
+		await runBounded("prompt", deadline, () => client.prompt(input.task));
+		await awaitIdleOrAbort(client, remainingMs(deadline), deadline.aborted);
+		const raw =
+			(await runBounded("getLastAssistantText", deadline, () =>
+				client.getLastAssistantText(),
+			)) ?? "";
 		return { tag: input.tag, rawText: raw };
 	} catch (err) {
-		return {
-			tag: input.tag,
-			rawText: "",
-			error: err instanceof Error ? err.message : String(err),
-		};
+		return failure(input.tag, err);
 	} finally {
 		await tryStop(client);
+		deadline.dispose();
+	}
+}
+
+function failure<Tag>(tag: Tag, err: unknown): SubagentOutcome<Tag> {
+	return {
+		tag,
+		rawText: "",
+		error: err instanceof Error ? err.message : String(err),
+	};
+}
+
+interface Deadline {
+	readonly aborted: Promise<never>;
+	readonly signal?: AbortSignal;
+	readonly expiresAt?: number;
+	dispose(): void;
+}
+
+function createDeadline(
+	signal: AbortSignal | undefined,
+	timeoutMs: number | undefined,
+): Deadline {
+	const ctrl = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let rejectAbort!: (err: Error) => void;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		rejectAbort = reject;
+	});
+	aborted.catch(() => {});
+
+	const abort = (reason: string) => {
+		if (ctrl.signal.aborted) return;
+		ctrl.abort();
+		rejectAbort(new Error(reason));
+	};
+
+	const onAbort = () => abort("aborted");
+	if (signal?.aborted) onAbort();
+	else signal?.addEventListener("abort", onAbort, { once: true });
+
+	const stepMs = timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+	const expiresAt = Date.now() + stepMs;
+	timer = setTimeout(
+		() => abort(`subagent timed out after ${stepMs}ms`),
+		stepMs,
+	);
+	timer.unref?.();
+
+	return {
+		aborted,
+		signal: ctrl.signal,
+		expiresAt,
+		dispose: () => {
+			if (timer) clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+		},
+	};
+}
+
+function remainingMs(deadline: Deadline): number | undefined {
+	if (!deadline.expiresAt) return undefined;
+	return Math.max(1, deadline.expiresAt - Date.now());
+}
+
+async function runBounded<T>(
+	step: string,
+	deadline: Deadline,
+	fn: () => Promise<T>,
+): Promise<T> {
+	try {
+		return await Promise.race([fn(), deadline.aborted]);
+	} catch (err) {
+		if (err instanceof Error && err.message) throw err;
+		throw new Error(`${step} failed: ${String(err)}`);
 	}
 }
 
@@ -177,11 +252,14 @@ export async function runSubagentsParallel<Tag>(
 	return results;
 }
 
-async function tryStop(client: RpcClient): Promise<void> {
+async function tryStop(client: SubagentClient): Promise<void> {
+	const stopDeadline = createDeadline(undefined, STOP_TIMEOUT_MS);
 	try {
-		await client.stop();
+		await runBounded("stop", stopDeadline, () => client.stop());
 	} catch {
 		/* best-effort shutdown */
+	} finally {
+		stopDeadline.dispose();
 	}
 }
 

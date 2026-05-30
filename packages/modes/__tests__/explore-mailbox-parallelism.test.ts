@@ -3,8 +3,8 @@
  * ExploreMailbox.
  *
  * Coverage:
- *   - `parallelism: 1` (default) disables children entirely. Even
- *     `related: false` while seed busy stays on seed FIFO.
+ *   - `parallelism: 1` disables children entirely. Even `related: false`
+ *     while seed busy stays on seed FIFO.
  *   - `parallelism: 3 + queueDepthThreshold: huge` — `related: false`
  *     while seed busy spawns children up to the cap.
  *   - Children-cap enforcement: 2 children running + new
@@ -105,8 +105,8 @@ function completeTurn(agent: MockAgent, text: string): void {
 }
 
 describe("ExploreMailbox parallelism & queue-depth (#159c)", () => {
-	describe("parallelism: 1 (default) — children disabled", () => {
-		it("default opts: related: false while seed busy still routes to seed", async () => {
+	describe("parallelism defaults and parallelism: 1", () => {
+		it("default opts allow one child while seed is busy", async () => {
 			const h = makeHarness();
 			const mailbox = new ExploreMailbox(CTX, h.deps);
 
@@ -116,11 +116,11 @@ describe("ExploreMailbox parallelism & queue-depth (#159c)", () => {
 
 			const { id } = await mailbox.ask("second", { related: false });
 
-			expect(id).toMatch(/^q/);
-			expect(h.spawnChildAgentSpy).not.toHaveBeenCalled();
+			expect(id).toMatch(/^c/);
+			expect(h.spawnChildAgentSpy).toHaveBeenCalledOnce();
 		});
 
-		it("explicit parallelism: 1 also keeps children disabled", async () => {
+		it("explicit parallelism: 1 keeps children disabled", async () => {
 			const h = makeHarness();
 			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 1 });
 
@@ -331,7 +331,7 @@ describe("ExploreMailbox parallelism & queue-depth (#159c)", () => {
 		it("constructor accepts sanitised values", async () => {
 			const h = makeHarness();
 			// Garbage values → mailbox falls back to defaults
-			// (parallelism: 1, threshold: 4) → children disabled.
+			// (parallelism: 2, threshold: 4) → one child slot available.
 			const mailbox = new ExploreMailbox(CTX, h.deps, {
 				parallelism: -5 as unknown as number,
 				queueDepthThreshold: "not a number" as unknown as number,
@@ -342,8 +342,8 @@ describe("ExploreMailbox parallelism & queue-depth (#159c)", () => {
 			h.seedAgent.emit({ type: "agent_start" });
 
 			const { id } = await mailbox.ask("second", { related: false });
-			expect(id).toMatch(/^q/);
-			expect(h.spawnChildAgentSpy).not.toHaveBeenCalled();
+			expect(id).toMatch(/^c/);
+			expect(h.spawnChildAgentSpy).toHaveBeenCalledOnce();
 		});
 	});
 

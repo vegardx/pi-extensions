@@ -52,6 +52,23 @@ describe("resolveEditorConfig", () => {
 		);
 	});
 
+	it("uses preset command and args when no custom command is set", () => {
+		expect(resolveEditorConfig(settings({ preset: "cursor" }), noEnv)).toEqual({
+			command: "cursor",
+			args: ["-g", "{path}:{line}:{col}"],
+			detach: true,
+		});
+	});
+
+	it("lets explicit command override preset", () => {
+		const cfg = resolveEditorConfig(
+			settings({ preset: "cursor", command: "/opt/bin/editor" }),
+			noEnv,
+		);
+		expect(cfg.command).toBe("/opt/bin/editor");
+		expect(cfg.args).toEqual(["-g", "{path}:{line}:{col}"]);
+	});
+
 	it("respects custom args", () => {
 		const cfg = resolveEditorConfig(
 			settings({
