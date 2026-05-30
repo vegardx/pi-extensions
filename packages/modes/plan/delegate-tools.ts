@@ -219,15 +219,6 @@ export class DelegateAgents {
 		return this.researchMailboxInstance?.hasInFlight ?? false;
 	}
 
-	/**
-	 * Ask the research agent a question. Each call spawns a fresh
-	 * one-shot process so multiple concurrent questions run fully in
-	 * parallel.
-	 *
-	 * Returns a structured {@link ResearchOutcome}. Never throws —
-	 * abort/timeout/no-model failures all surface as `ok: false` with
-	 * a discriminating `reason`.
-	 */
 	private activeResearchRuns = 0;
 	private readonly researchWaiters: Array<() => void> = [];
 
@@ -235,8 +226,9 @@ export class DelegateAgents {
 	 * Run {@link research} under a concurrency cap. A burst of parallel
 	 * `delegate({ to: "researcher" })` calls (pi runs a turn's tool calls
 	 * via Promise.all) would otherwise spawn one subprocess each; the cap
-	 * is the backpressure. Excess calls block here until a slot frees.
-	 * `maxConcurrent` unset / non-finite / <= 0 means uncapped.
+	 * is the backpressure. Excess calls block here until a slot frees — or
+	 * return promptly with an aborted outcome if the caller's signal fires
+	 * while queued. `maxConcurrent` unset / non-finite / <= 0 means uncapped.
 	 */
 	async cappedResearch(
 		question: string,
@@ -247,8 +239,31 @@ export class DelegateAgents {
 			return this.research(question, opts);
 		}
 		while (this.activeResearchRuns >= cap) {
+			if (opts.signal?.aborted) {
+				return {
+					ok: false,
+					reason: "subagent-error",
+					detail: "aborted while queued for a research slot",
+					elapsedMs: 0,
+				};
+			}
 			await new Promise<void>((resolve) => {
-				this.researchWaiters.push(resolve);
+				const signal = opts.signal;
+				const cleanup = () => {
+					const i = this.researchWaiters.indexOf(waiter);
+					if (i >= 0) this.researchWaiters.splice(i, 1);
+					signal?.removeEventListener("abort", onAbort);
+				};
+				const waiter = () => {
+					cleanup();
+					resolve();
+				};
+				const onAbort = () => {
+					cleanup();
+					resolve();
+				};
+				this.researchWaiters.push(waiter);
+				signal?.addEventListener("abort", onAbort);
 			});
 		}
 		this.activeResearchRuns++;
@@ -260,6 +275,15 @@ export class DelegateAgents {
 		}
 	}
 
+	/**
+	 * Ask the research agent a question. Each call spawns a fresh
+	 * one-shot process so multiple concurrent questions run fully in
+	 * parallel.
+	 *
+	 * Returns a structured {@link ResearchOutcome}. Never throws —
+	 * abort/timeout/no-model failures all surface as `ok: false` with
+	 * a discriminating `reason`.
+	 */
 	async research(
 		question: string,
 		opts: ResearchOptions = {},

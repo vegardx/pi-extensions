@@ -242,6 +242,36 @@ describe("DelegateAgents.cappedResearch", () => {
 		for (const g of gates.splice(0)) g();
 		await Promise.all(calls);
 	});
+
+	it("aborts a queued call promptly when its signal fires", async () => {
+		const gates: Array<() => void> = [];
+		vi.mocked(runSubagent).mockImplementation(async (input) => {
+			await new Promise<void>((r) => gates.push(r));
+			return { tag: input.tag, rawText: "ok" } as never;
+		});
+		const agents = new DelegateAgents(MOCK_CTX);
+		// Fill both slots with blocked runs.
+		const a = agents.cappedResearch("q1", { maxConcurrent: 2 });
+		const b = agents.cappedResearch("q2", { maxConcurrent: 2 });
+		await new Promise((r) => setImmediate(r));
+		expect(runSubagent).toHaveBeenCalledTimes(2);
+		// Third call queues; aborting its signal must return promptly
+		// without ever starting a subprocess.
+		const ac = new AbortController();
+		const queued = agents.cappedResearch("q3", {
+			maxConcurrent: 2,
+			signal: ac.signal,
+		});
+		ac.abort();
+		const outcome = await queued;
+		expect(outcome).toMatchObject({ ok: false, reason: "subagent-error" });
+		expect((outcome as { detail: string }).detail).toMatch(
+			/aborted while queued/,
+		);
+		expect(runSubagent).toHaveBeenCalledTimes(2); // q3 never ran
+		for (const g of gates.splice(0)) g();
+		await Promise.all([a, b]);
+	});
 });
 
 describe("DelegateAgents.researchAsk / researchCheck / researchWait (#159a)", () => {
