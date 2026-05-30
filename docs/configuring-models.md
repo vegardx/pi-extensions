@@ -226,6 +226,11 @@ Mix per-extension with the tier defaults:
 `develop` reaches for openrouter, everything else stays on direct
 Anthropic.
 
+These per-extension `model` overrides are also editable from the
+`/config` **Settings** page (the `model` knob opens a filterable picker
+of the session's auth-configured models), so you don't have to hand-edit
+`settings.json`.
+
 ### Local model (Ollama, LM Studio, etc.)
 
 Extensions work with any pi-registered provider. If you register a

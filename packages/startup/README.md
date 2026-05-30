@@ -77,7 +77,7 @@ counter focuses on per-extension `extensionConfig` knobs).
 ## The interactive `/config` panel
 
 In an interactive session, `/config` opens a
-three-page panel. `Tab` / `Shift+Tab` cycle pages; `←/→` or `p`/`g`
+four-page panel. `Tab` / `Shift+Tab` cycle pages; `←/→` or `p`/`g`
 switch the project / global scope on the pages that write settings;
 `q` / `Esc` close. Every edit writes to `settings.json` immediately
 (effects take a session restart).
@@ -94,6 +94,15 @@ switch the project / global scope on the pages that write settings;
   layer. `enter` opens a filterable picker of the session's
   auth-configured models (`modelRegistry.getAvailable()`) plus a clear
   option; `r` clears the active-scope value directly.
+- **Settings** — every declared `extensionConfig.<ext>.<key>` knob,
+  grouped by extension, with project / global / effective columns.
+  Editing dispatches on the knob type: booleans cycle
+  `undef → true → false → undef` in place; `enum` and model keys open a
+  filterable picker (plus a clear option); `string` / `number` /
+  `string[]` open a text-input overlay (numbers validated on commit,
+  `string[]` parsed on comma/space and checked against `enumValues`
+  when present). `r` clears the active-scope value. The detail panel
+  shows the knob's doc, choices, default, and effective value.
 - **Context** — the read-only context-file list (same data as the
   startup report).
 
@@ -108,7 +117,7 @@ Inside pi:
 - The `session_start` notification shows the full breakdown
   (headline + per-extension report) as a single multi-line block.
 - `/config` opens the interactive panel; `Tab` cycles
-  Extensions / Models / Context.
+  Extensions / Models / Settings / Context.
 - In a headless session it prints the breakdown instead.
 
 ## How it discovers extensions
