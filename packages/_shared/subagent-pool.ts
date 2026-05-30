@@ -330,16 +330,16 @@ export class SubagentPool {
 			cwd: config.cwd,
 			provider: config.provider,
 			model: config.model,
-			...(config.env ? { env: config.env } : {}),
+			// Mark this child as a subagent so every extension wrapped by our
+			// `defineExtension` opts out (see resolveEnabled). This kills the
+			// fork bomb (modes never boots) and keeps subagents lean, while
+			// leaving external provider extensions (needed to resolve
+			// `backgroundModels.*`) and `--extension` paths (notify) loaded.
+			// A future spawner can re-enable a specific extension by also
+			// passing `PI_EXT_<NAME>=on`.
+			env: { ...config.env, PI_SUBAGENT: "1" },
 			args: [
 				"--no-session",
-				// Isolate the subagent from the user's extension set. Without this
-				// the child reads the same settings.json and loads every package
-				// (including `modes`), which boots into plan mode, mints a plan,
-				// re-grants plan-mode tools over the `--tools` whitelist, and can
-				// recursively spawn more subagents — a fork bomb. Explicit
-				// `--extension` paths in `extraArgs` (e.g. notify) still load.
-				"--no-extensions",
 				"--tools",
 				tools,
 				"--append-system-prompt",

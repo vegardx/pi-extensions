@@ -200,6 +200,27 @@ function resolveEnabled(name: string): EnabledResolution {
 		};
 	}
 
+	// Subagent isolation. Subagents (codebase-explore, overview, review
+	// fan-out, idea polish, …) spawn a child `pi` that reads the *same*
+	// settings.json and would otherwise load every enabled extension —
+	// including `modes`, which boots into plan mode, mints plans, overrides
+	// the subagent's tool whitelist, and can recursively spawn more subagents
+	// (a fork bomb). When `PI_SUBAGENT` is set the spawner has declared a
+	// stripped-down child, so every extension wrapped by `defineExtension`
+	// opts out by default. This sits *below* the explicit `PI_EXT_<NAME>` env
+	// (so a spawner can re-enable a specific extension with
+	// `PI_SUBAGENT=1 PI_EXT_<NAME>=on`) and *above* settings (so an
+	// `enabled: true` in settings.json can't drag it back in). External
+	// provider extensions (not wrapped by this `defineExtension`) and
+	// `--extension` paths like notify are unaffected.
+	if (parseEnvFlag(env.PI_SUBAGENT) === true) {
+		return {
+			enabled: false,
+			source: "subagent",
+			loadState: "disabled-in-subagent",
+		};
+	}
+
 	const cwd = cwdOverride ?? process.cwd();
 	const layered = readRelevantSettingsLayered(cwd, agentDirOverride);
 	const projVal = layered.project.extensionConfig?.[name]?.enabled;

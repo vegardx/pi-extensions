@@ -99,13 +99,15 @@ export async function runSubagent<Tag>(
 		cwd: input.cwd,
 		provider: input.provider,
 		model: input.model,
+		// Mark this child as a subagent so every extension wrapped by our
+		// `defineExtension` opts out (see resolveEnabled): modes never boots,
+		// so no plan-minting, tool-whitelist override, or recursive spawning.
+		// External provider extensions (backing `backgroundModels.*`) and
+		// `--extension` paths stay loaded. Re-enable a specific extension in a
+		// subagent via `PI_EXT_<NAME>=on` if ever needed.
+		env: { PI_SUBAGENT: "1" },
 		args: [
 			"--no-session",
-			// Isolate the subagent: skip auto-discovered/configured extensions
-			// so the child never loads `modes` (which would boot into plan mode,
-			// mint a plan, and potentially spawn more subagents). Explicit
-			// `--extension` paths still load.
-			"--no-extensions",
 			"--tools",
 			tools,
 			"--append-system-prompt",
