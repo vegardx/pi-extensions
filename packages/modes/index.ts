@@ -374,6 +374,15 @@ export default defineExtension(
 				key: "review.agents",
 				type: "string[]",
 				default: ["code-reviewer", "code-simplifier", "security-analyst"],
+				enumValues: [
+					"code-reviewer",
+					"code-simplifier",
+					"security-analyst",
+					"architect",
+					"scope-analyst",
+					"doc-reviewer",
+					"dependency-checker",
+				],
 				doc: "Reviewer roles to run. Each role is fanned out to both primary and secondary models. Valid: code-reviewer, code-simplifier, security-analyst, architect, scope-analyst, doc-reviewer, dependency-checker.",
 			},
 			{
@@ -414,13 +423,15 @@ export default defineExtension(
 			},
 			{
 				key: "defaultMode",
-				type: "string",
+				type: "enum",
+				enumValues: ALL_MODES,
 				default: "plan",
 				doc: "Mode for fresh sessions: plan | auto | ask | hack. Existing persisted sessions keep their saved mode.",
 			},
 			{
 				key: "implementDefault",
-				type: "string",
+				type: "enum",
+				enumValues: IMPLEMENT_MODES,
 				default: "auto",
 				doc: "Default option highlighted in the /implement picker: auto | ask. `auto` chugs through commit/ship/next phase autonomously; `ask` pauses at git boundaries. Set to `ask` if you want a human-in-the-loop default.",
 			},
