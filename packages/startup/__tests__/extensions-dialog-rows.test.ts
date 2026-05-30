@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionMetadata } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { buildRows } from "../extensions-dialog/build-rows.js";
+import { buildRows } from "../config-dialog/build-rows.js";
 
 const META: ExtensionMetadata[] = [
 	{

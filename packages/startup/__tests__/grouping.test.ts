@@ -383,13 +383,13 @@ describe("renderHeadline", () => {
 		layered: { global: {}, project: {}, merged: {} },
 	};
 
-	it("reports 0/0 with the same · /extensions hint when nothing is installed", () => {
+	it("reports 0/0 with the same · /config hint when nothing is installed", () => {
 		expect(renderHeadline(empty)).toBe(
-			"pi-ext-startup: 0 extensions · /extensions for details",
+			"pi-ext-startup: 0 extensions · /config for details",
 		);
 	});
 
-	it("hints at /extensions when nothing is enabled but extensions are installed", () => {
+	it("hints at /config when nothing is enabled but extensions are installed", () => {
 		const summary: StartupSummary = {
 			declared: [
 				{
@@ -409,7 +409,7 @@ describe("renderHeadline", () => {
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		expect(renderHeadline(summary)).toBe(
-			"ℹ pi-extensions: 0 of 2 enabled. Run /extensions to configure.",
+			"ℹ pi-extensions: 0 of 2 enabled. Run /config to configure.",
 		);
 	});
 
@@ -439,7 +439,7 @@ describe("renderHeadline", () => {
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		expect(renderHeadline(summary)).toBe(
-			"✓ pi-extensions loaded: modes, webfetch (2 of 3 installed) · /extensions for details",
+			"✓ pi-extensions loaded: modes, webfetch (2 of 3 installed) · /config for details",
 		);
 	});
 
@@ -472,7 +472,7 @@ describe("renderHeadline", () => {
 			layered: { global: {}, project: {}, merged: {} },
 		};
 		expect(renderHeadline(summary)).toBe(
-			"ℹ pi-extensions: 0 of 2 enabled (+1 unrecognized). Run /extensions to configure.",
+			"ℹ pi-extensions: 0 of 2 enabled (+1 unrecognized). Run /config to configure.",
 		);
 	});
 });

@@ -7,10 +7,10 @@ First-party "what did pi just load?" extension for this monorepo.
 On `session_start` (and on `/reload`), the extension surveys the
 running pi instance and prints a one-shot info notification with
 the full breakdown — a one-line headline followed by the same
-report `/extensions` produces on demand:
+report `/config` produces on demand:
 
 ```
-pi-ext-startup: 7 extensions · /extensions for details
+pi-ext-startup: 7 extensions · /config for details
 
 Active model: anthropic/claude-…
 Background models:
@@ -33,7 +33,9 @@ previous one in place, so a per-line loop would collapse to whichever
 line happened to be last. One multi-line notify renders as a single
 Text block.
 
-Run `/extensions` to print the same breakdown again on demand:
+Run `/config` for the interactive panel. In a headless / piped
+session the command falls back to printing the same text breakdown
+instead:
 
 - **Active session model** — `provider/id` of the model pi is
   currently routing turns through (`ctx.model`).
@@ -43,8 +45,9 @@ Run `/extensions` to print the same breakdown again on demand:
 - **Context files** — every `AGENTS.md` or `CLAUDE.md` that pi would
   load for the current session, in the order they are assembled into
   the context (global first, project last). Each entry shows:
-  - scope label: `global` (`~/.pi/agent/`), `parent` (ancestor
-    directories), or `project` (the cwd file);
+  - scope label: `global` (pi's agent dir, resolved via `getAgentDir()`
+    — honours `PI_CODING_AGENT_DIR`, e.g. `~/.config/pi/agent/`),
+    `parent` (ancestor directories), or `project` (the cwd file);
   - home-relative display path;
   - rough token estimate (`ceil(charCount / 4)`) and line count.
   Shows `(none found)` when no context files exist on disk.
@@ -71,6 +74,29 @@ overrides for the consuming extension only via the `background model`
 line in the per-extension dump (they don't add to "M overrides" — that
 counter focuses on per-extension `extensionConfig` knobs).
 
+## The interactive `/config` panel
+
+In an interactive session, `/config` opens a
+three-page panel. `Tab` / `Shift+Tab` cycle pages; `←/→` or `p`/`g`
+switch the project / global scope on the pages that write settings;
+`q` / `Esc` close. Every edit writes to `settings.json` immediately
+(effects take a session restart).
+
+- **Extensions** — a project × global matrix of
+  `extensionConfig.<name>.enabled`. `space`/`enter` cycles the active
+  scope `null → on → off → null`; `r` clears it. The effective column
+  shows what's live this session and where it came from.
+- **Models** — the six background-model tiers
+  (`backgroundModels.{primary,secondary}.{fast,normal,heavy}`). Each
+  row shows the literal project and global values plus an effective
+  column computed as `project ?? global` — a flat leaf merge with **no**
+  secondary→primary fallback, so every override is attributable to one
+  layer. `enter` opens a filterable picker of the session's
+  auth-configured models (`modelRegistry.getAvailable()`) plus a clear
+  option; `r` clears the active-scope value directly.
+- **Context** — the read-only context-file list (same data as the
+  startup report).
+
 ## Test
 
 ```bash
@@ -81,7 +107,9 @@ Inside pi:
 
 - The `session_start` notification shows the full breakdown
   (headline + per-extension report) as a single multi-line block.
-- `/extensions` prints the same breakdown again on demand.
+- `/config` opens the interactive panel; `Tab` cycles
+  Extensions / Models / Context.
+- In a headless session it prints the breakdown instead.
 
 ## How it discovers extensions
 
@@ -100,7 +128,7 @@ self-declare. In this repo `pi-ext-gh` is skill-only — it ships a
 `skills/` directory and no `index.ts`, so it never appears under
 "declared extensions". Skills themselves are filtered out of the
 command list (they aren't extensions), so they don't bleed into
-"unrecognized" either; they're just invisible to `/extensions`.
+"unrecognized" either; they're just invisible to `/config`.
 
 ## Adding a new extension to the report
 
@@ -139,7 +167,7 @@ export default function (pi: ExtensionAPI) {
 
 `name` is the short, stable identity used both as the key under
 `extensionConfig.<name>` in `settings.json` and as the join key for
-`/extensions`. `path` lines up with the `sourceInfo.path` pi attaches
+`/config`. `path` lines up with the `sourceInfo.path` pi attaches
 to commands and tools.
 
 Re-declaring the same `name` overwrites the previous entry (last
@@ -151,16 +179,16 @@ otherwise — each extension declares itself exactly once per process.
 - `index.ts` — factory: `summarize(pi, ctx)` (joins the metadata
   registry, command/tool grouping, layered settings, and discovered
   context files into a structured summary), `renderHeadline(summary)` /
-  `renderLines(summary)` (pure, summary → string / string[]), and the
-  `session_start` + `/extensions` wiring (one multi-line `notify` per
-  emit).
-- `__tests__/grouping.test.ts` — covers the pure helpers:
-  `groupBySource`, `resolveBackgroundTier`, `buildDeclaredView`,
-  `countOverrides`, `renderHeadline`, `renderLines`, and a smoke test
-  that the factory self-declares as `"startup"`.
-- `__tests__/context-files.test.ts` — covers `discoverContextFiles`
-  (global file, AGENTS.md vs CLAUDE.md preference, scope assignment,
-  root→cwd ordering, token and line counts, at-most-one-per-dir,
-  `~` display path) and the `renderLines` context-files section
-  (none-found fallback, count/token header, `k` suffix, per-file
-  lines, ordering after background models).
+  `renderLines(summary)` (pure, summary → string / string[]),
+  `discoverContextFiles` (uses `getAgentDir()` for the global file),
+  `listAvailableModelSpecs`, and the `session_start` + `/config` +
+  `/config` wiring (one multi-line `notify` per emit).
+- `config-dialog/` — the interactive panel: `config-state.ts`
+  (top-level page/scope model), `extensions-state.ts` + `build-rows.ts`
+  (Extensions page), `models-state.ts` (Models page + picker), and
+  `dialog.ts` (TUI bindings).
+- `__tests__/` — `grouping.test.ts`, `context-files.test.ts`,
+  `extensions-dialog-{state,rows}.test.ts`, `models-state.test.ts`,
+  and `config-state.test.ts` cover the pure helpers and state machines.
+  Background-model read/write round-trips live in
+  `_shared/__tests__/settings-writer.test.ts`.
