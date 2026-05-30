@@ -2642,7 +2642,9 @@ export default defineExtension(
 				| Record<string, unknown>
 				| undefined;
 			const raw = delegateCfg?.maxConcurrent;
-			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+			// Require >= 1: a fractional value like 0.5 would floor to 0, which
+			// cappedResearch treats as uncapped — the opposite of intent.
+			if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
 				return Math.floor(raw);
 			}
 			return DEFAULT_DELEGATE_MAX_CONCURRENT;
