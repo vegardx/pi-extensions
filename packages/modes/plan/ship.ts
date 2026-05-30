@@ -178,7 +178,12 @@ export async function shipPhase(
 		cwd: path,
 	});
 	if (!push.ok) {
-		return { ok: false, error: `git push failed: ${push.stderr.trim()}` };
+		return {
+			ok: false,
+			error: push.timedOut
+				? "git push timed out — check connectivity or credentials"
+				: `git push failed: ${push.stderr.trim()}`,
+		};
 	}
 
 	// Idempotency: if an open PR already exists for this branch, return
@@ -211,7 +216,9 @@ export async function shipPhase(
 	if (!create.ok) {
 		return {
 			ok: false,
-			error: `gh pr create failed: ${create.stderr.trim()}`,
+			error: create.timedOut
+				? "gh pr create timed out — check connectivity or credentials"
+				: `gh pr create failed: ${create.stderr.trim()}`,
 		};
 	}
 	const parsed = parsePrCreateOutput(create.stdout);

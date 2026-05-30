@@ -6,6 +6,7 @@ import {
 	currentBranch,
 	detectDefaultBranch,
 	isGitRepo,
+	runCommand,
 	workingTreeClean,
 } from "../git.js";
 
@@ -144,6 +145,40 @@ describe("detectDefaultBranch", () => {
 		} finally {
 			cleanup(repo);
 		}
+	});
+});
+
+describe("runCommand hang-prevention", () => {
+	it("kills a command that exceeds its timeout and reports timedOut", () => {
+		const start = Date.now();
+		const r = runCommand("sleep", ["30"], { timeoutMs: 200 });
+		const elapsed = Date.now() - start;
+		expect(r.timedOut).toBe(true);
+		expect(r.ok).toBe(false);
+		expect(r.stderr).toContain("timed out");
+		// The whole point: the call returns promptly instead of hanging.
+		expect(elapsed).toBeLessThan(5_000);
+	});
+
+	it("sets non-interactive prompt vars in the child env", () => {
+		// shell:false, so invoke printenv directly (no shell expansion).
+		const r = runCommand("printenv", ["GIT_TERMINAL_PROMPT"]);
+		expect(r.ok).toBe(true);
+		expect(r.stdout.trim()).toBe("0");
+	});
+
+	it("disables gh interactive prompts in the child env", () => {
+		const r = runCommand("printenv", ["GH_PROMPT_DISABLED"]);
+		expect(r.ok).toBe(true);
+		expect(r.stdout.trim()).toBe("1");
+	});
+
+	it("runs fast commands normally with timedOut false", () => {
+		const r = runCommand("git", ["--version"]);
+		expect(r.ok).toBe(true);
+		expect(r.exitCode).toBe(0);
+		expect(r.timedOut).toBe(false);
+		expect(r.stdout).toContain("git version");
 	});
 });
 
