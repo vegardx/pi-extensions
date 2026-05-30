@@ -454,6 +454,13 @@ export default defineExtension(
 				default: DEFAULT_QUEUE_DEPTH_THRESHOLD,
 				doc: "Queued-task depth at which the explore mailbox scales up to `explore.parallelism` workers. Below it a single worker handles the queue. Positive integers only. Default 4.",
 			},
+			{
+				key: "model",
+				type: "string",
+				fallbackChain:
+					"extensionConfig.modes.model → backgroundModels.primary.normal → session model",
+				doc: "Model for the plan/phase worker sub-agents and phase-boundary compaction summaries (both normal-tier background work). Leave unset to use backgroundModels.primary.normal, then the session model.",
+			},
 		],
 	},
 	(pi: ExtensionAPI) => {
@@ -2804,7 +2811,7 @@ export default defineExtension(
 			ctx: ExtensionContext,
 		): Promise<SummariseFn | null> {
 			const resolved = await resolveModel(ctx, {
-				name: "modes-compaction",
+				name: "modes",
 				tier: "normal",
 				requireApiKey: true,
 			});
@@ -4932,7 +4939,7 @@ export default defineExtension(
 					warnedNoCompactionModel = true;
 					notify(
 						ctx,
-						"compaction skipped: no normal-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.compaction.model)",
+						"compaction skipped: no normal-tier model configured (set backgroundModels.primary.normal or extensionConfig.modes.model)",
 						"warning",
 					);
 				}
