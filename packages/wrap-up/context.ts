@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
 // Shell helper
@@ -150,15 +151,11 @@ export interface HandoverConfig {
 }
 
 /**
- * Default handover directory: `~/.pi/agent/handovers/`.
- * Follows pi's convention of storing agent data under `~/.pi/agent/`.
+ * Default handover directory: `<agentDir>/handovers/`.
+ * Anchored on `getAgentDir()` (honours PI_CODING_AGENT_DIR / XDG) so it
+ * lands alongside the rest of pi's agent data instead of a hardcoded ~/.pi.
  */
-export const DEFAULT_HANDOVER_DIR = join(
-	homedir(),
-	".pi",
-	"agent",
-	"handovers",
-);
+export const DEFAULT_HANDOVER_DIR = join(getAgentDir(), "handovers");
 
 /**
  * Resolve the handover directory from a raw configured value.

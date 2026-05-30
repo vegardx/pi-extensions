@@ -180,9 +180,9 @@ describe("crashReportFilename", () => {
 });
 
 describe("crashReportDir", () => {
-	it("composes ~/.pi/agent/modes/crash-reports", () => {
-		expect(crashReportDir("/home/u")).toBe(
-			"/home/u/.pi/agent/modes/crash-reports",
+	it("composes <agent-dir>/modes/crash-reports", () => {
+		expect(crashReportDir("/home/u/agent")).toBe(
+			"/home/u/agent/modes/crash-reports",
 		);
 	});
 });
@@ -220,7 +220,7 @@ describe("installCrashHandler", () => {
 			}),
 			getSessionAccessor: () => session,
 			writeReport: (path, payload) => writes.push({ path, payload }),
-			homeDir: () => tmp,
+			agentDir: () => tmp,
 			now: () => new Date("2026-05-16T17:30:00Z"),
 			...over,
 		};
@@ -305,7 +305,7 @@ describe("installCrashHandler", () => {
 				activePhaseId: "ph",
 			}),
 			getSessionAccessor: () => session,
-			homeDir: () => tmp,
+			agentDir: () => tmp,
 			now: () => new Date("2026-05-16T17:30:00Z"),
 		});
 		emit(

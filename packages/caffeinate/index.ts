@@ -18,13 +18,13 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import {
 	acquireKeepAwake,
 	EXT_ID,
@@ -87,7 +87,7 @@ export function statusPill(state: KeepAwakeState): string | undefined {
  * `shouldShowFirstRunHint` rather than poking the real filesystem.
  */
 export function hintFlagPath(): string {
-	return join(homedir(), ".pi", "agent", ".caffeinate-hinted");
+	return join(getAgentDir(), ".caffeinate-hinted");
 }
 
 /**
@@ -229,7 +229,7 @@ export default defineExtension(
 			const hintShown = existsSync(hintFlagPath());
 			if (shouldShowFirstRunHint(getKeepAwakeState(ctx), hintShown)) {
 				try {
-					mkdirSync(join(homedir(), ".pi", "agent"), { recursive: true });
+					mkdirSync(getAgentDir(), { recursive: true });
 					writeFileSync(hintFlagPath(), "1");
 				} catch {
 					// Non-fatal: hint fires but flag write failed. It will

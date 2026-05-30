@@ -18,8 +18,8 @@
  */
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 
 /**
  * Subset of the crash report we render. Mirrors the shape produced
@@ -53,10 +53,13 @@ const SUPPORTED_SCHEMA = 1;
 
 /**
  * Default location for crash reports — must match `crashReportDir`
- * in `packages/modes/crash-report.ts`.
+ * in `packages/modes/crash-report.ts`. Anchored on `getAgentDir()`
+ * (honours PI_CODING_AGENT_DIR / XDG), not a hardcoded ~/.pi.
  */
-export function defaultCrashReportDir(home: string = homedir()): string {
-	return join(home, ".pi", "agent", "modes", "crash-reports");
+export function defaultCrashReportDir(
+	agentDir: string = getAgentDir(),
+): string {
+	return join(agentDir, "modes", "crash-reports");
 }
 
 /**

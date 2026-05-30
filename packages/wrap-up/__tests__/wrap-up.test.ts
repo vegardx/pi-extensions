@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import {
 	buildHandoverFilename,
 	DEFAULT_HANDOVER_DIR,
@@ -73,8 +74,8 @@ describe("resolveHandoverDir", () => {
 		expect(resolveHandoverDir("/tmp/handovers")).toBe("/tmp/handovers");
 	});
 
-	it("DEFAULT_HANDOVER_DIR is under ~/.pi/agent/", () => {
-		expect(DEFAULT_HANDOVER_DIR).toContain(join(homedir(), ".pi", "agent"));
+	it("DEFAULT_HANDOVER_DIR is a handovers/ folder under the agent dir", () => {
+		expect(DEFAULT_HANDOVER_DIR).toBe(join(getAgentDir(), "handovers"));
 	});
 });
 

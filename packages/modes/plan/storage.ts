@@ -1,9 +1,12 @@
 /**
- * Plan storage at `~/.pi/plans/`.
+ * Plan storage under the resolved agent dir: `<agent-dir>/plans/`.
+ *
+ * `<agent-dir>` is `getAgentDir()` (honours PI_CODING_AGENT_DIR / XDG),
+ * e.g. `~/.config/pi/agent/plans/` — not a hardcoded `~/.pi`.
  *
  * Layout:
  *
- *   ~/.pi/plans/
+ *   <agent-dir>/plans/
  *   ├── index.json                      # { plans: [{ slug, title, repoPath, ... }] }
  *   └── <plan-slug>/
  *       └── plan.json                   # full Plan object
@@ -22,13 +25,17 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { lock as lockAsync, lockSync } from "proper-lockfile";
 import type { Phase, Plan, Task } from "./schema.js";
 import { TERMINAL_STATUSES } from "./schema.js";
 
-let plansRoot = join(homedir(), ".pi", "plans");
+// Plans live under the resolved agent dir (honours PI_CODING_AGENT_DIR /
+// XDG), not a hardcoded ~/.pi. The previous hardcode ignored the env
+// override and wrote to the wrong directory on configs that relocate the
+// agent dir (e.g. ~/.config/pi/agent).
+let plansRoot = join(getAgentDir(), "plans");
 
 /**
  * Allowed slug pattern: lowercase alphanumerics and hyphens only. This

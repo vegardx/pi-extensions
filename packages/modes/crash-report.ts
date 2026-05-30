@@ -19,8 +19,8 @@
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import {
 	type RedactHit,
 	redactFull,
@@ -89,12 +89,12 @@ export interface CrashHandlerDeps {
 	getSessionAccessor: () => SessionAccessor | null;
 	/**
 	 * Test seam. Production wiring uses `node:fs.writeFileSync` +
-	 * `mkdirSync` + a path under `homedir()`. Tests pass an
+	 * `mkdirSync` + a path under `getAgentDir()`. Tests pass an
 	 * in-memory recorder.
 	 */
 	writeReport?: (path: string, payload: string) => void;
-	/** Test seam: override `homedir()`. */
-	homeDir?: () => string;
+	/** Test seam: override `getAgentDir()`. */
+	agentDir?: () => string;
 	/** Test seam: override `new Date()`. */
 	now?: () => Date;
 }
@@ -114,14 +114,14 @@ const PER_ENTRY_CHAR_BUDGET = 800;
 
 /**
  * Subdirectory for crash reports. Keyed by extension (modes), not
- * by repo, mirroring derp's `~/.pi/agent/derp/pending/` convention.
+ * by repo, mirroring derp's `<agentDir>/derp/pending/` convention.
  * Cross-repo crash reports land in one place; `/derp` filters to
  * the active session by `sessionId` rather than by directory.
  */
 export const CRASH_REPORT_SUBDIR = join("modes", "crash-reports");
 
-export function crashReportDir(home: string = homedir()): string {
-	return join(home, ".pi", "agent", CRASH_REPORT_SUBDIR);
+export function crashReportDir(agentDir: string = getAgentDir()): string {
+	return join(agentDir, CRASH_REPORT_SUBDIR);
 }
 
 /**
@@ -352,7 +352,7 @@ export function installCrashHandler(deps: CrashHandlerDeps): () => void {
 				entries,
 			});
 
-			const home = (deps.homeDir ?? homedir)();
+			const home = (deps.agentDir ?? getAgentDir)();
 			const dir = crashReportDir(home);
 			const file = join(dir, crashReportFilename({ timestamp: at, sessionId }));
 			const payload = JSON.stringify(report, null, 2);

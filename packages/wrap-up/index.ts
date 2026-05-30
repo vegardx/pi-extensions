@@ -23,7 +23,11 @@ import {
 	getExtensionConfigString,
 	readRelevantSettings,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
-import { gatherContext, resolveHandoverConfig } from "./context.js";
+import {
+	DEFAULT_HANDOVER_DIR,
+	gatherContext,
+	resolveHandoverConfig,
+} from "./context.js";
 import { discoverHandovers, needsHandoverPicker } from "./discover.js";
 import { buildContinuePrompt, buildPausePrompt } from "./prompt.js";
 
@@ -54,8 +58,8 @@ export default defineExtension(
 			{
 				key: "handover.dir",
 				type: "string",
-				default: "~/.pi/agent/handovers",
-				doc: "Directory where handover files are written. Supports ~ expansion. Default: ~/.pi/agent/handovers",
+				default: DEFAULT_HANDOVER_DIR,
+				doc: "Directory where handover files are written. Supports ~ expansion. Defaults to a `handovers/` folder under the resolved agent dir (honours PI_CODING_AGENT_DIR / XDG).",
 			},
 			{
 				key: "handover.autoSave",
