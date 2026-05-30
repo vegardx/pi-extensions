@@ -581,6 +581,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
 | `researchTimeoutMs` | `90000` | Hard timeout (ms) for the `researcher` delegation (`delegate({ to: "researcher" })`) sub-agent call. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
 | `delegate.maxAnswerChars` | `6000` | Hard cap on a delegated answer's size before it crosses back into the caller's context. Keeps `delegate` context-slimming. |
+| `delegate.maxConcurrent` | `4` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel, so without this a burst would spawn one subprocess each. Excess calls block until a slot frees. |
 | `explore.parallelism` | `1` | Max in-flight `explorer` delegations across the seed worker and ephemeral children combined. `1` keeps the single-FIFO behaviour from before #159b. Increase to fan out unrelated questions in parallel. Non-integer / non-positive values fall back to the default with a warning. |
 | `explore.queueDepthThreshold` | `4` | When the seed FIFO has this many queued jobs, `related: true` asks burst-route to children even when the seed is busy — better to fan out and finish than wait. Only meaningful when `explore.parallelism > 1`. |
 
