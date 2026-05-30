@@ -368,7 +368,7 @@ export default defineExtension(
 				key: "review.enable",
 				type: "boolean",
 				default: false,
-				doc: "Run batch review after plan execution completes. Off by default — the pipeline runs end-to-end but the surrounding triage / feedback flow needs more design work before it's on for everyone (see TODO at runBatchReview). Opt in per-repo by setting this to true.",
+				doc: "Run a multi-agent code review automatically after a plan finishes executing. Off by default — opt in per-repo by setting this to true.",
 			},
 			{
 				key: "review.agents",
@@ -413,7 +413,7 @@ export default defineExtension(
 				key: "compaction.planMaxContextTokens",
 				type: "number",
 				default: DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
-				doc: "Footer cap (denominator) used while in plan mode. Plan mode is exempt from modes' mid-phase compaction \u2014 the human is in the loop \u2014 so this only affects the footer display. 0 means 'use the active model's contextWindow'. Default 0.",
+				doc: "Context-window size (tokens) used for the footer usage gauge while in plan mode. Plan mode never auto-compacts — you're in the loop — so this only changes the displayed denominator. 0 means use the active model's full context window. Default 0.",
 			},
 			{
 				key: "scrutinize.enable",
