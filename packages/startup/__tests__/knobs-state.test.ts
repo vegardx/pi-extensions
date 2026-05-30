@@ -154,6 +154,16 @@ describe("model picker", () => {
 			"openai/gpt-4o",
 		]);
 	});
+	it("does not open a model picker for a non-string key ending in .model", () => {
+		// A mis-declared number knob named *.model must fall through to the
+		// text input, not the model picker (which would hand it a string).
+		const s = stateOf(
+			[row({ key: "weird.model", type: "number", default: 1 })],
+			["anthropic/haiku"],
+		);
+		expect(editCurrent(s, "project")).toEqual({ type: "overlay" });
+		expect(s.overlay?.kind).toBe("input");
+	});
 });
 
 describe("number input", () => {
@@ -210,6 +220,17 @@ describe("string[] input", () => {
 		editCurrent(s, "project");
 		const r = inputCommit(s, "project");
 		expect(r).toEqual({ type: "set", row: s.rows[0], value: [] });
+	});
+
+	it("dedupes repeated tokens", () => {
+		const s = stateOf([row({ key: "labels", type: "string[]" })]);
+		editCurrent(s, "project");
+		inputAppend(s, "bug, bug feature");
+		expect(inputCommit(s, "project")).toEqual({
+			type: "set",
+			row: s.rows[0],
+			value: ["bug", "feature"],
+		});
 	});
 });
 

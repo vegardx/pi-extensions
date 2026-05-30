@@ -193,7 +193,10 @@ export function editCurrent(state: KnobsState, scope: Scope): EditOutcome {
 		return { type: "cycled", row, value };
 	}
 
-	if (row.type === "enum" || isModelKey(row.key)) {
+	if (row.type === "enum" || (row.type === "string" && isModelKey(row.key))) {
+		// Only a string-typed model key opens the model picker; a mis-declared
+		// non-string knob that happens to end in `.model` falls through to the
+		// text input rather than receiving a string spec it can't hold.
 		const options =
 			row.type === "enum"
 				? [...(row.enumValues ?? [])]
@@ -349,10 +352,16 @@ export function inputMoveRight(state: KnobsState): boolean {
 
 /** Parse comma/space-separated tokens into a deduped, trimmed list. */
 function parseList(raw: string): string[] {
-	return raw
-		.split(/[\s,]+/)
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0);
+	const seen = new Set<string>();
+	const out: string[] = [];
+	for (const token of raw.split(/[\s,]+/)) {
+		const trimmed = token.trim();
+		if (trimmed.length > 0 && !seen.has(trimmed)) {
+			seen.add(trimmed);
+			out.push(trimmed);
+		}
+	}
+	return out;
 }
 
 export type CommitResult =
