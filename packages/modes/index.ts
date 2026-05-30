@@ -4431,6 +4431,33 @@ export default defineExtension(
 		pi.registerTool({
 			name: "delegate",
 			label: "Delegate",
+			// Show the target + question instead of a bare "Delegate", so a row
+			// of concurrent delegate calls is self-describing in the transcript.
+			renderCall: (args, theme) => {
+				const to =
+					args?.to === "researcher" || args?.to === "explorer" ? args.to : "?";
+				const q =
+					typeof args?.question === "string"
+						? args.question.replace(/\s+/g, " ").trim()
+						: "";
+				const prefix = `Delegate → ${to}`;
+				return {
+					render(width: number): string[] {
+						const styledPrefix = theme.fg("toolTitle", theme.bold(prefix));
+						if (!q) return [truncateToWidth(styledPrefix, width, "…")];
+						const avail = Math.max(8, width - prefix.length - 2);
+						const qShort = q.length > avail ? `${q.slice(0, avail - 1)}…` : q;
+						return [
+							truncateToWidth(
+								styledPrefix + theme.fg("muted", `: ${qShort}`),
+								width,
+								"…",
+							),
+						];
+					},
+					invalidate(): void {},
+				};
+			},
 			description:
 				"Delegate a question to a specialist sub-agent and get back a " +
 				'concise, distilled answer (blocking). to="researcher" for web ' +
