@@ -45,8 +45,10 @@ import {
 	currentBranch,
 	detectDefaultBranch,
 	isGitRepo,
-	pullFastForward,
+	pullFastForwardAsync,
+	pushBranchAsync,
 	runCommand,
+	runCommandAsync,
 	workingTreeClean,
 } from "./git.js";
 import {
@@ -1550,13 +1552,19 @@ export default defineExtension(
 				);
 				return null;
 			}
-			const pull = pullFastForward(ctx.cwd, defaultBranch);
+			const pull = await pullFastForwardAsync(
+				ctx.cwd,
+				defaultBranch,
+				ctx.signal,
+			);
 			if (!pull.ok) {
 				notify(
 					ctx,
-					pull.timedOut
-						? `pull origin ${defaultBranch} timed out — check connectivity or credentials; continuing on the local branch`
-						: `pull origin ${defaultBranch} failed: ${pull.stderr.trim()}`,
+					pull.aborted
+						? `pull origin ${defaultBranch} aborted; continuing on the local branch`
+						: pull.timedOut
+							? `pull origin ${defaultBranch} timed out — check connectivity or credentials; continuing on the local branch`
+							: `pull origin ${defaultBranch} failed: ${pull.stderr.trim()}`,
 					"warning",
 				);
 			}
@@ -3683,12 +3691,10 @@ export default defineExtension(
 				// The push is idempotent (reports "Everything up-to-date" when in
 				// sync) so it is safe to run unconditionally.
 				if (phase.branch) {
-					const push = runCommand(
-						"git",
-						["push", "-u", "origin", phase.branch],
-						{
-							cwd: worktreeCwd,
-						},
+					const push = await pushBranchAsync(
+						worktreeCwd,
+						phase.branch,
+						ctx.signal,
 					);
 					if (!push.ok) {
 						const detail =
@@ -3752,7 +3758,7 @@ export default defineExtension(
 			// call's cost is written by writePhaseSummary below and lives in
 			// the plan doc rather than the PR body.
 			recordPhaseTotalTokens(ctx, plan, phase);
-			const result = await shipPhase(plan, phase);
+			const result = await shipPhase(plan, phase, { signal: ctx.signal });
 			if (!result.ok) {
 				notify(ctx, `ship failed: ${result.error}`, "error");
 				return;
@@ -4427,7 +4433,10 @@ export default defineExtension(
 				];
 				if (projectName) parentArgs.push("--project", projectName);
 
-				const parentResult = runCommand("gh", parentArgs, { cwd: ctx.cwd });
+				const parentResult = await runCommandAsync("gh", parentArgs, {
+					cwd: ctx.cwd,
+					signal: ctx.signal,
+				});
 				if (!parentResult.ok) {
 					notify(
 						ctx,
@@ -4534,7 +4543,10 @@ export default defineExtension(
 				if (projectName) args.push("--project", projectName);
 				if (assignCopilot) args.push("--assignee", "@copilot");
 
-				const result = runCommand("gh", args, { cwd: ctx.cwd });
+				const result = await runCommandAsync("gh", args, {
+					cwd: ctx.cwd,
+					signal: ctx.signal,
+				});
 				if (!result.ok) {
 					errors.push(
 						`phase ${phase.id} (${phase.title}): ${result.stderr.trim() || "unknown error"}`,
@@ -4556,10 +4568,10 @@ export default defineExtension(
 				phase.issueNumber = num;
 
 				// Look up internal id (sub_issues API requires REST id, not number).
-				const restView = runCommand(
+				const restView = await runCommandAsync(
 					"gh",
 					["api", `/repos/{owner}/{repo}/issues/${num}`, "--jq", ".id"],
-					{ cwd: ctx.cwd },
+					{ cwd: ctx.cwd, signal: ctx.signal },
 				);
 				if (!restView.ok) {
 					errors.push(
@@ -4575,7 +4587,7 @@ export default defineExtension(
 					continue;
 				}
 
-				const link = runCommand(
+				const link = await runCommandAsync(
 					"gh",
 					[
 						"api",
@@ -4585,7 +4597,7 @@ export default defineExtension(
 						"-F",
 						`sub_issue_id=${id}`,
 					],
-					{ cwd: ctx.cwd },
+					{ cwd: ctx.cwd, signal: ctx.signal },
 				);
 				if (!link.ok) {
 					errors.push(

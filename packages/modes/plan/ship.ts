@@ -9,6 +9,7 @@
 import {
 	runCommand as defaultRunCommand,
 	workingTreeClean as defaultWorkingTreeClean,
+	runCommandAsync,
 	type ShellResult,
 } from "../git.js";
 import {
@@ -27,14 +28,16 @@ export interface ShipOptions {
 	commitMessage?: string;
 	/** Skip dirty-tree refusal — auto-commit pending changes. */
 	autoCommit?: boolean;
-	/** Injection seam for tests. Defaults to the real runCommand. */
-	run?: (
-		command: string,
-		args: readonly string[],
-		opts?: { cwd?: string; stdin?: string },
-	) => ShellResult;
+	/**
+	 * Injection seam for tests. Defaults to the abortable async runner.
+	 * May return a `ShellResult` synchronously or a promise — shipPhase
+	 * awaits either.
+	 */
+	run?: RunShell;
 	/** Injection seam for tests. Defaults to the real workingTreeClean. */
 	isClean?: (cwd: string) => boolean;
+	/** TUI abort signal (Esc) threaded into the network commands. */
+	signal?: AbortSignal;
 }
 
 export interface ShipResult {
@@ -54,39 +57,31 @@ export interface ShipResult {
 export type RunShell = (
 	command: string,
 	args: readonly string[],
-	opts?: { cwd?: string; stdin?: string },
-) => ShellResult;
+	opts?: { cwd?: string; stdin?: string; signal?: AbortSignal },
+) => ShellResult | Promise<ShellResult>;
 
-/**
- * Probe `gh` for an open PR whose head ref matches `branch`. Returns
- * the first match (or null). Soft-fail: any `gh` error or unparseable
- * stdout returns null so callers fall through to the normal create
- * path rather than masking unrelated failures.
- */
-export function probeOpenPrForBranch(
-	branch: string,
-	cwd: string,
-	run: RunShell = defaultRunCommand,
+/** Build the `gh pr list` args used to probe for an open PR on a branch. */
+export function openPrListArgs(branch: string): string[] {
+	return [
+		"pr",
+		"list",
+		"--head",
+		branch,
+		"--state",
+		"open",
+		"--json",
+		"number,url",
+		"--limit",
+		"1",
+	];
+}
+
+/** Parse `gh pr list --json number,url` stdout into the first match. */
+export function parseOpenPrList(
+	stdout: string,
 ): { number: number; url: string } | null {
-	const r = run(
-		"gh",
-		[
-			"pr",
-			"list",
-			"--head",
-			branch,
-			"--state",
-			"open",
-			"--json",
-			"number,url",
-			"--limit",
-			"1",
-		],
-		{ cwd },
-	);
-	if (!r.ok) return null;
 	try {
-		const list = JSON.parse(r.stdout) as Array<{
+		const list = JSON.parse(stdout) as Array<{
 			number?: number;
 			url?: string;
 		}>;
@@ -100,6 +95,26 @@ export function probeOpenPrForBranch(
 	return null;
 }
 
+/**
+ * Probe `gh` for an open PR whose head ref matches `branch`. Returns
+ * the first match (or null). Soft-fail: any `gh` error or unparseable
+ * stdout returns null so callers fall through to the normal create
+ * path rather than masking unrelated failures.
+ */
+export function probeOpenPrForBranch(
+	branch: string,
+	cwd: string,
+	run: (
+		command: string,
+		args: readonly string[],
+		opts?: { cwd?: string },
+	) => ShellResult = defaultRunCommand,
+): { number: number; url: string } | null {
+	const r = run("gh", openPrListArgs(branch), { cwd });
+	if (!r.ok) return null;
+	return parseOpenPrList(r.stdout);
+}
+
 export type ProbedPrState = "open" | "merged" | "closed" | "unknown";
 
 /**
@@ -110,7 +125,11 @@ export type ProbedPrState = "open" | "merged" | "closed" | "unknown";
 export function probePrByNumber(
 	prNumber: number,
 	cwd: string,
-	run: RunShell = defaultRunCommand,
+	run: (
+		command: string,
+		args: readonly string[],
+		opts?: { cwd?: string },
+	) => ShellResult = defaultRunCommand,
 ): { state: ProbedPrState; url: string } | null {
 	const r = run("gh", ["pr", "view", String(prNumber), "--json", "state,url"], {
 		cwd,
@@ -146,7 +165,10 @@ export async function shipPhase(
 	phase: PlanPhase,
 	options: ShipOptions = {},
 ): Promise<ShipResult> {
-	const run = options.run ?? defaultRunCommand;
+	const run: RunShell =
+		options.run ??
+		((command, args, opts) =>
+			runCommandAsync(command, args, { ...opts, signal: options.signal }));
 	const isClean = options.isClean ?? defaultWorkingTreeClean;
 	const path = effectiveWorktreePath(plan, phase);
 
@@ -161,11 +183,11 @@ export async function shipPhase(
 		}
 		const message =
 			options.commitMessage ?? `${phase.title}\n\nGoal: ${phase.goal}`;
-		const stage = run("git", ["add", "-A"], { cwd: path });
+		const stage = await run("git", ["add", "-A"], { cwd: path });
 		if (!stage.ok) {
 			return { ok: false, error: `git add -A failed: ${stage.stderr.trim()}` };
 		}
-		const commit = run("git", ["commit", "-m", message], { cwd: path });
+		const commit = await run("git", ["commit", "-m", message], { cwd: path });
 		if (!commit.ok) {
 			return {
 				ok: false,
@@ -174,15 +196,17 @@ export async function shipPhase(
 		}
 	}
 
-	const push = run("git", ["push", "-u", "origin", phase.branch], {
+	const push = await run("git", ["push", "-u", "origin", phase.branch], {
 		cwd: path,
 	});
 	if (!push.ok) {
 		return {
 			ok: false,
-			error: push.timedOut
-				? "git push timed out — check connectivity or credentials"
-				: `git push failed: ${push.stderr.trim()}`,
+			error: push.aborted
+				? "git push aborted"
+				: push.timedOut
+					? "git push timed out — check connectivity or credentials"
+					: `git push failed: ${push.stderr.trim()}`,
 		};
 	}
 
@@ -190,7 +214,8 @@ export async function shipPhase(
 	// it instead of erroring with a duplicate `gh pr create` failure.
 	// Covers the case where /ship is retried after a partial failure or
 	// where the user shelled out to `gh pr create` directly mid-phase.
-	const existing = probeOpenPrForBranch(phase.branch, path, run);
+	const listed = await run("gh", openPrListArgs(phase.branch), { cwd: path });
+	const existing = listed.ok ? parseOpenPrList(listed.stdout) : null;
 	if (existing) {
 		return {
 			ok: true,
@@ -212,13 +237,15 @@ export async function shipPhase(
 	];
 	if (options.draft) prArgs.push("--draft");
 
-	const create = run("gh", prArgs, { cwd: path });
+	const create = await run("gh", prArgs, { cwd: path });
 	if (!create.ok) {
 		return {
 			ok: false,
-			error: create.timedOut
-				? "gh pr create timed out — check connectivity or credentials"
-				: `gh pr create failed: ${create.stderr.trim()}`,
+			error: create.aborted
+				? "gh pr create aborted"
+				: create.timedOut
+					? "gh pr create timed out — check connectivity or credentials"
+					: `gh pr create failed: ${create.stderr.trim()}`,
 		};
 	}
 	const parsed = parsePrCreateOutput(create.stdout);

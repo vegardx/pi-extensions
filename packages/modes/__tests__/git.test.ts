@@ -7,6 +7,7 @@ import {
 	detectDefaultBranch,
 	isGitRepo,
 	runCommand,
+	runCommandAsync,
 	workingTreeClean,
 } from "../git.js";
 
@@ -179,6 +180,66 @@ describe("runCommand hang-prevention", () => {
 		expect(r.exitCode).toBe(0);
 		expect(r.timedOut).toBe(false);
 		expect(r.stdout).toContain("git version");
+	});
+});
+
+describe("runCommandAsync (abortable network runner)", () => {
+	it("runs a fast command and captures stdout", async () => {
+		const r = await runCommandAsync("git", ["--version"]);
+		expect(r.ok).toBe(true);
+		expect(r.exitCode).toBe(0);
+		expect(r.stdout).toContain("git version");
+		expect(r.timedOut).toBeUndefined();
+		expect(r.aborted).toBeUndefined();
+	});
+
+	it("kills a command that exceeds its timeout and reports timedOut", async () => {
+		const start = Date.now();
+		const r = await runCommandAsync("sleep", ["30"], { timeoutMs: 200 });
+		const elapsed = Date.now() - start;
+		expect(r.timedOut).toBe(true);
+		expect(r.ok).toBe(false);
+		expect(r.stderr).toContain("timed out");
+		expect(elapsed).toBeLessThan(5_000);
+	});
+
+	it("kills a running command when the signal aborts (Esc)", async () => {
+		const controller = new AbortController();
+		const start = Date.now();
+		const promise = runCommandAsync("sleep", ["30"], {
+			signal: controller.signal,
+			timeoutMs: 30_000,
+		});
+		setTimeout(() => controller.abort(), 100);
+		const r = await promise;
+		const elapsed = Date.now() - start;
+		expect(r.aborted).toBe(true);
+		expect(r.ok).toBe(false);
+		expect(r.stderr).toContain("aborted");
+		expect(elapsed).toBeLessThan(5_000);
+	});
+
+	it("resolves immediately when the signal is already aborted", async () => {
+		const r = await runCommandAsync("sleep", ["30"], {
+			signal: AbortSignal.abort(),
+		});
+		expect(r.aborted).toBe(true);
+		expect(r.ok).toBe(false);
+	});
+
+	it("applies the non-interactive env on the async path", async () => {
+		const prompt = await runCommandAsync("printenv", ["GIT_TERMINAL_PROMPT"]);
+		expect(prompt.ok).toBe(true);
+		expect(prompt.stdout.trim()).toBe("0");
+		const gh = await runCommandAsync("printenv", ["GH_PROMPT_DISABLED"]);
+		expect(gh.ok).toBe(true);
+		expect(gh.stdout.trim()).toBe("1");
+	});
+
+	it("reports a non-ok result when the binary is missing", async () => {
+		const r = await runCommandAsync("definitely-not-a-real-binary-xyz", []);
+		expect(r.ok).toBe(false);
+		expect(r.exitCode).toBe(-1);
 	});
 });
 
