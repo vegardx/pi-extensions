@@ -1554,7 +1554,9 @@ export default defineExtension(
 			if (!pull.ok) {
 				notify(
 					ctx,
-					`pull origin ${defaultBranch} failed: ${pull.stderr.trim()}`,
+					pull.timedOut
+						? `pull origin ${defaultBranch} timed out — check connectivity or credentials; continuing on the local branch`
+						: `pull origin ${defaultBranch} failed: ${pull.stderr.trim()}`,
 					"warning",
 				);
 			}
@@ -1832,6 +1834,22 @@ export default defineExtension(
 			// driver) takes it from here.
 			const refreshed = currentPlan();
 			if (!refreshed || !completedPhase) return;
+			// If `doShip` failed (e.g. push/PR timed out or auth broke), the
+			// phase stays `active` rather than advancing to `in-review`. Stop
+			// the auto-loop here with a clear reason instead of walking the
+			// chain — the successor depends on this phase and isn't shippable
+			// yet, and plowing on would surface a misleading "not ready".
+			const shippedNow = refreshed.phases.find(
+				(p) => p.id === completedPhase.id,
+			);
+			if (shippedNow && shippedNow.status === "active") {
+				notify(
+					ctx,
+					`auto: shipping Phase \`${phaseLabel}\` did not complete — stopping. Resolve the issue and run /ship.`,
+					"warning",
+				);
+				return;
+			}
 			const next = chainHead(refreshed, completedPhase);
 			const selfSessionId = ctx.sessionManager.getSessionId();
 			if (next) {
