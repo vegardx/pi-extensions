@@ -113,6 +113,13 @@ export default defineExtension(
 				default: "[idea] ",
 				doc: 'Prefix prepended to the polished/fallback title. Set to "" to disable.',
 			},
+			{
+				key: "model",
+				type: "string",
+				fallbackChain:
+					"extensionConfig.idea.model → backgroundModels.primary.fast → session model",
+				doc: "Model for the polish subagent that turns your /idea text into a clean issue. Fast-tier background work — leave unset to use backgroundModels.primary.fast, then the session model.",
+			},
 		],
 	},
 	(pi: ExtensionAPI) => {
