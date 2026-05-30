@@ -128,6 +128,48 @@ describe("env-disable contract — every extension", () => {
 		});
 	}
 
+	// PI_SUBAGENT=1 disables every defineExtension-wrapped extension by
+	// default (subagent isolation), regardless of settings — the lever the
+	// subagent spawners use instead of --no-extensions (which would also
+	// strip custom provider extensions).
+	for (const name of PACKAGES) {
+		it(`${name}: registers nothing when PI_SUBAGENT=1`, async () => {
+			__setDefineExtensionEnv({ PI_SUBAGENT: "1" });
+			const mod = (await import(`../../${name}/index.ts`)) as {
+				default: (pi: ExtensionAPI) => void | Promise<void>;
+			};
+			const { pi, registrations } = makeMockPi();
+			await mod.default(pi);
+
+			const declared = getDeclaredExtension(name);
+			expect(declared?.enabled).toBe(false);
+			expect(declared?.enabledSource).toBe("subagent");
+			expect(declared?.loadState).toBe("disabled-in-subagent");
+			expect(
+				registrations,
+				`${name} registered while PI_SUBAGENT=1: ${registrations.join(", ")}`,
+			).toEqual([]);
+		});
+	}
+
+	it("PI_EXT_<NAME>=on re-enables a specific extension inside a subagent", async () => {
+		// Explicit per-extension env beats the PI_SUBAGENT default, so a
+		// spawner can opt a single extension back in.
+		__setDefineExtensionEnv({ PI_SUBAGENT: "1", PI_EXT_MODES: "on" });
+		const name = "modes";
+		const mod = (await import(`../../${name}/index.ts`)) as {
+			default: (pi: ExtensionAPI) => void | Promise<void>;
+		};
+		const { pi, registrations } = makeMockPi();
+		await mod.default(pi);
+
+		const declared = getDeclaredExtension("modes");
+		expect(declared?.enabled).toBe(true);
+		expect(declared?.enabledSource).toBe("env");
+		expect(declared?.loadState).toBe("loaded");
+		expect(registrations.length).toBeGreaterThan(0);
+	});
+
 	if (prevAgentDir !== undefined) {
 		// Vitest cleanup hook (afterAll equivalent inline at module scope
 		// would race with describe's setup); instead reset agent dir on

@@ -121,9 +121,15 @@ export type ExtensionLoadState =
 	| "loaded"
 	| "disabled-by-config"
 	| "disabled-by-env"
+	| "disabled-in-subagent"
 	| "disabled-by-missing-deps";
 
-export type ExtensionEnabledSource = "project" | "global" | "env" | "default";
+export type ExtensionEnabledSource =
+	| "project"
+	| "global"
+	| "env"
+	| "subagent"
+	| "default";
 
 export interface ExtensionMetadata {
 	/**
