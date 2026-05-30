@@ -62,6 +62,30 @@ function readPath(obj: Record<string, unknown>, parts: string[]): unknown {
 }
 
 /**
+ * Reject path segments (and extension names) that would let a crafted
+ * key walk into `Object.prototype` — `__proto__`, `prototype`,
+ * `constructor` — or an empty segment. The writers below mutate the
+ * object graph by indexing these segments, so a value like
+ * `__proto__.polluted` (or an extension named `__proto__`) must be
+ * refused before any mutation. Read paths are already safe (they gate on
+ * `Object.hasOwn`).
+ */
+const UNSAFE_SEGMENTS = new Set(["__proto__", "prototype", "constructor"]);
+
+function assertSafeSegments(segments: readonly string[]): void {
+	for (const segment of segments) {
+		if (segment.length === 0) {
+			throw new Error("settings-writer: empty key segment");
+		}
+		if (UNSAFE_SEGMENTS.has(segment)) {
+			throw new Error(
+				`settings-writer: refusing to write prototype-polluting key segment "${segment}"`,
+			);
+		}
+	}
+}
+
+/**
  * Set a value at a dot-separated path under `root`, creating (or
  * replacing non-object) intermediate containers as needed. Returns the
  * previous leaf value (or `undefined`).
@@ -208,6 +232,8 @@ export function writeExtensionConfigKey(
 			: {};
 
 	const parts = key.split(".");
+	// Reject prototype-polluting / empty segments before any mutation.
+	assertSafeSegments([extensionName, ...parts]);
 	let previous: unknown;
 
 	if (value === null) {

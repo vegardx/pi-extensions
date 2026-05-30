@@ -145,6 +145,35 @@ export interface LayeredRelevantSettings {
 }
 
 /**
+ * True for the JSON-object case we recurse into when deep-merging
+ * settings layers: a non-null, non-array object.
+ */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Deep-merge two plain objects with `override` winning at the leaf.
+ * Nested plain objects recurse (so sibling nested keys from each layer
+ * survive); arrays and primitives are replaced wholesale by `override`.
+ * Pure — neither input is mutated.
+ */
+function deepMergeConfig(
+	base: Record<string, unknown>,
+	override: Record<string, unknown>,
+): Record<string, unknown> {
+	const out: Record<string, unknown> = { ...base };
+	for (const [key, value] of Object.entries(override)) {
+		const existing = out[key];
+		out[key] =
+			isPlainObject(existing) && isPlainObject(value)
+				? deepMergeConfig(existing, value)
+				: value;
+	}
+	return out;
+}
+
+/**
  * Read global and project settings separately, plus the merged view.
  * Used by `/extensions` (in `pi-ext-startup`) to label each effective
  * value as coming from `global`, `project`, or the extension's default.
@@ -188,10 +217,14 @@ export function readRelevantSettingsLayered(
 			...Object.keys(project.extensionConfig ?? {}),
 		]);
 		for (const name of names) {
-			merged.extensionConfig[name] = {
-				...global.extensionConfig?.[name],
-				...project.extensionConfig?.[name],
-			};
+			// Deep-merge so sibling nested keys survive across layers: a
+			// shallow spread would let project's `review` object replace
+			// global's wholesale, hiding a global `review.enable` when project
+			// only sets `review.mode`. Project still wins at the leaf.
+			merged.extensionConfig[name] = deepMergeConfig(
+				(global.extensionConfig?.[name] ?? {}) as Record<string, unknown>,
+				(project.extensionConfig?.[name] ?? {}) as Record<string, unknown>,
+			) as ExtensionConfig;
 		}
 	}
 

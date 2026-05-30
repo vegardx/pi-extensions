@@ -322,6 +322,23 @@ describe("settings-writer", () => {
 		);
 		expect(written.extensionConfig).toBeUndefined();
 	});
+
+	it("refuses prototype-polluting key segments and does not pollute", () => {
+		expect(() =>
+			writeExtensionConfigKey("project", cwd, "modes", "__proto__.polluted", 1),
+		).toThrow(/prototype-polluting/);
+		expect(() =>
+			writeExtensionConfigKey("project", cwd, "__proto__", "x", 1),
+		).toThrow(/prototype-polluting/);
+		// Object.prototype stayed clean.
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+	});
+
+	it("refuses an empty key segment", () => {
+		expect(() =>
+			writeExtensionConfigKey("project", cwd, "modes", "a..b", 1),
+		).toThrow(/empty key segment/);
+	});
 });
 
 describe("settings-writer — background models", () => {
