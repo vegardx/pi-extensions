@@ -10,7 +10,7 @@ import {
 	resetCurrent,
 	setScope,
 	valueAt,
-} from "../extensions-dialog/state.js";
+} from "../config-dialog/extensions-state.js";
 
 function rows(): ExtensionRow[] {
 	return [

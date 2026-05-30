@@ -143,3 +143,118 @@ export function writeExtensionConfigKey(
 	writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
 	return { path, previous };
 }
+
+// ---------------------------------------------------------------------------
+// Background-model tiers (top-level `backgroundModels.<set>.<tier>`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Background-model set/tier. Mirrors the labels the resolver and the
+ * `/config` Models page use. Kept as plain string unions here (rather
+ * than importing from `extension-settings`) so the writer has no
+ * dependency on the reader.
+ */
+export type BackgroundModelSet = "primary" | "secondary";
+export type BackgroundModelTier = "fast" | "normal" | "heavy";
+
+/**
+ * Reads `<settings>.backgroundModels.<set>.<tier>`.
+ *
+ * Returns `undefined` when the file is missing, any parent object is
+ * absent, or the value isn't a string. No secondary→primary fallback —
+ * this reports the literal value stored at the requested scope, which
+ * is what the `/config` Models page needs to attribute overrides to a
+ * layer.
+ */
+export function readBackgroundModel(
+	scope: SettingsScope,
+	cwd: string,
+	set: BackgroundModelSet,
+	tier: BackgroundModelTier,
+	agentDir?: string,
+): string | undefined {
+	const path = settingsPath(scope, cwd, agentDir);
+	let raw: Record<string, unknown>;
+	try {
+		raw = JSON.parse(readFileSync(path, "utf8"));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw err;
+	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const bg = (raw as Record<string, unknown>).backgroundModels;
+	if (!bg || typeof bg !== "object" || Array.isArray(bg)) return undefined;
+	const setObj = (bg as Record<string, unknown>)[set];
+	if (!setObj || typeof setObj !== "object" || Array.isArray(setObj))
+		return undefined;
+	const value = (setObj as Record<string, unknown>)[tier];
+	return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Writes `<settings>.backgroundModels.<set>.<tier> = value` to the
+ * settings.json for `scope`. When `value` is `null` the tier is
+ * deleted; emptied `<set>` objects and an emptied `backgroundModels`
+ * object are pruned so clearing the last override leaves no dangling
+ * structure.
+ *
+ * Like `writeExtensionConfigKey`, this round-trips the raw JSON and
+ * preserves every other key verbatim — `SettingsManager` doesn't expose
+ * setters for `backgroundModels`.
+ */
+export function writeBackgroundModel(
+	scope: SettingsScope,
+	cwd: string,
+	set: BackgroundModelSet,
+	tier: BackgroundModelTier,
+	value: string | null,
+	agentDir?: string,
+): WriteResult {
+	const path = settingsPath(scope, cwd, agentDir);
+	let raw: Record<string, unknown> = {};
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf8"));
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			raw = parsed as Record<string, unknown>;
+		}
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+
+	const backgroundModels =
+		raw.backgroundModels &&
+		typeof raw.backgroundModels === "object" &&
+		!Array.isArray(raw.backgroundModels)
+			? (raw.backgroundModels as Record<string, unknown>)
+			: {};
+	const setObj =
+		backgroundModels[set] &&
+		typeof backgroundModels[set] === "object" &&
+		!Array.isArray(backgroundModels[set])
+			? (backgroundModels[set] as Record<string, unknown>)
+			: {};
+
+	const previous = setObj[tier];
+
+	if (value === null) {
+		delete setObj[tier];
+		if (Object.keys(setObj).length === 0) {
+			delete backgroundModels[set];
+		} else {
+			backgroundModels[set] = setObj;
+		}
+	} else {
+		setObj[tier] = value;
+		backgroundModels[set] = setObj;
+	}
+
+	if (Object.keys(backgroundModels).length === 0) {
+		delete raw.backgroundModels;
+	} else {
+		raw.backgroundModels = backgroundModels;
+	}
+
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify(raw, null, 2)}\n`);
+	return { path, previous };
+}

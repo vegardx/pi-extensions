@@ -8,6 +8,7 @@ import type {
 	SlashCommandInfo,
 	ToolInfo,
 } from "@mariozechner/pi-coding-agent";
+import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import {
 	type BackgroundModelUseSpec,
@@ -25,7 +26,7 @@ import {
 	readRelevantSettingsLayered,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 
-import { showExtensionsDialog } from "./extensions-dialog/dialog.js";
+import { showConfigDialog } from "./config-dialog/dialog.js";
 
 const EXT_ID = "startup";
 
@@ -62,15 +63,17 @@ export interface ContextFileInfo {
  * This mirrors pi's own discovery without relying on `before_agent_start` so
  * that results are available at `session_start` time.
  *
- * `options.globalDir` defaults to `~/.pi/agent` and can be overridden in
- * tests to avoid depending on the real home directory.
+ * `options.globalDir` defaults to pi's resolved agent dir via
+ * `getAgentDir()` (honouring `PI_CODING_AGENT_DIR`, e.g.
+ * `~/.config/pi/agent`) and can be overridden in tests to avoid
+ * depending on the real home directory.
  */
 export function discoverContextFiles(
 	cwd: string,
 	options?: { globalDir?: string },
 ): ContextFileInfo[] {
 	const home = homedir();
-	const globalDir = options?.globalDir ?? join(home, ".pi", "agent");
+	const globalDir = options?.globalDir ?? getAgentDir();
 	const results: ContextFileInfo[] = [];
 
 	function toDisplayPath(absPath: string): string {
@@ -347,20 +350,20 @@ export function renderHeadline(summary: StartupSummary): string {
 			? ` (+${summary.unrecognized.length} unrecognized)`
 			: "";
 	if (total === 0 && summary.unrecognized.length === 0) {
-		return "pi-ext-startup: 0 extensions · /extensions for details";
+		return "pi-ext-startup: 0 extensions · /config for details";
 	}
 	if (total === 0) {
-		return `pi-ext-startup: 0 managed extensions${unrecognizedTail} · /extensions for details`;
+		return `pi-ext-startup: 0 managed extensions${unrecognizedTail} · /config for details`;
 	}
 	const enabled = summary.declared.filter((d) => d.meta.enabled === true);
 	if (enabled.length === 0) {
-		return `ℹ pi-extensions: 0 of ${total} enabled${unrecognizedTail}. Run /extensions to configure.`;
+		return `ℹ pi-extensions: 0 of ${total} enabled${unrecognizedTail}. Run /config to configure.`;
 	}
 	const names = enabled
 		.map((d) => d.meta.name)
 		.sort()
 		.join(", ");
-	return `✓ pi-extensions loaded: ${names} (${enabled.length} of ${total} installed)${unrecognizedTail} · /extensions for details`;
+	return `✓ pi-extensions loaded: ${names} (${enabled.length} of ${total} installed)${unrecognizedTail} · /config for details`;
 }
 
 function formatValue(v: unknown): string {
@@ -375,7 +378,7 @@ function formatValue(v: unknown): string {
 }
 
 /**
- * Render one config key line for the lean `/extensions` format.
+ * Render one config key line for the lean `/config` format.
  *
  * Rules:
  *   - User override (project/global)  →  `key: value (project)` / `key: value (global)`
@@ -407,7 +410,7 @@ function renderConfigKey(k: ConfigKeyView, ext: DeclaredExtensionView): string {
 }
 
 /**
- * Multi-line breakdown for `/extensions`. Pure: takes a summary,
+ * Multi-line breakdown for `/config`. Pure: takes a summary,
  * returns lines. The factory pipes these through `ctx.ui.notify`
  * one by one.
  */
@@ -484,6 +487,20 @@ export function renderLines(summary: StartupSummary): string[] {
 	return lines;
 }
 
+/**
+ * Collect the session's auth-configured models as `"provider/id"`
+ * specs for the Models page picker. Sorted and deduped. Uses
+ * `getAvailable()` (the fast, no-OAuth-refresh check) so the picker
+ * only offers models the user can actually route to.
+ */
+export function listAvailableModelSpecs(ctx: ExtensionContext): string[] {
+	const specs = new Set<string>();
+	for (const m of ctx.modelRegistry.getAvailable()) {
+		specs.add(`${m.provider}/${m.id}`);
+	}
+	return [...specs].sort((a, b) => a.localeCompare(b));
+}
+
 /** Build the structured summary from the running pi instance. */
 export function summarize(
 	pi: ExtensionAPI,
@@ -522,7 +539,7 @@ export default defineExtension(
 				key: "showOnSessionStart",
 				type: "boolean",
 				default: true,
-				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /extensions command still works).",
+				doc: "Show the extension summary on session start. Set to false to suppress the startup report (the /config command still works).",
 			},
 		],
 	},
@@ -540,6 +557,14 @@ export default defineExtension(
 			ctx.ui.notify(body, "info");
 		};
 
+		const openConfigDialog = async (ctx: ExtensionContext) => {
+			await showConfigDialog(ctx, {
+				declared: getDeclaredExtensions(),
+				contextFiles: discoverContextFiles(ctx.cwd),
+				availableModels: listAvailableModelSpecs(ctx),
+			});
+		};
+
 		pi.on("session_start", (_event, ctx) => {
 			const settings = readRelevantSettings(ctx.cwd);
 			const show = getExtensionConfigBoolean(
@@ -552,14 +577,12 @@ export default defineExtension(
 			emitReport(ctx);
 		});
 
-		pi.registerCommand("extensions", {
+		pi.registerCommand("config", {
 			description:
-				"Open the extensions picker: toggle each extension at project / global scope, see effective state, deps, and config.",
+				"Open the config panel: toggle extensions, set background models, and review context files at project / global scope.",
 			handler: async (_args, ctx) => {
 				if (ctx.hasUI) {
-					await showExtensionsDialog(ctx, {
-						declared: getDeclaredExtensions(),
-					});
+					await openConfigDialog(ctx);
 					return;
 				}
 				// Headless fallback: keep the text report so non-interactive

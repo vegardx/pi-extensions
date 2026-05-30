@@ -17,9 +17,17 @@
  */
 
 import type { ExtensionMetadata } from "@vegardx/pi-extensions-shared/extension-metadata.js";
-import { readExtensionConfigKey } from "@vegardx/pi-extensions-shared/settings-writer.js";
+import {
+	readBackgroundModel,
+	readExtensionConfigKey,
+} from "@vegardx/pi-extensions-shared/settings-writer.js";
 
-import type { EffectiveSource, ExtensionRow, ScopedValue } from "./state.js";
+import type {
+	EffectiveSource,
+	ExtensionRow,
+	ScopedValue,
+} from "./extensions-state.js";
+import { buildModelRows, type ModelRow } from "./models-state.js";
 
 /**
  * Coerce a raw JSON value to a tri-state. Anything that isn't a
@@ -70,4 +78,28 @@ function buildRow(
 		effective: meta.enabled === true,
 		effectiveSource: (meta.enabledSource ?? "default") as EffectiveSource,
 	};
+}
+
+/**
+ * Read the six background-model tiers from disk for both scopes.
+ *
+ * Mirrors `buildRows`: reads the raw project (`<cwd>/.pi/settings.json`)
+ * and global (`<agentDir>/settings.json`) files and attributes each
+ * literal `"provider/id"` value to its scope. No merge, no
+ * secondary→primary fallback — that's the Models page's job to display.
+ */
+export function readModelRows(opts: {
+	cwd: string;
+	agentDir?: string;
+}): ModelRow[] {
+	return buildModelRows((set, tier, scope) => {
+		const value = readBackgroundModel(
+			scope,
+			opts.cwd,
+			set,
+			tier,
+			opts.agentDir,
+		);
+		return value ?? null;
+	});
 }
