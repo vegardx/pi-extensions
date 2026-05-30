@@ -40,7 +40,87 @@ export function settingsPath(
 }
 
 /**
+ * Read a value from a plain object following a dot-separated path. Bails
+ * to `undefined` the moment a segment is missing or non-traversable (a
+ * primitive or array stands in for an object). Used for both the flat
+ * (`enabled`) and nested (`review.enable`) key forms.
+ */
+function readPath(obj: Record<string, unknown>, parts: string[]): unknown {
+	let current: unknown = obj;
+	for (const part of parts) {
+		if (
+			!current ||
+			typeof current !== "object" ||
+			Array.isArray(current) ||
+			!Object.hasOwn(current as Record<string, unknown>, part)
+		) {
+			return undefined;
+		}
+		current = (current as Record<string, unknown>)[part];
+	}
+	return current;
+}
+
+/**
+ * Set a value at a dot-separated path under `root`, creating (or
+ * replacing non-object) intermediate containers as needed. Returns the
+ * previous leaf value (or `undefined`).
+ */
+function setPath(
+	root: Record<string, unknown>,
+	parts: string[],
+	value: unknown,
+): unknown {
+	let current = root;
+	for (let i = 0; i < parts.length - 1; i++) {
+		const part = parts[i];
+		const next = current[part];
+		if (!next || typeof next !== "object" || Array.isArray(next)) {
+			current[part] = {};
+		}
+		current = current[part] as Record<string, unknown>;
+	}
+	const leaf = parts[parts.length - 1];
+	const previous = current[leaf];
+	current[leaf] = value;
+	return previous;
+}
+
+/**
+ * Delete the value at a dot-separated path under `root`, then prune any
+ * intermediate objects that became empty as a result (so clearing the
+ * last nested knob leaves no `{ review: {} }` husk behind). Returns the
+ * previous leaf value (or `undefined` when the path was already absent).
+ */
+function deletePath(root: Record<string, unknown>, parts: string[]): unknown {
+	const chain: Array<{ obj: Record<string, unknown>; key: string }> = [];
+	let current = root;
+	for (let i = 0; i < parts.length - 1; i++) {
+		const part = parts[i];
+		const next = current[part];
+		if (!next || typeof next !== "object" || Array.isArray(next)) {
+			return undefined;
+		}
+		chain.push({ obj: current, key: part });
+		current = next as Record<string, unknown>;
+	}
+	const leaf = parts[parts.length - 1];
+	const previous = current[leaf];
+	delete current[leaf];
+	// Walk back up pruning emptied containers.
+	for (let i = chain.length - 1; i >= 0; i--) {
+		const { obj, key } = chain[i];
+		if (Object.keys(obj[key] as Record<string, unknown>).length > 0) break;
+		delete obj[key];
+	}
+	return previous;
+}
+
+/**
  * Reads `<settings>.extensionConfig.<extensionName>.<key>`.
+ *
+ * `key` may be a dot-separated path (e.g. `review.enable`) to read a
+ * nested value; a flat key reads the top-level field as before.
  *
  * Returns `undefined` when the file is missing or any of the parent
  * objects are missing. Returns the raw value otherwise (without type
@@ -67,7 +147,7 @@ export function readExtensionConfigKey(
 	const entry = (ec as Record<string, unknown>)[extensionName];
 	if (!entry || typeof entry !== "object" || Array.isArray(entry))
 		return undefined;
-	return (entry as Record<string, unknown>)[key];
+	return readPath(entry as Record<string, unknown>, key.split("."));
 }
 
 export interface WriteResult {
@@ -77,10 +157,18 @@ export interface WriteResult {
 
 /**
  * Writes `<settings>.extensionConfig.<extensionName>.<key> = value` to
- * the settings.json for `scope`. When `value` is `null`, the key is
- * deleted; if the resulting per-extension entry becomes empty it's
- * removed too (so resetting the only key on an extension leaves the
- * file clean).
+ * the settings.json for `scope`. `key` may be a dot-separated path
+ * (e.g. `review.enable`), in which case the nested object structure is
+ * created as needed — this matches the shape extensions actually read
+ * (`extensionConfig.modes.review.enable`), not a literal `"review.enable"`
+ * property.
+ *
+ * `value` accepts `string[]` for array knobs; an empty array `[]` is a
+ * meaningful "explicitly empty" value and is stored as-is (distinct from
+ * `null`, which deletes). When `value` is `null`, the key is deleted and
+ * any nested objects emptied by the delete are pruned; if the resulting
+ * per-extension entry becomes empty it's removed too (so resetting the
+ * only key on an extension leaves the file clean).
  *
  * Creates the file (and parent dir) if missing. Preserves all other
  * keys verbatim — we never round-trip through `SettingsManager`,
@@ -92,7 +180,7 @@ export function writeExtensionConfigKey(
 	cwd: string,
 	extensionName: string,
 	key: string,
-	value: boolean | string | number | null,
+	value: boolean | string | number | string[] | null,
 	agentDir?: string,
 ): WriteResult {
 	const path = settingsPath(scope, cwd, agentDir);
@@ -119,17 +207,18 @@ export function writeExtensionConfigKey(
 			? (extensionConfig[extensionName] as Record<string, unknown>)
 			: {};
 
-	const previous = entry[key];
+	const parts = key.split(".");
+	let previous: unknown;
 
 	if (value === null) {
-		delete entry[key];
+		previous = deletePath(entry, parts);
 		if (Object.keys(entry).length === 0) {
 			delete extensionConfig[extensionName];
 		} else {
 			extensionConfig[extensionName] = entry;
 		}
 	} else {
-		entry[key] = value;
+		previous = setPath(entry, parts, value);
 		extensionConfig[extensionName] = entry;
 	}
 

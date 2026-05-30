@@ -228,9 +228,45 @@ export function getExtensionModelOverride(
 }
 
 /**
+ * Look up a (possibly dotted) key under `extensionConfig.<name>`.
+ * A flat key reads the top-level field; a dotted key (e.g.
+ * `review.enable`) walks the nested object structure that extensions
+ * actually store. Mirrors `readKeyFromLayer` in `extension-metadata.ts`
+ * and bails to `undefined` the moment a segment is missing.
+ */
+function readConfigKey(
+	settings: RelevantSettings,
+	extensionName: string,
+	key: string,
+): unknown {
+	const entry = settings.extensionConfig?.[extensionName] as
+		| Record<string, unknown>
+		| undefined;
+	if (!entry) return undefined;
+	if (!key.includes(".")) {
+		return Object.hasOwn(entry, key) ? entry[key] : undefined;
+	}
+	let current: unknown = entry;
+	for (const part of key.split(".")) {
+		if (
+			typeof current !== "object" ||
+			current === null ||
+			Array.isArray(current) ||
+			!Object.hasOwn(current as Record<string, unknown>, part)
+		) {
+			return undefined;
+		}
+		current = (current as Record<string, unknown>)[part];
+	}
+	return current;
+}
+
+/**
  * Get a typed boolean flag under `extensionConfig.<name>.<key>`. Used
  * by extensions that expose simple opt-out / feature toggles in
  * `settings.json` without wanting to write their own settings reader.
+ *
+ * `key` may be a dot-separated path (e.g. `review.enable`).
  *
  * `defaultValue` is returned both when the key is unset and when the
  * value is not a JSON boolean — we deliberately do NOT coerce strings
@@ -243,7 +279,7 @@ export function getExtensionConfigBoolean(
 	key: string,
 	defaultValue: boolean,
 ): boolean {
-	const raw = settings.extensionConfig?.[extensionName]?.[key];
+	const raw = readConfigKey(settings, extensionName, key);
 	return typeof raw === "boolean" ? raw : defaultValue;
 }
 
@@ -252,7 +288,7 @@ export function getExtensionConfigBoolean(
  * Accepts a JSON array of strings; returns `defaultValue` when the key
  * is unset, not an array, or contains any non-string element. Falls
  * closed on partial matches so typos in settings.json don't silently
- * drop individual entries.
+ * drop individual entries. `key` may be a dot-separated path.
  */
 export function getExtensionConfigStringArray(
 	settings: RelevantSettings,
@@ -260,7 +296,7 @@ export function getExtensionConfigStringArray(
 	key: string,
 	defaultValue: string[],
 ): string[] {
-	const raw = settings.extensionConfig?.[extensionName]?.[key];
+	const raw = readConfigKey(settings, extensionName, key);
 	if (!Array.isArray(raw)) return defaultValue;
 	if (raw.some((v) => typeof v !== "string")) return defaultValue;
 	return raw as string[];
@@ -270,7 +306,8 @@ export function getExtensionConfigStringArray(
  * Get a typed string value under `extensionConfig.<name>.<key>`. Returns
  * `defaultValue` both when the key is unset and when the value is not a
  * string — we deliberately do NOT coerce non-strings so a typo in
- * settings.json fails closed (back to the extension's default).
+ * settings.json fails closed (back to the extension's default). `key`
+ * may be a dot-separated path.
  */
 export function getExtensionConfigString(
 	settings: RelevantSettings,
@@ -278,8 +315,24 @@ export function getExtensionConfigString(
 	key: string,
 	defaultValue: string,
 ): string {
-	const raw = settings.extensionConfig?.[extensionName]?.[key];
+	const raw = readConfigKey(settings, extensionName, key);
 	return typeof raw === "string" ? raw : defaultValue;
+}
+
+/**
+ * Get a typed number value under `extensionConfig.<name>.<key>`. Returns
+ * `defaultValue` when the key is unset or the value is not a finite JSON
+ * number — NaN/Infinity and non-numbers all fail closed back to the
+ * default. `key` may be a dot-separated path (e.g. `compaction.phaseTokens`).
+ */
+export function getExtensionConfigNumber(
+	settings: RelevantSettings,
+	extensionName: string,
+	key: string,
+	defaultValue: number,
+): number {
+	const raw = readConfigKey(settings, extensionName, key);
+	return typeof raw === "number" && Number.isFinite(raw) ? raw : defaultValue;
 }
 
 /**
