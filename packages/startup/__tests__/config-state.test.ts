@@ -9,15 +9,21 @@ import {
 	atTopRow,
 	type ConfigInit,
 	createConfigState,
+	currentSettingsExtension,
+	enterSettingsExtension,
 	focusBody,
 	focusMenu,
+	leaveSettingsExtension,
 	nextPage,
 	pageUsesScope,
 	prevPage,
 	setConfigScope,
 	setPage,
+	settingsInDetail,
+	settingsMoveDown,
 } from "../config-dialog/config-state.js";
 import type { ExtensionRow } from "../config-dialog/extensions-state.js";
+import type { KnobRow } from "../config-dialog/knobs-state.js";
 import { buildModelRows } from "../config-dialog/models-state.js";
 
 function extRows(): ExtensionRow[] {
@@ -43,10 +49,41 @@ function extRows(): ExtensionRow[] {
 	];
 }
 
+function knobRows(): KnobRow[] {
+	return [
+		{
+			extName: "modes",
+			key: "mode.default",
+			type: "enum",
+			enumValues: ["plan", "auto"],
+			doc: "mode doc",
+			project: null,
+			global: "plan",
+		},
+		{
+			extName: "modes",
+			key: "review.enable",
+			type: "boolean",
+			doc: "review doc",
+			project: null,
+			global: null,
+		},
+		{
+			extName: "webfetch",
+			key: "timeoutMs",
+			type: "number",
+			doc: "timeout doc",
+			project: null,
+			global: null,
+		},
+	];
+}
+
 function init(overrides?: Partial<ConfigInit>): ConfigInit {
 	return {
 		extensionRows: extRows(),
 		modelRows: buildModelRows(() => null),
+		knobRows: knobRows(),
 		availableModels: ["a/b"],
 		contextFiles: [],
 		...overrides,
@@ -167,5 +204,43 @@ describe("config-state — atTopRow", () => {
 		expect(atTopRow(s)).toBe(false);
 		setPage(s, "context");
 		expect(atTopRow(s)).toBe(true); // context cursor still 0
+	});
+
+	it("uses the settings selector cursor until an extension is open", () => {
+		const s = createConfigState(init({ page: "settings" }));
+		expect(atTopRow(s)).toBe(true);
+		expect(settingsMoveDown(s)).toBe(true);
+		expect(atTopRow(s)).toBe(false);
+		expect(enterSettingsExtension(s)).toBe(true);
+		expect(atTopRow(s)).toBe(true);
+		s.knobs.cursor = 1;
+		expect(atTopRow(s)).toBe(false);
+	});
+});
+
+describe("config-state — settings drilldown", () => {
+	it("builds one selector row per configurable extension", () => {
+		const s = createConfigState(init());
+		expect(s.settings.extensions).toEqual([
+			{ name: "modes", doc: undefined, knobCount: 2 },
+			{ name: "webfetch", doc: undefined, knobCount: 1 },
+		]);
+		expect(s.knobs.rows).toEqual([]);
+	});
+
+	it("enters and leaves the selected extension knob list", () => {
+		const s = createConfigState(init({ page: "settings" }));
+		expect(currentSettingsExtension(s)?.name).toBe("modes");
+		expect(settingsInDetail(s)).toBe(false);
+		expect(enterSettingsExtension(s)).toBe(true);
+		expect(settingsInDetail(s)).toBe(true);
+		expect(s.settings.selectedExtName).toBe("modes");
+		expect(s.knobs.rows.map((r) => r.key)).toEqual([
+			"mode.default",
+			"review.enable",
+		]);
+		expect(leaveSettingsExtension(s)).toBe(true);
+		expect(settingsInDetail(s)).toBe(false);
+		expect(s.knobs.rows).toEqual([]);
 	});
 });

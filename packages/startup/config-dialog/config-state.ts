@@ -61,12 +61,26 @@ export interface ContextPageState {
 	cursor: number;
 }
 
+export interface SettingsExtensionRow {
+	name: string;
+	doc?: string;
+	knobCount: number;
+}
+
+export interface SettingsPageState {
+	extensions: SettingsExtensionRow[];
+	cursor: number;
+	selectedExtName?: string;
+	allRows: KnobRow[];
+}
+
 export interface ConfigState {
 	page: ConfigPage;
 	focus: ConfigFocus;
 	scope: DialogScope;
 	extensions: ExtensionsState;
 	models: ModelsState;
+	settings: SettingsPageState;
 	knobs: KnobsState;
 	context: ContextPageState;
 }
@@ -85,6 +99,7 @@ export interface ConfigInit {
 export function createConfigState(init: ConfigInit): ConfigState {
 	const scope = init.scope ?? "project";
 	const extensions = createExtensionsState({ rows: init.extensionRows, scope });
+	const knobRows = init.knobRows ?? [];
 	return {
 		page: init.page ?? "extensions",
 		focus: init.focus ?? "body",
@@ -94,8 +109,13 @@ export function createConfigState(init: ConfigInit): ConfigState {
 			rows: init.modelRows,
 			available: init.availableModels,
 		}),
+		settings: {
+			extensions: buildSettingsExtensions(knobRows, init.extensionRows),
+			cursor: 0,
+			allRows: knobRows,
+		},
 		knobs: createKnobsState({
-			rows: init.knobRows ?? [],
+			rows: [],
 			availableModels: init.availableModels,
 		}),
 		context: {
@@ -168,6 +188,71 @@ export function focusBody(state: ConfigState): boolean {
 export function atTopRow(state: ConfigState): boolean {
 	if (state.page === "extensions") return state.extensions.cursor <= 0;
 	if (state.page === "models") return state.models.cursor <= 0;
-	if (state.page === "settings") return state.knobs.cursor <= 0;
+	if (state.page === "settings") {
+		return settingsInDetail(state)
+			? state.knobs.cursor <= 0
+			: state.settings.cursor <= 0;
+	}
 	return state.context.cursor <= 0;
+}
+
+function buildSettingsExtensions(
+	knobRows: KnobRow[],
+	extensionRows: ExtensionRow[],
+): SettingsExtensionRow[] {
+	const docs = new Map(extensionRows.map((r) => [r.name, r.doc]));
+	const counts = new Map<string, number>();
+	for (const row of knobRows)
+		counts.set(row.extName, (counts.get(row.extName) ?? 0) + 1);
+	return [...counts.entries()].map(([name, knobCount]) => ({
+		name,
+		doc: docs.get(name),
+		knobCount,
+	}));
+}
+
+export function currentSettingsExtension(
+	state: ConfigState,
+): SettingsExtensionRow | undefined {
+	return state.settings.extensions[state.settings.cursor];
+}
+
+export function settingsInDetail(state: ConfigState): boolean {
+	return state.settings.selectedExtName !== undefined;
+}
+
+export function enterSettingsExtension(state: ConfigState): boolean {
+	const row = currentSettingsExtension(state);
+	if (!row) return false;
+	state.settings.selectedExtName = row.name;
+	state.knobs = createKnobsState({
+		rows: state.settings.allRows.filter((r) => r.extName === row.name),
+		availableModels: state.knobs.availableModels,
+	});
+	return true;
+}
+
+export function leaveSettingsExtension(state: ConfigState): boolean {
+	if (!settingsInDetail(state)) return false;
+	state.settings.selectedExtName = undefined;
+	state.knobs = createKnobsState({
+		rows: [],
+		availableModels: state.knobs.availableModels,
+	});
+	return true;
+}
+
+export function settingsMoveDown(state: ConfigState): boolean {
+	if (settingsInDetail(state)) return false;
+	if (state.settings.cursor >= state.settings.extensions.length - 1)
+		return false;
+	state.settings.cursor += 1;
+	return true;
+}
+
+export function settingsMoveUp(state: ConfigState): boolean {
+	if (settingsInDetail(state)) return false;
+	if (state.settings.cursor <= 0) return false;
+	state.settings.cursor -= 1;
+	return true;
 }
