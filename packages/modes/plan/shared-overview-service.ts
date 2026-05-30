@@ -17,9 +17,19 @@ const DEFAULT_WAIT_MS = 1_500;
 const MODEL_RESOLVE_TIMEOUT_MS = 5_000;
 const FAILURE_COOLDOWN_MS = 30_000;
 
+/**
+ * Injectable builder so tests can drive the service without spawning a
+ * real subagent. Production uses {@link defaultBuildOverview}.
+ */
+export type OverviewBuilder = (
+	ctx: ExtensionContext,
+	timeoutMs: number,
+) => Promise<string | null>;
+
 export interface SharedOverviewServiceOptions {
 	timeoutMs?: number;
 	waitMs?: number;
+	build?: OverviewBuilder;
 }
 
 /**
@@ -37,16 +47,19 @@ export class SharedOverviewService {
 	private failedUntil = 0;
 	private readonly timeoutMs: number;
 	private readonly waitMs: number;
+	private readonly builder: OverviewBuilder;
 
 	constructor(opts: SharedOverviewServiceOptions = {}) {
 		this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		this.waitMs = opts.waitMs ?? DEFAULT_WAIT_MS;
+		this.builder = opts.build ?? defaultBuildOverview;
 	}
 
 	ensureStarted(_ctx: ExtensionContext): void {
 		// Intentionally no-op. This used to kick off a hidden subagent when
 		// entering plan mode, which made ordinary editing/session transitions
-		// vulnerable to an unrelated stuck child pi process.
+		// vulnerable to an unrelated stuck child pi process. The overview is
+		// built lazily on the first child explore that needs it.
 	}
 
 	async get(ctx: ExtensionContext): Promise<string | null> {
@@ -85,27 +98,7 @@ export class SharedOverviewService {
 	}
 
 	private async build(ctx: ExtensionContext): Promise<string | null> {
-		const resolved = await resolveModelWithin(
-			ctx,
-			{ name: "modes", tier: "fast" },
-			MODEL_RESOLVE_TIMEOUT_MS,
-		);
-		if (!resolved) return this.markFailed();
-
-		const signal = AbortSignal.timeout(this.timeoutMs);
-		const result = await runSubagent({
-			tag: "explore-overview",
-			task: "Index this repository for future clean codebase-explore subagents.",
-			systemPromptPath: OVERVIEW_AGENT_PROMPT,
-			tools: OVERVIEW_TOOLS,
-			provider: resolved.model.provider,
-			model: resolved.model.id,
-			cwd: ctx.cwd,
-			signal,
-			timeoutMs: this.timeoutMs,
-		});
-		if (result.error) return this.markFailed();
-		const text = result.rawText.trim();
+		const text = (await this.builder(ctx, this.timeoutMs))?.trim() ?? "";
 		if (!text) return this.markFailed();
 		this.overview = text;
 		return text;
@@ -116,3 +109,32 @@ export class SharedOverviewService {
 		return null;
 	}
 }
+
+/**
+ * Production overview builder: a clean `--no-session` subagent reads the
+ * repo and returns a concise overview. Best-effort — returns null on any
+ * model-resolution or subagent failure.
+ */
+export const defaultBuildOverview: OverviewBuilder = async (ctx, timeoutMs) => {
+	const resolved = await resolveModelWithin(
+		ctx,
+		{ name: "modes", tier: "fast" },
+		MODEL_RESOLVE_TIMEOUT_MS,
+	);
+	if (!resolved) return null;
+
+	const signal = AbortSignal.timeout(timeoutMs);
+	const result = await runSubagent({
+		tag: "explore-overview",
+		task: "Index this repository for future clean codebase-explore subagents.",
+		systemPromptPath: OVERVIEW_AGENT_PROMPT,
+		tools: OVERVIEW_TOOLS,
+		provider: resolved.model.provider,
+		model: resolved.model.id,
+		cwd: ctx.cwd,
+		signal,
+		timeoutMs,
+	});
+	if (result.error) return null;
+	return result.rawText.trim() || null;
+};
