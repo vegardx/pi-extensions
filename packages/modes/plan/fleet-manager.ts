@@ -27,6 +27,7 @@
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { evaluateClaim } from "./driver-claim.js";
+import { admit } from "./scaling-policy.js";
 import {
 	effectiveDependsOn,
 	isPhaseReady,
@@ -244,17 +245,14 @@ export class FleetManager {
 		if (!plan) return;
 		const heads = unclaimedChainHeads(plan, this.opts.selfSessionId);
 		const owned = new Set(this.workers.keys());
-		const toSpawn: { chainId: string; phaseId: string }[] = [];
-		const toQueue: { chainId: string; phaseId: string }[] = [];
-		for (const head of heads) {
-			if (owned.has(head.chainId)) continue;
-			if (this.workers.size + toSpawn.length < this.maxParallel) {
-				toSpawn.push(head);
-			} else {
-				toQueue.push(head);
-			}
-		}
-		this.queued = toQueue;
+		const unowned = heads.filter((h) => !owned.has(h.chainId));
+		const { spawn } = admit({
+			inFlight: this.workers.size,
+			cap: this.maxParallel,
+			pending: unowned.length,
+		});
+		const toSpawn = unowned.slice(0, spawn);
+		this.queued = unowned.slice(spawn);
 		for (const head of toSpawn) {
 			await this.spawnWorker(plan, head.chainId, head.phaseId);
 		}
