@@ -16,6 +16,13 @@ describe("freeSlots", () => {
 			Number.POSITIVE_INFINITY,
 		);
 	});
+
+	it("treats NaN / -Infinity / non-positive caps as zero capacity, not uncapped", () => {
+		expect(freeSlots(0, Number.NaN)).toBe(0);
+		expect(freeSlots(0, Number.NEGATIVE_INFINITY)).toBe(0);
+		expect(freeSlots(0, -3)).toBe(0);
+		expect(freeSlots(0, 0)).toBe(0);
+	});
 });
 
 describe("hasRoom", () => {

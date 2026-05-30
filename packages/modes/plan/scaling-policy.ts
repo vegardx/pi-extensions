@@ -27,7 +27,11 @@ export interface AdmitResult {
 
 /** Free slots under the cap (never negative). Infinite cap → Infinity. */
 export function freeSlots(inFlight: number, cap: number): number {
-	if (!Number.isFinite(cap)) return Number.POSITIVE_INFINITY;
+	// Only a positive Infinity cap means "uncapped". A NaN / -Infinity /
+	// non-positive cap is treated as zero capacity, never as uncapped — a
+	// bad computed cap must not silently admit all pending work.
+	if (cap === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
+	if (!Number.isFinite(cap) || cap <= 0) return 0;
 	return Math.max(0, cap - inFlight);
 }
 
