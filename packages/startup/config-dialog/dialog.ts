@@ -43,12 +43,18 @@ import {
 	type ConfigPage,
 	type ConfigState,
 	createConfigState,
+	currentSettingsExtension,
+	enterSettingsExtension,
 	focusBody,
 	focusMenu,
+	leaveSettingsExtension,
 	nextPage,
 	pageUsesScope,
 	prevPage,
 	setConfigScope,
+	settingsInDetail,
+	settingsMoveDown,
+	settingsMoveUp,
 } from "./config-state.js";
 import {
 	currentRow,
@@ -292,7 +298,16 @@ export async function showConfigDialog(
 				return;
 			}
 
-			if (matchesKey(data, Key.escape) || data === "q") {
+			if (state.page === "settings" && settingsInDetail(state)) {
+				if (matchesKey(data, Key.escape)) {
+					if (leaveSettingsExtension(state)) refresh();
+					return;
+				}
+			} else if (matchesKey(data, Key.escape)) {
+				done(undefined);
+				return;
+			}
+			if (data === "q") {
 				done(undefined);
 				return;
 			}
@@ -350,9 +365,18 @@ export async function showConfigDialog(
 				return;
 			}
 
-			if (pageUsesScope(state.page)) {
+			if (
+				pageUsesScope(state.page) &&
+				!(state.page === "settings" && !settingsInDetail(state))
+			) {
 				if (matchesKey(data, Key.left)) {
-					if (setConfigScope(state, "project")) refresh();
+					if (
+						state.page === "settings" &&
+						settingsInDetail(state) &&
+						state.scope === "project"
+					) {
+						if (leaveSettingsExtension(state)) refresh();
+					} else if (setConfigScope(state, "project")) refresh();
 					return;
 				}
 				if (matchesKey(data, Key.right)) {
@@ -389,6 +413,21 @@ export async function showConfigDialog(
 					return;
 				}
 			} else if (state.page === "settings") {
+				if (!settingsInDetail(state)) {
+					if (
+						matchesKey(data, Key.enter) ||
+						matchesKey(data, Key.right) ||
+						data === " "
+					) {
+						if (enterSettingsExtension(state)) refresh();
+						return;
+					}
+					return;
+				}
+				if (matchesKey(data, Key.left)) {
+					if (leaveSettingsExtension(state)) refresh();
+					return;
+				}
 				if (matchesKey(data, Key.enter) || data === " ") {
 					const outcome = editKnob(state.knobs, state.scope);
 					if (outcome.type === "cycled") persistKnob(outcome.row);
@@ -438,6 +477,8 @@ export async function showConfigDialog(
 			} else if (state.page === "settings") {
 				if (state.knobs.overlay?.kind === "picker") {
 					renderKnobPicker(state.knobs, theme, width, add);
+				} else if (!settingsInDetail(state)) {
+					renderSettingsExtensionSelector(state, theme, width, add);
 				} else {
 					renderKnobsTable(state, theme, width, add);
 					lines.push("");
@@ -478,14 +519,22 @@ export async function showConfigDialog(
 function pageMoveUp(state: ConfigState): boolean {
 	if (state.page === "extensions") return moveUp(state.extensions);
 	if (state.page === "models") return modelsMoveUp(state.models);
-	if (state.page === "settings") return knobsMoveUp(state.knobs);
+	if (state.page === "settings") {
+		return settingsInDetail(state)
+			? knobsMoveUp(state.knobs)
+			: settingsMoveUp(state);
+	}
 	return contextMoveUp(state);
 }
 
 function pageMoveDown(state: ConfigState): boolean {
 	if (state.page === "extensions") return moveDown(state.extensions);
 	if (state.page === "models") return modelsMoveDown(state.models);
-	if (state.page === "settings") return knobsMoveDown(state.knobs);
+	if (state.page === "settings") {
+		return settingsInDetail(state)
+			? knobsMoveDown(state.knobs)
+			: settingsMoveDown(state);
+	}
 	return contextMoveDown(state);
 }
 
@@ -610,9 +659,11 @@ function renderFooter(
 	} else if (state.page === "models") {
 		help =
 			" ↑↓ rows • ←/→ project/global • enter pick model • r clear • Tab page • q/Esc close";
+	} else if (state.page === "settings" && !settingsInDetail(state)) {
+		help = " ↑↓ extensions • enter open options • Tab page • q/Esc close";
 	} else if (state.page === "settings") {
 		help =
-			" ↑↓ rows • ←/→ project/global • space/enter edit • r reset • Tab page • q/Esc close";
+			" ↑↓ rows • ←/→ project/global • space/enter edit • r reset • Esc back • Tab page • q close";
 	} else {
 		help = " ↑↓ scroll • Tab page • q/Esc close";
 	}
@@ -867,6 +918,45 @@ function knobCell(theme: Theme, value: KnobValue, highlight: boolean): string {
 	return theme.fg(knobColour(value), text);
 }
 
+function renderSettingsExtensionSelector(
+	state: ConfigState,
+	theme: Theme,
+	width: number,
+	add: (s: string) => void,
+): void {
+	const rows = state.settings.extensions;
+	const bodyFocused = state.focus === "body";
+	if (rows.length === 0) {
+		add(`  ${theme.fg("dim", "(no configurable knobs declared)")}`);
+		return;
+	}
+	add(`  ${theme.fg("accent", "Select extension to configure")}`);
+	add("");
+	const nameWidth = Math.max(9, ...rows.map((r) => visibleWidth(r.name)));
+	const header = `  ${pad("extension", nameWidth)}  options`;
+	add(theme.fg("muted", header));
+	for (let i = 0; i < rows.length; i++) {
+		const row = rows[i];
+		const selected = bodyFocused && i === state.settings.cursor;
+		const cursor = selected ? theme.fg("accent", "▸") : " ";
+		const name = pad(row.name, nameWidth);
+		add(
+			truncateToWidth(
+				` ${cursor} ${theme.fg("text", name)}  ${theme.fg("muted", String(row.knobCount))}`,
+				width,
+			),
+		);
+	}
+	const row = currentSettingsExtension(state);
+	if (row?.doc) {
+		add("");
+		add(`  ${theme.fg("accent", row.name)}`);
+		for (const line of wrap(row.doc, width - 4)) {
+			add(`  ${theme.fg("muted", line)}`);
+		}
+	}
+}
+
 function renderKnobsTable(
 	state: ConfigState,
 	theme: Theme,
@@ -875,6 +965,9 @@ function renderKnobsTable(
 ): void {
 	const ks = state.knobs;
 	const bodyFocused = state.focus === "body";
+	const extName = state.settings.selectedExtName ?? "?";
+	add(`  ${theme.fg("accent", `Settings › ${extName}`)}`);
+	add("");
 	if (ks.rows.length === 0) {
 		add(`  ${theme.fg("dim", "(no configurable knobs declared)")}`);
 		return;
@@ -884,14 +977,9 @@ function renderKnobsTable(
 		Math.max(8, ...ks.rows.map((r) => visibleWidth(r.key))),
 	);
 	const header = `    ${pad("key", keyWidth)}  ${pad("project", 16)}  ${pad("global", 16)}  effective`;
-	let lastExt: string | undefined;
+	add(theme.fg("muted", header));
 	for (let i = 0; i < ks.rows.length; i++) {
 		const row = ks.rows[i];
-		if (row.extName !== lastExt) {
-			add(theme.fg("accent", `  ${row.extName}`));
-			add(theme.fg("muted", header));
-			lastExt = row.extName;
-		}
 		const selected = bodyFocused && i === ks.cursor;
 		const cursor = selected ? theme.fg("accent", "▸") : " ";
 		const key = pad(row.key, keyWidth);
