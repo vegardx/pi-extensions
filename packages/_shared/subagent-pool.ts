@@ -333,6 +333,13 @@ export class SubagentPool {
 			...(config.env ? { env: config.env } : {}),
 			args: [
 				"--no-session",
+				// Isolate the subagent from the user's extension set. Without this
+				// the child reads the same settings.json and loads every package
+				// (including `modes`), which boots into plan mode, mints a plan,
+				// re-grants plan-mode tools over the `--tools` whitelist, and can
+				// recursively spawn more subagents — a fork bomb. Explicit
+				// `--extension` paths in `extraArgs` (e.g. notify) still load.
+				"--no-extensions",
 				"--tools",
 				tools,
 				"--append-system-prompt",

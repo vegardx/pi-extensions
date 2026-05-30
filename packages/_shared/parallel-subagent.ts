@@ -101,6 +101,11 @@ export async function runSubagent<Tag>(
 		model: input.model,
 		args: [
 			"--no-session",
+			// Isolate the subagent: skip auto-discovered/configured extensions
+			// so the child never loads `modes` (which would boot into plan mode,
+			// mint a plan, and potentially spawn more subagents). Explicit
+			// `--extension` paths still load.
+			"--no-extensions",
 			"--tools",
 			tools,
 			"--append-system-prompt",
