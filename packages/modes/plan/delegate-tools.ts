@@ -51,6 +51,11 @@ export interface ResearchOptions {
 	timeoutMs?: number;
 	/** Host abort signal — propagated into `runSubagent`. */
 	signal?: AbortSignal;
+	/**
+	 * Concurrency cap for {@link DelegateAgents.cappedResearch}. Unset /
+	 * non-finite / <= 0 means uncapped.
+	 */
+	maxConcurrent?: number;
 }
 
 /**
@@ -223,6 +228,38 @@ export class DelegateAgents {
 	 * abort/timeout/no-model failures all surface as `ok: false` with
 	 * a discriminating `reason`.
 	 */
+	private activeResearchRuns = 0;
+	private readonly researchWaiters: Array<() => void> = [];
+
+	/**
+	 * Run {@link research} under a concurrency cap. A burst of parallel
+	 * `delegate({ to: "researcher" })` calls (pi runs a turn's tool calls
+	 * via Promise.all) would otherwise spawn one subprocess each; the cap
+	 * is the backpressure. Excess calls block here until a slot frees.
+	 * `maxConcurrent` unset / non-finite / <= 0 means uncapped.
+	 */
+	async cappedResearch(
+		question: string,
+		opts: ResearchOptions = {},
+	): Promise<ResearchOutcome> {
+		const cap = opts.maxConcurrent;
+		if (cap == null || !Number.isFinite(cap) || cap <= 0) {
+			return this.research(question, opts);
+		}
+		while (this.activeResearchRuns >= cap) {
+			await new Promise<void>((resolve) => {
+				this.researchWaiters.push(resolve);
+			});
+		}
+		this.activeResearchRuns++;
+		try {
+			return await this.research(question, opts);
+		} finally {
+			this.activeResearchRuns--;
+			this.researchWaiters.shift()?.();
+		}
+	}
+
 	async research(
 		question: string,
 		opts: ResearchOptions = {},
