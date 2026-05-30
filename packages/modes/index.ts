@@ -2618,7 +2618,11 @@ export default defineExtension(
 		/** Hard-cap a delegated answer; append a marker when truncated. */
 		function capDelegatedAnswer(text: string, cap: number): string {
 			if (text.length <= cap) return text;
-			return `${text.slice(0, cap)}\n\n[…delegated answer truncated at ${cap} chars]`;
+			const marker = `\n\n[…delegated answer truncated at ${cap} chars]`;
+			// Reserve room for the marker so the FINAL string stays within `cap`
+			// (a tiny cap below the marker length degrades to marker-only).
+			const room = Math.max(0, cap - marker.length);
+			return text.slice(0, room) + marker;
 		}
 
 		/**
@@ -4645,7 +4649,8 @@ export default defineExtension(
 				timeoutMs: Type.Optional(
 					Type.Number({
 						description:
-							"Hard timeout in ms (researcher only). Overrides " +
+							"Hard timeout in ms. For researcher, bounds the web subprocess; " +
+							"for explorer, bounds the wait for the codebase answer. Overrides " +
 							"`extensionConfig.modes.researchTimeoutMs`.",
 					}),
 				),
@@ -4690,7 +4695,7 @@ export default defineExtension(
 				}
 				const mailbox = ensureExploreMailbox(ctx);
 				const { id } = await mailbox.ask(params.question);
-				const task = await mailbox.wait(id);
+				const task = await mailbox.wait(id, params.timeoutMs);
 				if (task.status === "error" || task.status === "timeout") {
 					return {
 						content: [
