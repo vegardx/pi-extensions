@@ -12,13 +12,14 @@ Spawns detached + unref'd by default, so closing pi doesn't kill the editor.
 ## Configuration
 
 Under `extensionConfig.editor` in `~/.pi/agent/<repo>/settings.json` (or the
-host-level config that pi merges). Default behaviour: launch `code` with the
-single argument `{path}`.
+host-level config that pi merges). Default behaviour: `preset: "auto"` launches
+`$VISUAL`, then `$EDITOR`, then `code`, with the single argument `{path}`.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `command` | `string` | `$VISUAL` ?? `$EDITOR` ?? `"code"` | Executable to launch. Must be on `PATH`. |
-| `args` | `string[]` | `["{path}"]` | Argv template. Placeholders: `{path}`, `{cwd}`, `{line}`, `{col}`. |
+| `preset` | `enum` | `"auto"` | `auto`, `code`, `cursor`, `windsurf`, `intellij`, `nvim`, `sublime`, or `custom`. |
+| `command` | `string` | unset | Custom executable/path. Overrides `preset` when set. |
+| `args` | `string[]` | preset-specific | Argv template override. Placeholders: `{path}`, `{cwd}`, `{line}`, `{col}`. |
 | `detach` | `boolean` | `true` | Detach + `unref()` so pi can exit independently. |
 
 Path arg accepts `path`, `path:line`, `path:line:col`. A leading `~/`
@@ -50,27 +51,28 @@ So `["-g", "{path}:{line}:{col}"]` becomes `-g <path>` for `/editor foo.ts`,
 VS Code:
 
 ```json
-{ "extensionConfig": { "editor": {
-  "command": "code",
-  "args": ["-g", "{path}:{line}:{col}"]
-} } }
+{ "extensionConfig": { "editor": { "preset": "code" } } }
 ```
 
 Cursor:
 
 ```json
-{ "extensionConfig": { "editor": {
-  "command": "cursor",
-  "args": ["-g", "{path}:{line}"]
-} } }
+{ "extensionConfig": { "editor": { "preset": "cursor" } } }
 ```
 
 IntelliJ / WebStorm / etc.:
 
 ```json
+{ "extensionConfig": { "editor": { "preset": "intellij" } } }
+```
+
+Custom path:
+
+```json
 { "extensionConfig": { "editor": {
-  "command": "idea",
-  "args": ["--line", "{line}", "{path}"]
+  "preset": "custom",
+  "command": "/Applications/MyEditor.app/Contents/MacOS/myeditor",
+  "args": ["{path}"]
 } } }
 ```
 

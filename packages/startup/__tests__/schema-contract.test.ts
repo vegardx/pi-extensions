@@ -37,6 +37,10 @@ function isModelKey(key: string): boolean {
 	return key === "model" || key.endsWith(".model");
 }
 
+function documentsUnsetSemantics(doc: string | undefined): boolean {
+	return /\b(optional|unset)\b/i.test(doc ?? "");
+}
+
 beforeAll(() => {
 	const saved: Record<string, string | undefined> = {};
 	for (const [name] of EXTENSIONS) {
@@ -87,7 +91,7 @@ describe.each(
 		}
 	});
 
-	it("model knobs use a fallbackChain and no literal default; other knobs declare a default", () => {
+	it("model knobs use fallbackChain; non-model knobs declare defaults unless documented optional", () => {
 		for (const k of schema()) {
 			if (isModelKey(k.key)) {
 				expect(
@@ -98,11 +102,11 @@ describe.each(
 					k.default,
 					`${name}.${k.key} model key must not pin a literal default`,
 				).toBeUndefined();
-			} else {
+			} else if (k.default === undefined) {
 				expect(
-					k.default,
-					`${name}.${k.key} needs a literal default`,
-				).toBeDefined();
+					documentsUnsetSemantics(k.doc),
+					`${name}.${k.key} needs a literal default or explicit optional/unset docs`,
+				).toBe(true);
 			}
 		}
 	});

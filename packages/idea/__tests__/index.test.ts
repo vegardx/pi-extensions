@@ -154,9 +154,7 @@ describe("runIdea — happy path", () => {
 		expect(create.calls).toHaveLength(1);
 		expect(create.calls[0]?.targetRepo).toBe("github.com/acme/widgets");
 		expect(create.calls[0]?.host).toBe("github.com");
-		expect(create.calls[0]?.draft.title).toBe(
-			"[idea] make submit button bigger",
-		);
+		expect(create.calls[0]?.draft.title).toBe("make submit button bigger");
 		expect(create.calls[0]?.labels).toEqual([]);
 		expect(notifies.at(-1)?.message).toContain(
 			"https://github.com/acme/widgets/issues/9",
@@ -345,9 +343,7 @@ describe("runIdea — no model", () => {
 		});
 
 		expect(create.calls).toHaveLength(1);
-		expect(create.calls[0]?.draft.title).toBe(
-			"[idea] make picker keyboard-navigable",
-		);
+		expect(create.calls[0]?.draft.title).toBe("make picker keyboard-navigable");
 		const warn = notifies.find((n) => n.level === "warning");
 		expect(warn?.message).toContain("no fast/active model");
 		expect(notifies.at(-1)?.message).toContain("(raw template)");
@@ -375,9 +371,7 @@ describe("runIdea — polish failure falls back", () => {
 		});
 
 		expect(create.calls).toHaveLength(1);
-		expect(create.calls[0]?.draft.title).toBe(
-			"[idea] make picker keyboard-navigable",
-		);
+		expect(create.calls[0]?.draft.title).toBe("make picker keyboard-navigable");
 		const warn = notifies.find((n) => n.level === "warning");
 		expect(warn?.message).toContain("polish failed");
 		expect(notifies.at(-1)?.message).toContain("(raw template)");

@@ -14,7 +14,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { applyArgvTemplate, parsePathArg } from "./argv.js";
-import { EXT_ID, resolveEditorConfig } from "./config.js";
+import { EDITOR_PRESETS, EXT_ID, resolveEditorConfig } from "./config.js";
 import { launchEditor } from "./spawn.js";
 
 export default defineExtension(
@@ -24,16 +24,21 @@ export default defineExtension(
 		doc: "Open the configured IDE/editor at cwd or path:line:col.",
 		configSchema: [
 			{
+				key: "preset",
+				type: "enum",
+				enumValues: EDITOR_PRESETS,
+				default: "auto",
+				doc: "Common editor preset. `auto` uses command/env fallback; `custom` expects `command`/`args`. Valid: auto, code, cursor, windsurf, intellij, nvim, sublime, custom.",
+			},
+			{
 				key: "command",
 				type: "string",
-				default: "",
-				doc: "Editor binary to spawn. When unset, falls back to $VISUAL, then $EDITOR, then 'code'.",
+				doc: "Custom editor binary/path. When unset, the selected preset is used; with preset `auto`, falls back to $VISUAL, then $EDITOR, then 'code'.",
 			},
 			{
 				key: "args",
 				type: "string[]",
-				default: ["{path}"],
-				doc: "Argv template. Placeholders: {path}, {line}, {col}, {cwd}. See README for examples (VS Code, Cursor, IntelliJ, Neovim).",
+				doc: "Argv template override. Placeholders: {path}, {line}, {col}, {cwd}. When unset, the selected preset's template is used.",
 			},
 			{
 				key: "detach",

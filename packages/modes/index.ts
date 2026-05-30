@@ -66,7 +66,6 @@ import {
 	computeCarryForwardSummaryChars,
 	computeContextBuckets,
 	DEFAULT_PHASE_TOKENS,
-	DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
 	DEFAULT_SUMMARY_TOKENS,
 	DEFAULT_WORKING_TOKENS,
 	findLatestCompactionSummary,
@@ -95,6 +94,7 @@ import {
 import {
 	DEFAULT_PARALLELISM,
 	DEFAULT_QUEUE_DEPTH_THRESHOLD,
+	defaultMailboxDeps as defaultExploreMailboxDeps,
 	ExploreMailbox,
 	type ExploreNotification,
 	type ExploreTask,
@@ -143,6 +143,7 @@ import {
 } from "./plan/schema.js";
 import { type ScrutinyFinding, scrutinizePlan } from "./plan/scrutinize.js";
 import { PLAN_SEED_CUSTOM_TYPE, seedPlanDoc } from "./plan/seed.js";
+import { SharedOverviewService } from "./plan/shared-overview-service.js";
 import {
 	probeOpenPrForBranch,
 	probePrByNumber,
@@ -365,37 +366,15 @@ export default defineExtension(
 		integratesWith: ["commit", "review"],
 		configSchema: [
 			{
-				key: "review.enable",
-				type: "boolean",
-				default: false,
-				doc: "Run a multi-agent code review automatically after a plan finishes executing. Off by default — opt in per-repo by setting this to true.",
-			},
-			{
-				key: "review.agents",
-				type: "string[]",
-				default: ["code-reviewer", "code-simplifier", "security-analyst"],
-				enumValues: [
-					"code-reviewer",
-					"code-simplifier",
-					"security-analyst",
-					"architect",
-					"scope-analyst",
-					"doc-reviewer",
-					"dependency-checker",
-				],
-				doc: "Reviewer roles to run. Each role is fanned out to both primary and secondary models. Valid: code-reviewer, code-simplifier, security-analyst, architect, scope-analyst, doc-reviewer, dependency-checker.",
-			},
-			{
 				key: "park.githubProject",
 				type: "string",
-				default: "",
-				doc: "GitHub Project title to assign issues to when /park creates them. Leave empty to skip project assignment.",
+				doc: "GitHub Project title to assign issues to when /park creates them. Leave unset to skip project assignment.",
 			},
 			{
 				key: "compaction.phaseTokens",
 				type: "number",
 				default: DEFAULT_PHASE_TOKENS,
-				doc: "Output token cap (maxTokens) on each phase-boundary compaction summary. Bounds the size of each '## Phase' section in the rolling summary; the input conversation is unbounded. Default 10000.",
+				doc: "Safety maxTokens cap for a single phase-boundary summary. `compaction.summaryTokens` is the cumulative soft budget across all summaries; this only prevents one summariser call from producing an unexpectedly large section. Default 10000.",
 			},
 			{
 				key: "compaction.workingTokens",
@@ -412,8 +391,7 @@ export default defineExtension(
 			{
 				key: "compaction.planMaxContextTokens",
 				type: "number",
-				default: DEFAULT_PLAN_MAX_CONTEXT_TOKENS,
-				doc: "Context-window size (tokens) used for the footer usage gauge while in plan mode. Plan mode never auto-compacts — you're in the loop — so this only changes the displayed denominator. 0 means use the active model's full context window. Default 0.",
+				doc: "Optional context-window size (tokens) used only for the plan-mode footer usage gauge. Leave unset to use the active model's full context window. Plan mode never auto-compacts.",
 			},
 			{
 				key: "scrutinize.enable",
@@ -439,31 +417,31 @@ export default defineExtension(
 				key: "research.timeoutMs",
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
-				doc: "Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. Default 90000 (90s).",
+				doc: 'Hard timeout (ms) for `delegate(to: "researcher")` calls. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. Default 120000 (120s).',
 			},
 			{
 				key: "delegate.maxAnswerChars",
 				type: "number",
 				default: DEFAULT_DELEGATE_MAX_CHARS,
-				doc: "Hard cap (characters) on a delegated answer before it crosses back into the caller's context. Longer answers are truncated with a marker. Keeps delegation context-slimming honest. Default 6000.",
+				doc: "Safety backstop (characters) on a delegated answer before it crosses back into the caller's context. Subagents are still prompted to be concise and complete; this only catches runaways. Default 6000.",
 			},
 			{
 				key: "delegate.maxConcurrent",
 				type: "number",
 				default: DEFAULT_DELEGATE_MAX_CONCURRENT,
-				doc: "Cap on concurrent researcher subprocesses spawned by `delegate(researcher)`. Backpressure for a burst of parallel calls. Must be >= 1; fractional or smaller values fall back to the default. Default 4.",
+				doc: 'Cap on concurrent researcher subprocesses spawned by `delegate(to: "researcher")`. Backpressure for a burst of parallel calls. Must be >= 1; fractional or smaller values fall back to the default. Default 10.',
 			},
 			{
 				key: "explore.parallelism",
 				type: "number",
 				default: DEFAULT_PARALLELISM,
-				doc: "How many codebase-explore sub-agents run at once when the queue is shallow. Raising it trades more concurrent token spend for faster fan-out. Positive integers only; other values fall back to the default. Default 1.",
+				doc: "Maximum simultaneous codebase-explore jobs across the persistent seed agent and clean ephemeral children. This is a numeric cap, not a boolean. Positive integers only; other values fall back to the default. Default 2.",
 			},
 			{
 				key: "explore.queueDepthThreshold",
 				type: "number",
 				default: DEFAULT_QUEUE_DEPTH_THRESHOLD,
-				doc: "Queued-task depth at which the explore mailbox scales up to `explore.parallelism` workers. Below it a single worker handles the queue. Positive integers only. Default 4.",
+				doc: "Queued/running seed-task depth at which explore may fan out to child workers up to `explore.parallelism`. Positive integers only. Default 4.",
 			},
 			{
 				key: "model",
@@ -493,6 +471,7 @@ export default defineExtension(
 		// on /implement, or on session shutdown.
 		let delegateAgents: DelegateAgents | null = null;
 		let exploreMailbox: ExploreMailbox | null = null;
+		let exploreOverviewService: SharedOverviewService | null = null;
 
 		// Install the process-level crash handler once per process. The
 		// handler is a no-op outside `executing` stage, so plan/ask/hack
@@ -531,10 +510,24 @@ export default defineExtension(
 			return delegateAgents;
 		}
 
+		function ensureExploreOverviewService(): SharedOverviewService {
+			if (!exploreOverviewService) {
+				exploreOverviewService = new SharedOverviewService();
+			}
+			return exploreOverviewService;
+		}
+
 		function ensureExploreMailbox(ctx: ExtensionContext): ExploreMailbox {
 			if (!exploreMailbox) {
 				const opts = readExploreSettings(ctx);
-				exploreMailbox = new ExploreMailbox(ctx, undefined, opts);
+				exploreMailbox = new ExploreMailbox(
+					ctx,
+					{
+						...defaultExploreMailboxDeps(),
+						getOverview: () => ensureExploreOverviewService().get(ctx),
+					},
+					opts,
+				);
 				exploreMailbox.onChange((state) => renderExploreWidget(ctx, state));
 			}
 			return exploreMailbox;
@@ -1536,6 +1529,9 @@ export default defineExtension(
 				disposeDelegateAgents(ctx);
 			}
 			modeState.mode = mode;
+			if (mode === "plan") {
+				ensureExploreOverviewService().ensureStarted(ctx);
+			}
 			persist();
 			applyModeTools();
 			updateWidget(ctx);
@@ -2103,329 +2099,6 @@ export default defineExtension(
 			}
 		}
 
-		// ---- Batch review -----------------------------------------------------
-
-		/**
-		 * Run the batch review flow:
-		 * 1. Fan out reviewers (3 roles × 2 models)
-		 * 2. Collect findings, deduplicate, consensus
-		 * 3. Cross-validate disputed critical/high
-		 * 4. Show triage dialog for disputed findings
-		 * 5. Send fix prompt for all accepted findings
-		 *
-		 * TODO(autoreview): off by default — the pipeline runs end-to-end but
-		 * the surrounding agent flow needs design work before this is on for
-		 * everyone. Known issues to address before flipping the default back
-		 * on:
-		 *   - Triage UX: large finding dumps overwhelm the dialog; needs
-		 *     progressive disclosure / per-severity filtering.
-		 *   - Cross-validation cost: doubles inference budget per ship.
-		 *   - False-positive rate on stylistic findings drives noise.
-		 *   - Findings that don't apply to the current diff (e.g. scoped to
-		 *     the parent branch's changes) leak into the agent's fix prompt.
-		 * Opt in per-repo via extensionConfig.modes.review.enable: true.
-		 */
-		async function runBatchReview(ctx: ExtensionContext): Promise<void> {
-			if (!modeState) return;
-
-			const settings = readRelevantSettings(ctx.cwd);
-			const reviewCfg = settings.extensionConfig?.[EXT_ID]?.review;
-			const reviewObj =
-				reviewCfg && typeof reviewCfg === "object" && !Array.isArray(reviewCfg)
-					? (reviewCfg as Record<string, unknown>)
-					: {};
-			const enable =
-				typeof reviewObj.enable === "boolean" ? reviewObj.enable : false;
-			if (!enable) return;
-
-			const { parseModelSpec } = await import(
-				"@vegardx/pi-extensions-shared/model-resolver.js"
-			);
-
-			const primarySpec = settings.backgroundModels?.primary?.heavy;
-			if (!primarySpec) return;
-			const primaryParsed = parseModelSpec(primarySpec);
-			if (!primaryParsed) return;
-
-			const secondarySpec = settings.backgroundModels?.secondary?.heavy;
-			const secondaryParsed = secondarySpec
-				? parseModelSpec(secondarySpec)
-				: null;
-
-			// Get branch diff.
-			const defaultBranch =
-				modeState.defaultBranch ?? detectDefaultBranch(ctx.cwd);
-			const diffResult = runCommand(
-				"git",
-				["diff", defaultBranch ?? "HEAD~5"],
-				{
-					cwd: ctx.cwd,
-				},
-			);
-			if (!diffResult.ok || !diffResult.stdout.trim()) {
-				notify(ctx, "no diff to review", "info");
-				return;
-			}
-			const diff = diffResult.stdout;
-
-			// Get changed files.
-			const filesResult = runCommand(
-				"git",
-				["diff", "--name-only", defaultBranch ?? "HEAD~5"],
-				{ cwd: ctx.cwd },
-			);
-			const changedFiles = filesResult.ok
-				? filesResult.stdout.trim().split("\n").filter(Boolean)
-				: [];
-
-			// Import review infrastructure.
-			const { runReviewer, reviewTimeoutMs } = await import(
-				"pi-ext-review/reviewer-client"
-			);
-			const { dedupeFindings } = await import("pi-ext-review/findings");
-			const {
-				REVIEW_ROLES,
-				buildReviewTask,
-				buildChallengeTask,
-				buildFixPrompt,
-				classifyFindings,
-				partitionChallengeResults,
-			} = await import("./review-runner.js");
-
-			// Use configured roles or defaults.
-			const rawAgents = reviewObj.agents;
-			const roles =
-				Array.isArray(rawAgents) &&
-				rawAgents.every((a) => typeof a === "string")
-					? (rawAgents as string[])
-					: [...REVIEW_ROLES];
-
-			const scopeLabel = `branch vs. ${defaultBranch ?? "HEAD~5"}`;
-			const task = buildReviewTask({ diff, changedFiles, scopeLabel });
-			const timeout = reviewTimeoutMs(diff.length);
-
-			// Build invocation list: 3 roles × N models.
-			type Invocation = {
-				role: string;
-				tier: "primary" | "secondary";
-				provider: string;
-				model: string;
-			};
-			const invocations: Invocation[] = [];
-			for (const role of roles) {
-				invocations.push({
-					role,
-					tier: "primary",
-					provider: primaryParsed.provider,
-					model: primaryParsed.modelId,
-				});
-				if (secondaryParsed) {
-					invocations.push({
-						role,
-						tier: "secondary",
-						provider: secondaryParsed.provider,
-						model: secondaryParsed.modelId,
-					});
-				}
-			}
-
-			// Show progress.
-			modeState.stage = "reviewing";
-			persist();
-			updateWidget(ctx);
-			if (ctx.hasUI) {
-				ctx.ui.setWidget(
-					"review-progress",
-					invocations.map((inv) => `⏳ ${inv.role} (${inv.tier})`),
-				);
-			}
-			notify(ctx, `reviewing with ${invocations.length} agents…`, "info");
-
-			// Fan out reviewers in parallel.
-			let completed = 0;
-			const outcomes = await Promise.all(
-				invocations.map(async (inv) => {
-					const outcome = await runReviewer({
-						role: inv.role as any,
-						task,
-						provider: inv.provider,
-						model: inv.model,
-						cwd: ctx.cwd,
-						timeoutMs: timeout,
-					});
-					completed++;
-					if (ctx.hasUI) {
-						const lines = invocations.map((inv2, i) => {
-							const done = i < completed;
-							return `${done ? "✅" : "⏳"} ${inv2.role} (${inv2.tier})`;
-						});
-						ctx.ui.setWidget("review-progress", lines);
-					}
-					return { ...outcome, tier: inv.tier as "primary" | "secondary" };
-				}),
-			);
-
-			if (ctx.hasUI) ctx.ui.setWidget("review-progress", undefined);
-
-			// Deduplicate findings.
-			const bundles = outcomes
-				.filter((o) => !o.error)
-				.map((o) => ({
-					role: o.role,
-					findings: o.findings,
-					tier: o.tier,
-				}));
-			const deduped = dedupeFindings(bundles);
-
-			if (deduped.length === 0) {
-				notify(ctx, "review complete — no findings", "info");
-				modeState.stage = "exec-complete";
-				persist();
-				updateWidget(ctx);
-				return;
-			}
-
-			// Classify findings.
-			const {
-				consensus,
-				needsChallenge,
-				skip: _skipped,
-			} = classifyFindings(deduped);
-
-			// Cross-validate critical/high single-agent findings.
-			let confirmed: typeof consensus = [];
-			let disputed: typeof consensus = [];
-
-			if (needsChallenge.length > 0) {
-				notify(
-					ctx,
-					`cross-validating ${needsChallenge.length} findings…`,
-					"info",
-				);
-				const challengeResults = await Promise.all(
-					needsChallenge.map(async (finding) => {
-						// Use the opposite model tier for cross-validation.
-						const challengerProvider = secondaryParsed
-							? secondaryParsed.provider
-							: primaryParsed.provider;
-						const challengerModel = secondaryParsed
-							? secondaryParsed.modelId
-							: primaryParsed.modelId;
-
-						const challengeTask = buildChallengeTask({ finding, diff });
-						const result = await runReviewer({
-							role: "code-reviewer", // Challenger uses code-reviewer prompt variant
-							task: challengeTask,
-							provider: challengerProvider,
-							model: challengerModel,
-							cwd: ctx.cwd,
-							timeoutMs: timeout,
-						});
-
-						// Parse challenger output (expects {agree, reason, suggestedAction?})
-						const agree = result.findings.length > 0 || !result.error;
-						return {
-							finding,
-							agree,
-							reason: result.error ?? "cross-validation passed",
-							suggestedAction: result.findings[0]?.suggestedAction,
-						};
-					}),
-				);
-				const partitioned = partitionChallengeResults(challengeResults);
-				confirmed = partitioned.confirmed;
-				disputed = partitioned.disputed;
-			}
-
-			// All findings to fix (consensus + confirmed by cross-validation).
-			const toFix = [...consensus, ...confirmed];
-
-			// Show triage dialog for disputed findings if any.
-			if (disputed.length > 0 && ctx.hasUI) {
-				try {
-					const dialogMod = await import("@vegardx/pi-questions");
-					const items = disputed.map((f) => ({
-						id: `${f.file}:${f.line ?? 0}:${f.title}`,
-						label: truncateToWidth(f.title, 30),
-						prompt: `**[${f.severity}]** ${f.title}\n\n${f.description}`,
-						options: [
-							{ value: "fix", label: "Fix" },
-							{ value: "skip", label: "Skip" },
-						],
-						textInput: { placeholder: "Notes (optional)…" },
-						preview: {
-							kind: "code" as const,
-							content: f.suggestedAction ?? f.description,
-							title: `${f.file}${f.line ? `:${f.line}` : ""}`,
-						},
-						metadata: [
-							{ key: "Raised by", value: f.flaggedBy.join(", ") },
-							{
-								key: "Cross-validation",
-								value: "Disputed — challenger disagreed",
-							},
-						],
-					}));
-
-					const result = await dialogMod.showQuestions(ctx, {
-						title: `Review: ${toFix.length} consensus fixes + ${disputed.length} disputed`,
-						items,
-						requireAll: false,
-					});
-
-					if (!result.cancelled) {
-						for (const answer of result.answers) {
-							if (answer.value === "fix") {
-								const f = disputed.find(
-									(d) => `${d.file}:${d.line ?? 0}:${d.title}` === answer.id,
-								);
-								if (f) toFix.push(f);
-							}
-						}
-					}
-				} catch {
-					// questions not available; skip triage.
-				}
-			}
-
-			// Report summary.
-			const summary = [
-				`**Review complete** — ${deduped.length} findings total`,
-				`- Consensus (will fix): ${consensus.length}`,
-				`- Cross-validated (will fix): ${confirmed.length}`,
-				`- Disputed (user triaged): ${disputed.length}`,
-				`- Skipped (low severity/rejected): ${_skipped.length}`,
-			].join("\n");
-			pi.sendMessage(
-				{
-					customType: `${EXT_ID}-review-report`,
-					content: summary,
-					display: true,
-				},
-				{ triggerTurn: false },
-			);
-
-			// Send fix prompt if there are findings to fix.
-			if (toFix.length > 0) {
-				modeState.stage = "fixing";
-				persist();
-				updateWidget(ctx);
-				const fixPrompt = buildFixPrompt(toFix);
-				pi.sendMessage(
-					{
-						customType: `${EXT_ID}-review-fix`,
-						content: fixPrompt,
-						display: false,
-					},
-					{ deliverAs: "followUp", triggerTurn: true },
-				);
-			} else {
-				modeState.stage = "exec-complete";
-				persist();
-				updateWidget(ctx);
-			}
-		}
-
 		// ---- Ask dialog -------------------------------------------------------
 
 		async function showAskDialog(
@@ -2966,17 +2639,6 @@ export default defineExtension(
 						if (postExecInFlight) return;
 						postExecInFlight = true;
 						try {
-							try {
-								await runBatchReview(ctx);
-							} catch (err) {
-								// Mirror the primary post-exec path: surface review
-								// failures so the user knows before auto-advancing.
-								notify(
-									ctx,
-									`review failed: ${err instanceof Error ? err.message : String(err)}`,
-									"warning",
-								);
-							}
 							await new Promise<void>((resolve) => setImmediate(resolve));
 							// Guard: re-check stage in case the primary post-exec path
 							// already ran to completion while this fallback was queued.
@@ -4904,6 +4566,9 @@ export default defineExtension(
 				// other reader see the actual default mode (otherwise they get null
 				// and fall back to the strict copy on every fresh session).
 				setActiveMode(modeState.mode);
+				if (modeState.mode === "plan") {
+					ensureExploreOverviewService().ensureStarted(ctx);
+				}
 				applyModeTools();
 				installFooter(ctx);
 				updateWidget(ctx);
@@ -4911,6 +4576,9 @@ export default defineExtension(
 			}
 
 			// Restore tool restrictions for the persisted mode.
+			if (modeState.mode === "plan") {
+				ensureExploreOverviewService().ensureStarted(ctx);
+			}
 			applyModeTools();
 			installFooter(ctx);
 			updateWidget(ctx);
@@ -4927,6 +4595,7 @@ export default defineExtension(
 			if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 			footerTui = null;
 			crashSessionAccessor = null;
+			exploreOverviewService?.reset();
 			disposeDelegateAgents(ctx);
 		});
 
@@ -5519,8 +5188,8 @@ export default defineExtension(
 
 			updateWidget(ctx);
 
-			// Run batch review, then either auto-loop (commit→ship→next) or
-			// the ask-mode post-exec picker. Branch is decided by mode at
+			// Run either auto-loop (commit→ship→next) or the ask-mode post-exec
+			// picker. Branch is decided by mode at
 			// completion time, not at /implement time, so a Shift+Tab from
 			// auto→hack mid-phase still does the right thing for the user's
 			// current intent.
@@ -5528,15 +5197,6 @@ export default defineExtension(
 				if (postExecInFlight) return;
 				postExecInFlight = true;
 				try {
-					try {
-						await runBatchReview(ctx);
-					} catch (err) {
-						notify(
-							ctx,
-							`review failed: ${err instanceof Error ? err.message : String(err)}`,
-							"warning",
-						);
-					}
 					await new Promise<void>((resolve) => setImmediate(resolve));
 
 					if (modeState?.mode === "auto") {

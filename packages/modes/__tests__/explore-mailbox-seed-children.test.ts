@@ -8,7 +8,7 @@
  *     contention-only).
  *   - `related: false` while seed busy → spawns child agent in
  *     parallel; child id starts with `c`.
- *   - Child receives a Q/A snapshot prefix from the seed journal.
+ *   - Child receives a stable codebase overview prefix, not seed history.
  *   - Child mailbox does not block seed; both run concurrently.
  *   - Graceful degradation when `spawnChildAgent` is omitted.
  *   - Graceful degradation when `spawnChildAgent` rejects (falls
@@ -21,7 +21,7 @@ import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import {
 	ExploreMailbox,
 	type MailboxDeps,
-	renderJournalForChild,
+	renderOverviewForChild,
 } from "../plan/explore-mailbox.js";
 
 interface MockAgent {
@@ -72,7 +72,10 @@ interface DepsHarness {
 	queueChild: (agent: MockAgent) => void;
 }
 
-function makeHarness(opts?: { withChild?: boolean }): DepsHarness {
+function makeHarness(opts?: {
+	withChild?: boolean;
+	overview?: string | null;
+}): DepsHarness {
 	const seedAgent = makeMockAgent();
 	const seedDisposeSpy = vi.fn().mockResolvedValue(undefined);
 	const spawnAgentSpy = vi.fn(async () => ({
@@ -96,6 +99,9 @@ function makeHarness(opts?: { withChild?: boolean }): DepsHarness {
 		spawnAgent: spawnAgentSpy,
 		...(opts?.withChild !== false
 			? { spawnChildAgent: spawnChildAgentSpy }
+			: {}),
+		...(opts && "overview" in opts
+			? { getOverview: vi.fn(async () => opts.overview ?? null) }
 			: {}),
 	};
 
@@ -269,54 +275,36 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 		});
 	});
 
-	describe("snapshot context handoff", () => {
-		it("renderJournalForChild returns empty when journal is empty", () => {
-			expect(renderJournalForChild([])).toBe("");
+	describe("overview handoff", () => {
+		it("renderOverviewForChild returns the bare question when overview is empty", () => {
+			expect(renderOverviewForChild("", "child q")).toBe("child q");
 		});
 
-		it("renderJournalForChild includes prior Q/A pairs", () => {
-			const rendered = renderJournalForChild([
-				{ question: "where is auth?", answer: "in src/auth/." },
-				{ question: "who calls login()?", answer: "the login route." },
-			]);
-			expect(rendered).toContain("prior exploration context");
-			expect(rendered).toContain("Q: where is auth?");
-			expect(rendered).toContain("A: in src/auth/.");
-			expect(rendered).toContain("Q: who calls login()?");
-			expect(rendered).toContain("Now answer the next question");
+		it("renderOverviewForChild includes overview and question", () => {
+			const rendered = renderOverviewForChild(
+				"Layout: packages/modes owns plan mode.",
+				"where is config?",
+			);
+			expect(rendered).toContain("codebase overview");
+			expect(rendered).toContain("packages/modes owns plan mode");
+			expect(rendered).toContain("where is config?");
 		});
 
-		it("renderJournalForChild caps at 6 most recent pairs", () => {
-			const journal = Array.from({ length: 10 }, (_, i) => ({
-				question: `q${i}`,
-				answer: `a${i}`,
-			}));
-			const rendered = renderJournalForChild(journal);
-			// Only the last 6 should appear.
-			expect(rendered).not.toContain("Q: q0");
-			expect(rendered).not.toContain("Q: q3");
-			expect(rendered).toContain("Q: q4");
-			expect(rendered).toContain("Q: q9");
-		});
-
-		it("renderJournalForChild truncates over-long entries", () => {
-			const longAnswer = "x".repeat(2000);
-			const rendered = renderJournalForChild([
-				{ question: "hi", answer: longAnswer },
-			]);
-			// Per-entry budget is 600 chars; truncated marker present.
+		it("renderOverviewForChild truncates over-long overview", () => {
+			const rendered = renderOverviewForChild("x".repeat(20_000), "child q");
 			expect(rendered).toContain("…");
-			expect(rendered.length).toBeLessThan(2200);
+			expect(rendered.length).toBeLessThan(13_000);
+			expect(rendered).toContain("child q");
 		});
 
-		it("child receives prior seed Q/A as a prompt prefix", async () => {
-			const h = makeHarness();
+		it("child receives shared overview, not seed Q/A history", async () => {
+			const h = makeHarness({ overview: "Layout: auth lives in src/auth." });
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
 			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
-			// Seed a completed exchange so journal has an entry.
+			// A completed seed exchange should not be copied into the child.
 			await mailbox.ask("where is auth?");
 			completeTurn(h.seedAgent, "in src/auth");
 			await flush();
@@ -326,26 +314,25 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 			await flush();
 			h.seedAgent.emit({ type: "agent_start" });
 
-			// Child fires.
 			await mailbox.ask("how does the build work?", { related: false });
 			await flush();
 
 			expect(childAgent.prompt).toHaveBeenCalledOnce();
 			const promptText = childAgent.prompt.mock.calls[0]?.[0] as string;
-			expect(promptText).toContain("prior exploration context");
-			expect(promptText).toContain("Q: where is auth?");
-			expect(promptText).toContain("A: in src/auth");
+			expect(promptText).toContain("codebase overview");
+			expect(promptText).toContain("auth lives in src/auth");
 			expect(promptText).toContain("how does the build work?");
+			expect(promptText).not.toContain("Q: where is auth?");
+			expect(promptText).not.toContain("A: in src/auth");
 		});
 
-		it("child gets bare question (no prefix) when seed has no completed asks", async () => {
-			const h = makeHarness();
+		it("child gets bare question when overview is unavailable", async () => {
+			const h = makeHarness({ overview: null });
 			const childAgent = makeMockAgent();
 			h.queueChild(childAgent);
 
 			const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
 
-			// Seed task running but never completed.
 			await mailbox.ask("seed q");
 			await flush();
 			h.seedAgent.emit({ type: "agent_start" });
@@ -355,7 +342,34 @@ describe("ExploreMailbox seed-and-children (#159b)", () => {
 
 			const promptText = childAgent.prompt.mock.calls[0]?.[0] as string;
 			expect(promptText).toBe("child q");
-			expect(promptText).not.toContain("prior exploration");
+			expect(promptText).not.toContain("codebase overview");
+		});
+
+		it("child proceeds with bare question when overview lookup hangs", async () => {
+			vi.useFakeTimers();
+			try {
+				const h = makeHarness();
+				h.deps.getOverview = vi.fn(() => new Promise<string | null>(() => {}));
+				const childAgent = makeMockAgent();
+				h.queueChild(childAgent);
+
+				const mailbox = new ExploreMailbox(CTX, h.deps, { parallelism: 3 });
+
+				await mailbox.ask("seed q");
+				await Promise.resolve();
+				h.seedAgent.emit({ type: "agent_start" });
+
+				await mailbox.ask("child q", { related: false });
+				await Promise.resolve();
+				expect(childAgent.prompt).not.toHaveBeenCalled();
+
+				await vi.advanceTimersByTimeAsync(1_500);
+
+				expect(childAgent.prompt).toHaveBeenCalledOnce();
+				expect(childAgent.prompt.mock.calls[0]?.[0]).toBe("child q");
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 

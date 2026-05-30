@@ -147,3 +147,20 @@ export async function resolveModel(
 
 	return null;
 }
+
+export async function resolveModelWithin(
+	ctx: ExtensionContext,
+	opts: ResolveOptions,
+	timeoutMs: number,
+): Promise<ResolvedBackgroundModel | null> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<null>((resolve) => {
+		timer = setTimeout(() => resolve(null), timeoutMs);
+		timer.unref?.();
+	});
+	try {
+		return await Promise.race([resolveModel(ctx, opts), timeout]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
