@@ -18,7 +18,7 @@ Current mode is shown in the footer (`hack` renders red — no safety net; `ask`
 - `ask → auto`: flips silently — going more permissive, context flows through.
 - `auto → hack`: flips silently — going more permissive, context flows through.
 
-Fresh sessions start in the mode chosen by `extensionConfig.modes.defaultMode` (default `plan`). Existing persisted sessions always use their saved mode.
+Fresh sessions start in the mode chosen by `extensionConfig.modes.mode.default` (default `plan`). Existing persisted sessions always use their saved mode.
 
 ### Mode transitions
 
@@ -74,7 +74,7 @@ When you commit to a plan via the picker (Shift+Tab plan→ask) or `/implement`,
 - **Implement (auto)** — chug through the plan end-to-end. After each phase completes, auto-mode runs `/commit` (non-interactive) → `/ship` → `/implement` for the next planned phase, all without prompting. Auto does NOT wait between phases for PR review — review feedback arrives async, and the **end-of-plan PR sweep** is when you address it (see below).
 - **Implement (ask)** — execute the phase's tasks autonomously, then pause at the commit/ship boundary so you can review the diff before it ships. Same mid-phase compaction and steering classifier as auto; the difference is purely at the git boundary.
 
-`extensionConfig.modes.implementDefault` (default `auto`) controls which option is highlighted first — set it to `ask` if you prefer human-in-the-loop by default.
+`extensionConfig.modes.implement.default` (default `auto`) controls which option is highlighted first — set it to `ask` if you prefer human-in-the-loop by default.
 
 When `/implement` is invoked from `ask` or `auto` mode it preserves that mode rather than reading the setting. This means a scripted `ask → /implement` flow stays in ask without any config change. `hack` mode maps to `auto` (ImplementMode excludes hack). Use `/hack`, `/ask`, or `/auto` to flip modes without going through the implement flow.
 
@@ -100,7 +100,7 @@ If any PR needs attention, the completion picker adds an extra option "Open PR #
 | `/plan resume <slug>` | Bind this session to a specific plan. Confirms before adopting a plan owned by another session. |
 | `/plan archive <slug>` | Soft-archive: mark all non-terminal phases as `abandoned`, tear down their worktrees, keep branches and the plan file on disk. |
 | `/plan delete <slug>` | Hard-delete: remove `~/.pi/plans/<slug>/` permanently. Refuses if any worktree is dirty; worktrees and branches are not touched. |
-| `/implement [desc]` | Sync, create a feature branch, start executing. Preserves current mode (ask/auto → keep; hack → auto; plan → use `implementDefault` config) |
+| `/implement [desc]` | Sync, create a feature branch, start executing. Preserves current mode (ask/auto → keep; hack → auto; plan → use `implement.default` config) |
 | `/hack` | Flip to hack mode (direct tool access, no plan ceremony) |
 | `/ask` | Flip to ask mode (pauses at commit/ship boundaries) |
 | `/auto` | Flip to auto mode (autonomous commit/ship/next-phase loop) |
@@ -553,7 +553,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 {
   "extensionConfig": {
     "modes": {
-      "defaultMode": "plan",
+      "mode": { "default": "plan" },
       "compaction": {
         "workingTokens": 150000,
         "summaryTokens": 100000,
@@ -563,7 +563,7 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
         "enable": false,
         "agents": ["code-reviewer", "code-simplifier", "security-analyst"]
       },
-      "githubProject": "owner/repo/projects/N"
+      "park": { "githubProject": "owner/repo/projects/N" }
     }
   }
 }
@@ -571,15 +571,15 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 
 | Key | Default | Doc |
 |---|---|---|
-| `defaultMode` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
+| `mode.default` | `"plan"` | Mode for fresh sessions: `plan` \| `auto` \| `hack`. Persisted sessions keep their saved mode. |
 | `compaction.workingTokens` | `150000` | Working budget covering `sys + work` (system prompt + tool schemas + live messages). Mid-phase compaction fires when `sys + work` exceeds this. Summary tokens live in their own budget. |
 | `compaction.summaryTokens` | `100000` | Cumulative cross-phase carry-forward budget (Σ `phase.summary` chars across shipped phases). Soft-warns once when exceeded; not enforced. Total target ceiling = `workingTokens + summaryTokens` — should fit the active model's `contextWindow`. |
 | `compaction.planMaxContextTokens` | `0` | Footer cap (denominator) used while in plan mode. Plan mode is exempt from mid-phase compaction — the human is in the loop — so this only affects the footer display. `0` = use the active model's `contextWindow`. |
 | `compaction.phaseTokens` | `10000` | Output token cap per slice summary. The conversation being summarised is unbounded; the cap is on the frozen output that joins the rolling summary. |
 | `review.enable` | `false` | Run batch review after plan execution completes. **Off by default** — see callout below. Opt in per-repo by setting `true`. |
 | `review.agents` | `[code-reviewer, code-simplifier, security-analyst]` | Reviewer roles to run. |
-| `githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
-| `researchTimeoutMs` | `90000` | Hard timeout (ms) for the `researcher` delegation (`delegate({ to: "researcher" })`) sub-agent call. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
+| `park.githubProject` | `""` | GitHub Project to assign issues to when `/park` creates them. |
+| `research.timeoutMs` | `90000` | Hard timeout (ms) for the `researcher` delegation (`delegate({ to: "researcher" })`) sub-agent call. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. |
 | `delegate.maxAnswerChars` | `6000` | Hard cap on a delegated answer's size before it crosses back into the caller's context. Keeps `delegate` context-slimming. |
 | `delegate.maxConcurrent` | `4` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel, so without this a burst would spawn one subprocess each. Excess calls block until a slot frees. |
 | `explore.parallelism` | `1` | Max in-flight `explorer` delegations across the seed worker and ephemeral children combined. `1` keeps the single-FIFO behaviour from before #159b. Increase to fan out unrelated questions in parallel. Non-integer / non-positive values fall back to the default with a warning. |

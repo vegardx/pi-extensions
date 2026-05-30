@@ -251,7 +251,7 @@ const ALL_MODES: readonly Mode[] = ["plan", "auto", "ask", "hack"] as const;
 let crashHandlerDispose: (() => void) | null = null;
 
 /**
- * Validate an extensionConfig.modes.defaultMode value. Falls back to
+ * Validate an extensionConfig.modes.mode.default value. Falls back to
  * "plan" on missing/invalid input. Caller is responsible for surfacing
  * a notify when `valid` is false.
  */
@@ -272,7 +272,7 @@ export type ImplementMode = "auto" | "ask";
 const IMPLEMENT_MODES: readonly ImplementMode[] = ["auto", "ask"] as const;
 
 /**
- * Validate an extensionConfig.modes.implementDefault value. Falls back
+ * Validate an extensionConfig.modes.implement.default value. Falls back
  * to "auto" on missing/invalid input — the picker's auto-first ordering
  * matches the documented default mode story.
  */
@@ -386,7 +386,7 @@ export default defineExtension(
 				doc: "Reviewer roles to run. Each role is fanned out to both primary and secondary models. Valid: code-reviewer, code-simplifier, security-analyst, architect, scope-analyst, doc-reviewer, dependency-checker.",
 			},
 			{
-				key: "githubProject",
+				key: "park.githubProject",
 				type: "string",
 				default: "",
 				doc: "GitHub Project title to assign issues to when /park creates them. Leave empty to skip project assignment.",
@@ -422,21 +422,21 @@ export default defineExtension(
 				doc: "Run a plan-scrutinizer sub-agent before the implement picker. Finds gaps, risks, and missing tasks. Uses backgroundModels.secondary.heavy (falls back to primary.heavy then session model). Off by default — adds ~20–40s latency.",
 			},
 			{
-				key: "defaultMode",
+				key: "mode.default",
 				type: "enum",
 				enumValues: ALL_MODES,
 				default: "plan",
 				doc: "Mode for fresh sessions: plan | auto | ask | hack. Existing persisted sessions keep their saved mode.",
 			},
 			{
-				key: "implementDefault",
+				key: "implement.default",
 				type: "enum",
 				enumValues: IMPLEMENT_MODES,
 				default: "auto",
 				doc: "Default option highlighted in the /implement picker: auto | ask. `auto` chugs through commit/ship/next phase autonomously; `ask` pauses at git boundaries. Set to `ask` if you want a human-in-the-loop default.",
 			},
 			{
-				key: "researchTimeoutMs",
+				key: "research.timeoutMs",
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
 				doc: "Hard timeout (ms) for `research(question)` sub-agent calls. On timeout the tool returns a structured failure shape (does not throw) so the agent can recover, and a one-shot warning notify fires. Per-call `timeoutMs` parameter overrides this. Default 90000 (90s).",
@@ -1659,7 +1659,7 @@ export default defineExtension(
 			if (!implementDefaultValid) {
 				notify(
 					ctx,
-					'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
+					'invalid implement.default setting (expected "auto" | "ask") — falling back to "auto"',
 					"warning",
 				);
 			}
@@ -2607,7 +2607,8 @@ export default defineExtension(
 			const extCfg = settings.extensionConfig?.[EXT_ID] as
 				| Record<string, unknown>
 				| undefined;
-			return resolveDefaultMode(extCfg?.defaultMode);
+			const modeCfg = extCfg?.mode as Record<string, unknown> | undefined;
+			return resolveDefaultMode(modeCfg?.default);
 		}
 
 		function readImplementDefaultSetting(ctx: ExtensionContext): {
@@ -2618,7 +2619,10 @@ export default defineExtension(
 			const extCfg = settings.extensionConfig?.[EXT_ID] as
 				| Record<string, unknown>
 				| undefined;
-			return resolveImplementDefault(extCfg?.implementDefault);
+			const implementCfg = extCfg?.implement as
+				| Record<string, unknown>
+				| undefined;
+			return resolveImplementDefault(implementCfg?.default);
 		}
 
 		function readWorkingTokensSetting(ctx: ExtensionContext): number {
@@ -2656,7 +2660,10 @@ export default defineExtension(
 			const extCfg = settings.extensionConfig?.[EXT_ID] as
 				| Record<string, unknown>
 				| undefined;
-			const raw = extCfg?.researchTimeoutMs;
+			const researchCfg = extCfg?.research as
+				| Record<string, unknown>
+				| undefined;
+			const raw = researchCfg?.timeoutMs;
 			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
 				return Math.floor(raw);
 			}
@@ -4449,11 +4456,12 @@ export default defineExtension(
 			}
 
 			const settings = readRelevantSettings(ctx.cwd);
-			const projectName = (
+			const parkCfg = (
 				settings.extensionConfig?.[EXT_ID] as
 					| Record<string, unknown>
 					| undefined
-			)?.githubProject as string | undefined;
+			)?.park as Record<string, unknown> | undefined;
+			const projectName = parkCfg?.githubProject as string | undefined;
 
 			const tmpDir = mkdtempSync(join(tmpdir(), "modes-park-"));
 			try {
@@ -4746,7 +4754,7 @@ export default defineExtension(
 						description:
 							"Hard timeout in ms. For researcher, bounds the web subprocess; " +
 							"for explorer, bounds the wait for the codebase answer. Overrides " +
-							"`extensionConfig.modes.researchTimeoutMs`.",
+							"`extensionConfig.modes.research.timeoutMs`.",
 					}),
 				),
 			}),
@@ -4854,12 +4862,12 @@ export default defineExtension(
 
 			if (!modeState) {
 				// First session — capture baseline tools, default mode is
-				// configurable via extensionConfig.modes.defaultMode (default "plan").
+				// configurable via extensionConfig.modes.mode.default (default "plan").
 				const { mode: defaultMode, valid } = readDefaultModeSetting(ctx);
 				if (!valid) {
 					notify(
 						ctx,
-						'modes: invalid defaultMode setting (expected "plan" | "auto" | "hack") — falling back to "plan"',
+						'modes: invalid mode.default setting (expected "plan" | "auto" | "hack") — falling back to "plan"',
 						"warning",
 					);
 				}
@@ -6035,7 +6043,7 @@ export default defineExtension(
 				if (!settingValid) {
 					notify(
 						ctx,
-						'invalid implementDefault setting (expected "auto" | "ask") — falling back to "auto"',
+						'invalid implement.default setting (expected "auto" | "ask") — falling back to "auto"',
 						"warning",
 					);
 				}

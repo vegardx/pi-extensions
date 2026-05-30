@@ -52,13 +52,13 @@ export default defineExtension(
 		doc: "End-of-session wrap-up: produces a detailed handover document from session history and git state, then prompts about cost-incurring resources before you sign off.",
 		configSchema: [
 			{
-				key: "handoverDir",
+				key: "handover.dir",
 				type: "string",
 				default: "~/.pi/agent/handovers",
 				doc: "Directory where handover files are written. Supports ~ expansion. Default: ~/.pi/agent/handovers",
 			},
 			{
-				key: "autoSave",
+				key: "handover.autoSave",
 				type: "boolean",
 				default: false,
 				doc: "When true, the agent writes the handover file immediately without asking. Default: false",
@@ -84,13 +84,13 @@ export default defineExtension(
 				const configuredDir = getExtensionConfigString(
 					settings,
 					EXT_ID,
-					"handoverDir",
+					"handover.dir",
 					"",
 				);
 				const autoSave = getExtensionConfigBoolean(
 					settings,
 					EXT_ID,
-					"autoSave",
+					"handover.autoSave",
 					false,
 				);
 
@@ -152,7 +152,7 @@ export default defineExtension(
 				const configuredDir = getExtensionConfigString(
 					settings,
 					EXT_ID,
-					"handoverDir",
+					"handover.dir",
 					"",
 				);
 

@@ -133,8 +133,8 @@ project):
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `labels` | `string[]` | `["bug"]` | Labels applied to the issue. Unknown labels trigger one retry without `--label`; the issue is still filed. |
-| `polishTimeoutMs` | `number` | `30000` | Hard timeout for the polish subagent. On timeout, derp falls back to a deterministic template. |
-| `recentEntries` | `number` | `6` | How many tail entries from the current session to feed into the polish subagent. |
+| `polish.timeoutMs` | `number` | `30000` | Hard timeout for the polish subagent. On timeout, derp falls back to a deterministic template. |
+| `polish.contextEntries` | `number` | `6` | How many tail entries from the current session to feed into the polish subagent. |
 | `titlePrefix` | `string` | `"[derp] "` | Prefix prepended to the title. Set to `""` to disable. |
 
 The polish step uses a **fast tier** model (`tier: "fast"` in

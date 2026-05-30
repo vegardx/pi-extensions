@@ -5,7 +5,10 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
-import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
+import {
+	getExtensionConfigBoolean,
+	readRelevantSettings,
+} from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { UrlValidationError, validateUrl } from "./validate.js";
 
@@ -24,7 +27,7 @@ export default defineExtension(
 				doc: "Optional allowlist of hostnames. When set, only URLs whose host matches an entry (exact or subdomain) are fetched. When empty, any public URL is allowed.",
 			},
 			{
-				key: "allowLLMDistill",
+				key: "llmDistill.enable",
 				type: "boolean",
 				default: false,
 				doc: "Whether the `focus` parameter may send fetched content to a background model for distillation. Off by default — fetched content stays local. Enable only when you trust both the URL allowlist and the configured model provider.",
@@ -63,12 +66,16 @@ export default defineExtension(
 					const settings = readRelevantSettings(ctx.cwd);
 					const cfg = (settings.extensionConfig?.[EXT_ID] ?? {}) as {
 						allowedHosts?: string[];
-						allowLLMDistill?: boolean;
 					};
 
 					const result = await fetchAndExtract(params.url, params.focus, ctx, {
 						allowedHosts: cfg.allowedHosts,
-						allowLLMDistill: cfg.allowLLMDistill ?? false,
+						allowLLMDistill: getExtensionConfigBoolean(
+							settings,
+							EXT_ID,
+							"llmDistill.enable",
+							false,
+						),
 					});
 
 					return {

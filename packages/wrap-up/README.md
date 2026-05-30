@@ -84,8 +84,8 @@ In `settings.json` under `extensionConfig.wrap-up`:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `handoverDir` | string | `~/.pi/agent/handovers` | Directory for handover files |
-| `autoSave` | boolean | `false` | Skip save confirmation in `/pause` |
+| `handover.dir` | string | `~/.pi/agent/handovers` | Directory for handover files |
+| `handover.autoSave` | boolean | `false` | Skip save confirmation in `/pause` |
 
 ## Resource signals detected
 

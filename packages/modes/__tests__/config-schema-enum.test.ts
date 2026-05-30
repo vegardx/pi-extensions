@@ -26,7 +26,7 @@ function knob(key: string) {
 
 describe("modes configSchema enum knobs", () => {
 	it("defaultMode is an enum whose values all pass resolveDefaultMode", () => {
-		const k = knob("defaultMode");
+		const k = knob("mode.default");
 		expect(k.type).toBe("enum");
 		expect(k.enumValues).toBeDefined();
 		for (const v of k.enumValues ?? []) {
@@ -38,7 +38,7 @@ describe("modes configSchema enum knobs", () => {
 	});
 
 	it("implementDefault is an enum whose values all pass resolveImplementDefault", () => {
-		const k = knob("implementDefault");
+		const k = knob("implement.default");
 		expect(k.type).toBe("enum");
 		expect(k.enumValues).toBeDefined();
 		for (const v of k.enumValues ?? []) {

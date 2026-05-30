@@ -39,7 +39,7 @@ internal services on developer machines or CI runners.
       // the URL allowlist and the configured model provider — fetched
       // content originates from a model-controlled URL and could exfiltrate
       // sensitive data otherwise.
-      "allowLLMDistill": false
+      "llmDistill": { "enable": false }
     }
   }
 }
@@ -52,7 +52,7 @@ webfetch(url, focus?)
 ```
 
 - `url` (required) — http/https URL to fetch.
-- `focus` (optional) — only honoured when `allowLLMDistill` is `true`. The
+- `focus` (optional) — only honoured when `llmDistill.enable` is `true`. The
   background model (`backgroundModels.primary.normal`) extracts the parts of
   the page that answer the focus question.
 
