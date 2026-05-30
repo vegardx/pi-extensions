@@ -445,81 +445,106 @@ export async function classifyBashCommand(
 	if (staticResult) return staticResult;
 
 	// ---- Tier 3: LLM classifier -----------------------------------------
-	let resolved: Awaited<ReturnType<typeof resolveModel>>;
-	try {
-		resolved = await resolveModel(ctx, {
-			name: "modes",
-			tier: "fast",
-			requireApiKey: true,
-		});
-	} catch {
-		// No fast model available — allow (static denylist already caught
-		// dangerous patterns; remaining ambiguous commands are likely safe).
-		return {
-			verdict: "allow",
-			reason: "no classifier model available — static denylist passed",
-		};
-	}
-	if (!resolved?.apiKey) {
-		return {
-			verdict: "allow",
-			reason: "no classifier model available — static denylist passed",
-		};
-	}
-
-	// Dynamic import so a missing @mariozechner/pi-ai doesn't crash at load time.
-	let completeSimple: typeof import("@mariozechner/pi-ai")["completeSimple"];
-	try {
-		({ completeSimple } = await import("@mariozechner/pi-ai"));
-	} catch {
-		return {
-			verdict: "allow",
-			reason: "pi-ai unavailable — static denylist passed",
-		};
-	}
+	//
+	// Everything below — model + credential resolution AND the completion
+	// call — runs under a single wall-clock deadline. `resolveModel` can
+	// itself hang: `getApiKeyAndHeaders` for an OAuth custom provider may
+	// fire a token-refresh `fetch` (no timeout of its own) at a stalled
+	// corporate gateway, and that happens before the completion call. The
+	// harness also does not make `tool_call` hooks Esc-abortable, so
+	// without a hard cap a single ambiguous plan-mode bash command can
+	// wedge the session at "working" indefinitely. On timeout we fail open
+	// to "allow" — the static denylist has already blocked dangerous
+	// patterns, so this only ever lets through static-safe-but-ambiguous
+	// commands.
+	const allow = (reason: string): ClassifyResult => ({
+		verdict: "allow",
+		reason,
+	});
 
 	const timeoutSignal = AbortSignal.timeout(CLASSIFIER_TIMEOUT_MS);
 	const signal = ctx.signal
 		? AbortSignal.any([ctx.signal, timeoutSignal])
 		: timeoutSignal;
 
-	try {
-		const response = await completeSimple(
-			resolved.model,
-			{
-				messages: [
-					{
-						role: "user" as const,
-						content: [
-							{ type: "text" as const, text: `${PROMPT}\`${command}\`` },
-						],
-						timestamp: Date.now(),
-					},
-				],
-			},
-			{
-				apiKey: resolved.apiKey,
-				headers: resolved.headers,
-				// Tiny JSON verdict, but "minimal" reasoning can still emit a few
-				// thinking tokens; 100 risked truncation → invalid JSON → a
-				// spurious block. 512 leaves comfortable headroom.
-				maxTokens: 512,
-				reasoning: "minimal",
-				signal,
-			},
+	async function runLlmClassifier(): Promise<ClassifyResult> {
+		let resolved: Awaited<ReturnType<typeof resolveModel>>;
+		try {
+			resolved = await resolveModel(ctx, {
+				name: "modes",
+				tier: "fast",
+				requireApiKey: true,
+			});
+		} catch {
+			// No fast model available — allow (static denylist already caught
+			// dangerous patterns; remaining ambiguous commands are likely safe).
+			return allow("no classifier model available — static denylist passed");
+		}
+		if (!resolved?.apiKey) {
+			return allow("no classifier model available — static denylist passed");
+		}
+
+		// Dynamic import so a missing @mariozechner/pi-ai doesn't crash at load.
+		let completeSimple: typeof import("@mariozechner/pi-ai")["completeSimple"];
+		try {
+			({ completeSimple } = await import("@mariozechner/pi-ai"));
+		} catch {
+			return allow("pi-ai unavailable — static denylist passed");
+		}
+
+		try {
+			const response = await completeSimple(
+				resolved.model,
+				{
+					messages: [
+						{
+							role: "user" as const,
+							content: [
+								{ type: "text" as const, text: `${PROMPT}\`${command}\`` },
+							],
+							timestamp: Date.now(),
+						},
+					],
+				},
+				{
+					apiKey: resolved.apiKey,
+					headers: resolved.headers,
+					// Tiny JSON verdict, but "minimal" reasoning can still emit
+					// thinking tokens; too small a budget risks the verdict JSON
+					// being truncated into invalid JSON → a spurious block. 5k
+					// leaves ample headroom for any minimal-reasoning preamble.
+					maxTokens: 5000,
+					reasoning: "minimal",
+					signal,
+				},
+			);
+
+			const text = response.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join("");
+
+			return parseClassifyResponse(text);
+		} catch {
+			// LLM call failed (including timeout abort) — allow (static
+			// denylist already passed).
+			return allow("classifier call failed — static denylist passed");
+		}
+	}
+
+	// Belt-and-braces alongside the abort signal: the signal cancels the
+	// in-flight HTTP request, while this deadline guarantees the race
+	// settles even if `resolveModel` is stuck in a non-abortable fetch.
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<ClassifyResult>((resolve) => {
+		timer = setTimeout(
+			() => resolve(allow("classifier timed out — static denylist passed")),
+			CLASSIFIER_TIMEOUT_MS,
 		);
-
-		const text = response.content
-			.filter((c): c is { type: "text"; text: string } => c.type === "text")
-			.map((c) => c.text)
-			.join("");
-
-		return parseClassifyResponse(text);
-	} catch {
-		// LLM call failed — allow (static denylist already passed).
-		return {
-			verdict: "allow",
-			reason: "classifier call failed — static denylist passed",
-		};
+	});
+	try {
+		return await Promise.race([runLlmClassifier(), deadline]);
+	} finally {
+		clearTimeout(timer);
 	}
 }

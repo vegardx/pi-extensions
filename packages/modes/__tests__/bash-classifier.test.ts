@@ -1,4 +1,9 @@
-import { classifyStatic, parseClassifyResponse } from "../bash-classifier.js";
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import {
+	classifyBashCommand,
+	classifyStatic,
+	parseClassifyResponse,
+} from "../bash-classifier.js";
 
 // ---- classifyStatic -----------------------------------------------------
 
@@ -205,6 +210,44 @@ describe("classifyStatic", () => {
 			expect(classifyStatic("make check")).toBeNull();
 			expect(classifyStatic("curl https://example.com")).toBeNull();
 		});
+	});
+});
+
+// ---- classifyBashCommand: Tier-3 timeout / fail-open --------------------
+
+describe("classifyBashCommand timeout", () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => vi.useRealTimers());
+
+	// A hung credential resolution (e.g. an OAuth refresh fetch to a stalled
+	// custom-provider gateway) must not wedge the bash tool call. The Tier-3
+	// deadline should fire and fail open to "allow" — the static denylist has
+	// already run.
+	it("fails open to allow when credential resolution hangs", async () => {
+		const fakeModel = {
+			provider: "radicalai",
+			id: "claude-haiku-4-5",
+			api: "anthropic-messages",
+		} as unknown;
+		const ctx = {
+			cwd: `/tmp/does-not-exist-${Math.random()}`,
+			model: fakeModel,
+			signal: undefined,
+			modelRegistry: {
+				find: () => fakeModel,
+				// Never resolves — simulates a hung token refresh.
+				getApiKeyAndHeaders: () => new Promise(() => {}),
+			},
+		} as unknown as ExtensionContext;
+
+		// `gh api ...` is deferred to the LLM by classifyStatic, so it reaches
+		// Tier 3 where the hang lives.
+		const pending = classifyBashCommand("gh api repos/org/repo/pulls", ctx);
+		await vi.advanceTimersByTimeAsync(8000);
+		const result = await pending;
+
+		expect(result.verdict).toBe("allow");
+		expect(result.reason).toMatch(/timed out/);
 	});
 });
 
