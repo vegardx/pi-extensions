@@ -181,8 +181,8 @@ otherwise — each extension declares itself exactly once per process.
   context files into a structured summary), `renderHeadline(summary)` /
   `renderLines(summary)` (pure, summary → string / string[]),
   `discoverContextFiles` (uses `getAgentDir()` for the global file),
-  `listAvailableModelSpecs`, and the `session_start` + `/config` +
-  `/config` wiring (one multi-line `notify` per emit).
+  `listAvailableModelSpecs`, and the `session_start` + `/config`
+  wiring (one multi-line `notify` per emit).
 - `config-dialog/` — the interactive panel: `config-state.ts`
   (top-level page/scope model), `extensions-state.ts` + `build-rows.ts`
   (Extensions page), `models-state.ts` (Models page + picker), and
