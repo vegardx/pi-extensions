@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import {
+	awaitCompaction,
 	buildPhaseEndSummaryPreamble,
 	buildPhaseSliceCompactionResult,
 	buildSummariserPreamble,
@@ -907,5 +908,81 @@ describe("shouldResumeAfterCompaction", () => {
 		expect(
 			shouldResumeAfterCompaction({ ...BASE, remainingTaskCount: -1 }),
 		).toBe(false);
+	});
+});
+
+describe("awaitCompaction", () => {
+	it("resolves when onComplete fires", async () => {
+		const p = awaitCompaction({
+			start: ({ onComplete }) => onComplete(),
+			timeoutMs: 1000,
+		});
+		await expect(p).resolves.toBeUndefined();
+	});
+
+	it("rejects with the error when onError fires", async () => {
+		const p = awaitCompaction({
+			start: ({ onError }) => onError(new Error("summariser blew up")),
+			timeoutMs: 1000,
+		});
+		await expect(p).rejects.toThrow("summariser blew up");
+	});
+
+	it("rejects on timeout when neither callback ever fires (the lockup case)", async () => {
+		vi.useFakeTimers();
+		try {
+			// start() never calls onComplete/onError — mimics a stalled summariser
+			// that would otherwise wedge the turn_end hook forever.
+			const p = awaitCompaction({ start: () => {}, timeoutMs: 90_000 });
+			const assertion = expect(p).rejects.toThrow(
+				"compaction timed out after 90000ms",
+			);
+			await vi.advanceTimersByTimeAsync(90_000);
+			await assertion;
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rejects immediately when the signal is already aborted", async () => {
+		const p = awaitCompaction({
+			start: () => {},
+			signal: AbortSignal.abort(),
+			timeoutMs: 1000,
+		});
+		await expect(p).rejects.toThrow("aborted");
+	});
+
+	it("rejects when the signal aborts mid-wait", async () => {
+		const ctrl = new AbortController();
+		const p = awaitCompaction({
+			start: () => {},
+			signal: ctrl.signal,
+			timeoutMs: 90_000,
+		});
+		const assertion = expect(p).rejects.toThrow("aborted");
+		ctrl.abort();
+		await assertion;
+	});
+
+	it("settles once — a late onComplete after timeout is a no-op", async () => {
+		vi.useFakeTimers();
+		try {
+			let late: (() => void) | undefined;
+			const p = awaitCompaction({
+				start: ({ onComplete }) => {
+					late = onComplete;
+				},
+				timeoutMs: 90_000,
+			});
+			const assertion = expect(p).rejects.toThrow("timed out");
+			await vi.advanceTimersByTimeAsync(90_000);
+			await assertion;
+			// pi's background compaction finishes later; the late callback must
+			// not flip the already-rejected promise or throw.
+			expect(() => late?.()).not.toThrow();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

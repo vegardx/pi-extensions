@@ -155,6 +155,69 @@ export const DEFAULT_SUMMARY_TOKENS = 100000;
  */
 export const DEFAULT_PLAN_MAX_CONTEXT_TOKENS = 0;
 
+/**
+ * Default deadline (ms) for a single mid-phase compaction to complete.
+ *
+ * `compactPhaseSlice` awaits pi's fire-and-forget `ctx.compact()` via a
+ * promise that settles only when pi invokes `onComplete`/`onError`. If the
+ * summariser stalls (slow/hung provider, oversized transcript) pi never
+ * fires either callback, so without a cap the `turn_end` hook awaits
+ * forever — wedging the whole agent "working" with no way to interrupt
+ * (escape can't cancel a hook await). On timeout we stop awaiting, surface
+ * a warning, and let pi's own auto-compaction handle the next overflow.
+ * Override via `extensionConfig.modes.compaction.timeoutMs`.
+ */
+export const DEFAULT_COMPACTION_TIMEOUT_MS = 90_000;
+
+/**
+ * Pure, host-free core of `compactAwait`: wrap pi's fire-and-forget
+ * compaction trigger in a promise that settles on the first of
+ * `onComplete`, `onError`, the abort `signal`, or the `timeoutMs`
+ * deadline. Extracted so the settle-once / timeout / abort wiring is
+ * unit-testable without a live pi `ExtensionContext`.
+ *
+ * pi only invokes `onComplete`/`onError` once its internal summariser
+ * settles; a stalled summariser would otherwise leave the promise
+ * pending forever and wedge the awaiting `turn_end` hook. On timeout or
+ * abort the promise rejects so the caller can stop awaiting — pi's
+ * compaction may still finish in the background, where the late callback
+ * is a harmless no-op (settle-once guard).
+ */
+export function awaitCompaction(deps: {
+	start: (opts: {
+		onComplete: () => void;
+		onError: (err: Error) => void;
+	}) => void;
+	signal?: AbortSignal;
+	timeoutMs: number;
+}): Promise<void> {
+	const { start, signal, timeoutMs } = deps;
+	return new Promise((resolve, reject) => {
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const onAbort = () => finish(new Error("aborted"));
+		const finish = (err?: Error) => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+			if (err) reject(err);
+			else resolve();
+		};
+		if (signal?.aborted) {
+			finish(new Error("aborted"));
+			return;
+		}
+		signal?.addEventListener("abort", onAbort, { once: true });
+		timer = setTimeout(
+			() => finish(new Error(`compaction timed out after ${timeoutMs}ms`)),
+			timeoutMs,
+		);
+		timer.unref?.();
+		start({ onComplete: () => finish(), onError: (err) => finish(err) });
+	});
+}
+
 /** Stored on `CompactionEntry.details` to identify modes compactions. */
 export interface ModesCompactionDetails {
 	modesKind: "phase-slice";

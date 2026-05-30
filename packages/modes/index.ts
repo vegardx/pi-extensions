@@ -61,10 +61,12 @@ import {
 	diagnoseResumeAfterCompaction,
 } from "./plan/auto-loop-gates.js";
 import {
+	awaitCompaction,
 	buildPhaseEndSummaryPreamble,
 	buildPhaseSliceCompactionResult,
 	computeCarryForwardSummaryChars,
 	computeContextBuckets,
+	DEFAULT_COMPACTION_TIMEOUT_MS,
 	DEFAULT_PHASE_TOKENS,
 	DEFAULT_SUMMARY_TOKENS,
 	DEFAULT_WORKING_TOKENS,
@@ -392,6 +394,12 @@ export default defineExtension(
 				key: "compaction.planMaxContextTokens",
 				type: "number",
 				doc: "Optional context-window size (tokens) used only for the plan-mode footer usage gauge. Leave unset to use the active model's full context window. Plan mode never auto-compacts.",
+			},
+			{
+				key: "compaction.timeoutMs",
+				type: "number",
+				default: DEFAULT_COMPACTION_TIMEOUT_MS,
+				doc: "Deadline for a single mid-phase compaction. pi's compaction is fire-and-forget; if its summariser stalls, the turn_end hook would await forever and wedge the agent 'working' with no way to interrupt. On timeout modes stops awaiting, warns, and lets pi auto-compaction handle the next overflow. Default 90000.",
 			},
 			{
 				key: "scrutinize.enable",
@@ -928,7 +936,7 @@ export default defineExtension(
 
 			const confirmed = await ctx.ui.confirm(
 				`Delete plan ${slug}?`,
-				`This removes ~/.pi/plans/${slug}/ permanently. ` +
+				`This removes the plan directory under <agent-dir>/plans/${slug}/ permanently. ` +
 					`Worktrees and branches are not touched. This cannot be undone.`,
 			);
 			if (!confirmed) {
@@ -2239,13 +2247,28 @@ export default defineExtension(
 		 * awaits this so the surrounding `compactionInFlight` guard releases
 		 * only after pi has actually finished the compaction (and its
 		 * post-compaction `agent.state.messages` rebuild).
+		 *
+		 * Bounded by a timeout and the active turn's abort signal. pi only
+		 * fires `onComplete`/`onError` once its internal summariser settles; a
+		 * stalled or pathologically slow summariser would otherwise leave this
+		 * promise pending forever, wedging the `turn_end` hook (and thus the
+		 * whole agent) "working" with no way to interrupt — escape can't cancel
+		 * a hook await. `CompactOptions` exposes no abort signal, so we can't
+		 * cancel pi's in-flight compaction; instead we stop awaiting it. The
+		 * underlying compaction may still complete in the background (harmless:
+		 * its `onComplete` becomes a no-op here), and the caller's `catch`
+		 * surfaces a warning + lets pi's own auto-compaction handle overflow.
 		 */
 		function compactAwait(ctx: ExtensionContext): Promise<void> {
-			return new Promise((resolve, reject) => {
-				ctx.compact({
-					onComplete: () => resolve(),
-					onError: (err) => reject(err),
-				});
+			const timeoutMs = readCompactionNumber(
+				ctx,
+				"timeoutMs",
+				DEFAULT_COMPACTION_TIMEOUT_MS,
+			);
+			return awaitCompaction({
+				start: (opts) => ctx.compact(opts),
+				signal: ctx.signal,
+				timeoutMs,
 			});
 		}
 
