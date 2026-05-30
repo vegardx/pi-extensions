@@ -6,9 +6,14 @@
  * scope maps 1:1 onto the two settings.json files both pages write).
  * The Context page is read-only and scope-agnostic.
  *
- * The canonical scope lives here and is mirrored into the extensions
- * sub-state so the existing (tested) extensions-state functions, which
- * read `state.scope` internally, keep working unchanged.
+ * Navigation uses a two-zone focus model (`menu` / `body`): the page
+ * menu and the project/global columns are both driven by the arrow
+ * keys at different focus depths, so there is no dedicated scope tab
+ * bar. `←/→` in the body switch the focused column; that column is the
+ * active scope. The canonical scope still lives here and is mirrored
+ * into the extensions sub-state so the existing (tested)
+ * extensions-state functions, which read `state.scope` internally, keep
+ * working unchanged.
  *
  * No TUI / I/O — page and scope transitions are unit-testable.
  */
@@ -29,6 +34,15 @@ import {
 
 export type ConfigPage = "extensions" | "models" | "context";
 
+/**
+ * Which zone owns keyboard input. The page menu (`menu`) and the table
+ * body (`body`) form a two-zone focus model: `←/→` switch page in the
+ * menu, `↓` drops into the body; `↑` from the body's top row returns to
+ * the menu. This lets one arrow vocabulary drive both the top-level menu
+ * and the project/global columns without a second tab bar.
+ */
+export type ConfigFocus = "menu" | "body";
+
 /** Page order for Tab cycling. */
 export const PAGE_ORDER: readonly ConfigPage[] = [
 	"extensions",
@@ -43,6 +57,7 @@ export interface ContextPageState {
 
 export interface ConfigState {
 	page: ConfigPage;
+	focus: ConfigFocus;
 	scope: DialogScope;
 	extensions: ExtensionsState;
 	models: ModelsState;
@@ -55,6 +70,7 @@ export interface ConfigInit {
 	availableModels: string[];
 	contextFiles: ContextFileInfo[];
 	page?: ConfigPage;
+	focus?: ConfigFocus;
 	scope?: DialogScope;
 }
 
@@ -63,6 +79,7 @@ export function createConfigState(init: ConfigInit): ConfigState {
 	const extensions = createExtensionsState({ rows: init.extensionRows, scope });
 	return {
 		page: init.page ?? "extensions",
+		focus: init.focus ?? "body",
 		scope,
 		extensions,
 		models: createModelsState({
@@ -115,4 +132,29 @@ export function setConfigScope(
 /** Whether the active page exposes the project / global scope tabs. */
 export function pageUsesScope(page: ConfigPage): boolean {
 	return page === "extensions" || page === "models";
+}
+
+/** Move keyboard focus to the page menu. Returns false if already there. */
+export function focusMenu(state: ConfigState): boolean {
+	if (state.focus === "menu") return false;
+	state.focus = "menu";
+	return true;
+}
+
+/** Move keyboard focus into the table body. Returns false if already there. */
+export function focusBody(state: ConfigState): boolean {
+	if (state.focus === "body") return false;
+	state.focus = "body";
+	return true;
+}
+
+/**
+ * Whether the body cursor sits on the first row of the active page. Used
+ * by the body zone to decide when `↑` should pop focus back to the menu
+ * instead of moving the cursor.
+ */
+export function atTopRow(state: ConfigState): boolean {
+	if (state.page === "extensions") return state.extensions.cursor <= 0;
+	if (state.page === "models") return state.models.cursor <= 0;
+	return state.context.cursor <= 0;
 }

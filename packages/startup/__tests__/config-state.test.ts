@@ -6,8 +6,11 @@
 
 import { describe, expect, it } from "vitest";
 import {
+	atTopRow,
 	type ConfigInit,
 	createConfigState,
+	focusBody,
+	focusMenu,
 	nextPage,
 	pageUsesScope,
 	prevPage,
@@ -27,6 +30,15 @@ function extRows(): ExtensionRow[] {
 			global: true,
 			effective: true,
 			effectiveSource: "global",
+		},
+		{
+			name: "webfetch",
+			dependsOn: [],
+			integratesWith: [],
+			project: null,
+			global: null,
+			effective: false,
+			effectiveSource: "default",
 		},
 	];
 }
@@ -99,5 +111,56 @@ describe("config-state — scope sync", () => {
 	it("setConfigScope is a no-op when unchanged", () => {
 		const s = createConfigState(init());
 		expect(setConfigScope(s, "project")).toBe(false);
+	});
+});
+
+describe("config-state — focus zones", () => {
+	it("defaults focus to the body so the dialog opens on the list", () => {
+		const s = createConfigState(init());
+		expect(s.focus).toBe("body");
+	});
+
+	it("honours an explicit initial focus", () => {
+		const s = createConfigState({ ...init(), focus: "menu" });
+		expect(s.focus).toBe("menu");
+	});
+
+	it("focusMenu / focusBody toggle and report whether they changed", () => {
+		const s = createConfigState(init());
+		expect(focusMenu(s)).toBe(true);
+		expect(s.focus).toBe("menu");
+		expect(focusMenu(s)).toBe(false);
+		expect(focusBody(s)).toBe(true);
+		expect(s.focus).toBe("body");
+		expect(focusBody(s)).toBe(false);
+	});
+
+	it("arrow page nav from the menu cycles like next/prevPage with wraparound", () => {
+		const s = createConfigState({ ...init(), focus: "menu" });
+		nextPage(s);
+		expect(s.page).toBe("models");
+		prevPage(s);
+		prevPage(s);
+		expect(s.page).toBe("context");
+	});
+});
+
+describe("config-state — atTopRow", () => {
+	it("is true only when the active page's cursor sits on the first row", () => {
+		const s = createConfigState(init());
+		expect(atTopRow(s)).toBe(true);
+		s.extensions.cursor = 1;
+		expect(atTopRow(s)).toBe(false);
+	});
+
+	it("tracks the cursor of whichever page is active", () => {
+		const s = createConfigState(init());
+		s.extensions.cursor = 1;
+		setPage(s, "models");
+		expect(atTopRow(s)).toBe(true); // models cursor still 0
+		s.models.cursor = 2;
+		expect(atTopRow(s)).toBe(false);
+		setPage(s, "context");
+		expect(atTopRow(s)).toBe(true); // context cursor still 0
 	});
 });
