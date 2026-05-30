@@ -175,6 +175,153 @@ describe("settings-writer", () => {
 			writeExtensionConfigKey("project", cwd, "modes", "enabled", true),
 		).toThrow();
 	});
+
+	// -- nested (dot-notation) keys -----------------------------------------
+
+	it("writes a dotted key as a nested object, not a literal property", () => {
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", true);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig.modes).toEqual({ review: { enable: true } });
+		expect(written.extensionConfig.modes["review.enable"]).toBeUndefined();
+	});
+
+	it("merges sibling nested keys under the same group", () => {
+		writeExtensionConfigKey(
+			"project",
+			cwd,
+			"modes",
+			"compaction.phaseTokens",
+			10000,
+		);
+		writeExtensionConfigKey(
+			"project",
+			cwd,
+			"modes",
+			"compaction.summaryTokens",
+			100000,
+		);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig.modes.compaction).toEqual({
+			phaseTokens: 10000,
+			summaryTokens: 100000,
+		});
+	});
+
+	it("reports the previous nested value on overwrite", () => {
+		writeExtensionConfigKey("project", cwd, "modes", "mode.default", "plan");
+		const result = writeExtensionConfigKey(
+			"project",
+			cwd,
+			"modes",
+			"mode.default",
+			"auto",
+		);
+		expect(result.previous).toBe("plan");
+	});
+
+	it("prunes an emptied nested group and entry when deleting the last nested key", () => {
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", true);
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", null);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig).toBeUndefined();
+	});
+
+	it("keeps sibling nested keys when deleting one", () => {
+		writeExtensionConfigKey(
+			"project",
+			cwd,
+			"modes",
+			"compaction.phaseTokens",
+			10000,
+		);
+		writeExtensionConfigKey(
+			"project",
+			cwd,
+			"modes",
+			"compaction.summaryTokens",
+			100000,
+		);
+		writeExtensionConfigKey(
+			"project",
+			cwd,
+			"modes",
+			"compaction.phaseTokens",
+			null,
+		);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig.modes.compaction).toEqual({
+			summaryTokens: 100000,
+		});
+	});
+
+	it("lets flat and nested keys coexist on one extension", () => {
+		writeExtensionConfigKey("project", cwd, "modes", "enabled", true);
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", true);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig.modes).toEqual({
+			enabled: true,
+			review: { enable: true },
+		});
+	});
+
+	it("deleting a nested key keeps a flat sibling", () => {
+		writeExtensionConfigKey("project", cwd, "modes", "enabled", true);
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", true);
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", null);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig.modes).toEqual({ enabled: true });
+	});
+
+	it("readExtensionConfigKey reads a dotted key", () => {
+		writeExtensionConfigKey("project", cwd, "modes", "review.enable", true);
+		expect(
+			readExtensionConfigKey("project", cwd, "modes", "review.enable"),
+		).toBe(true);
+		expect(
+			readExtensionConfigKey("project", cwd, "modes", "review.missing"),
+		).toBeUndefined();
+	});
+
+	// -- string[] values ----------------------------------------------------
+
+	it("writes and reads a string[] value", () => {
+		writeExtensionConfigKey("project", cwd, "caffeinate", "flags", [
+			"-i",
+			"-m",
+		]);
+		expect(
+			readExtensionConfigKey("project", cwd, "caffeinate", "flags"),
+		).toEqual(["-i", "-m"]);
+	});
+
+	it("stores an explicitly empty array as [] (not deleted)", () => {
+		writeExtensionConfigKey("project", cwd, "derp", "labels", []);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig.derp.labels).toEqual([]);
+	});
+
+	it("deletes an array key on null", () => {
+		writeExtensionConfigKey("project", cwd, "derp", "labels", ["bug"]);
+		writeExtensionConfigKey("project", cwd, "derp", "labels", null);
+		const written = JSON.parse(
+			readFileSync(join(cwd, ".pi", "settings.json"), "utf8"),
+		);
+		expect(written.extensionConfig).toBeUndefined();
+	});
 });
 
 describe("settings-writer — background models", () => {

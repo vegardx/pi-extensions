@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	getExtensionConfigBoolean,
+	getExtensionConfigNumber,
 	getExtensionConfigString,
 	getExtensionConfigStringArray,
 	getExtensionModelOverride,
@@ -476,6 +477,84 @@ describe("getExtensionConfigStringArray", () => {
 				DEFAULT,
 			),
 		).toEqual([]);
+	});
+});
+
+describe("getExtensionConfigNumber", () => {
+	it("returns the default when nothing is set", () => {
+		expect(
+			getExtensionConfigNumber({}, "modes", "researchTimeoutMs", 90000),
+		).toBe(90000);
+	});
+
+	it("reads a number value", () => {
+		expect(
+			getExtensionConfigNumber(
+				{ extensionConfig: { modes: { researchTimeoutMs: 1234 } } },
+				"modes",
+				"researchTimeoutMs",
+				90000,
+			),
+		).toBe(1234);
+	});
+
+	it("falls back to default for non-number / non-finite values (fails closed)", () => {
+		for (const bad of ["1234", true, null, NaN, Infinity]) {
+			expect(
+				getExtensionConfigNumber(
+					{ extensionConfig: { modes: { researchTimeoutMs: bad } } },
+					"modes",
+					"researchTimeoutMs",
+					90000,
+				),
+			).toBe(90000);
+		}
+	});
+
+	it("reads a nested (dotted) key", () => {
+		expect(
+			getExtensionConfigNumber(
+				{ extensionConfig: { modes: { compaction: { phaseTokens: 5000 } } } },
+				"modes",
+				"compaction.phaseTokens",
+				10000,
+			),
+		).toBe(5000);
+	});
+});
+
+describe("dot-notation key reads", () => {
+	it("getExtensionConfigBoolean reads a nested key", () => {
+		expect(
+			getExtensionConfigBoolean(
+				{ extensionConfig: { modes: { review: { enable: true } } } },
+				"modes",
+				"review.enable",
+				false,
+			),
+		).toBe(true);
+	});
+
+	it("getExtensionConfigString reads a nested key", () => {
+		expect(
+			getExtensionConfigString(
+				{ extensionConfig: { modes: { park: { githubProject: "Roadmap" } } } },
+				"modes",
+				"park.githubProject",
+				"",
+			),
+		).toBe("Roadmap");
+	});
+
+	it("falls closed to default when an intermediate segment is missing", () => {
+		expect(
+			getExtensionConfigBoolean(
+				{ extensionConfig: { modes: {} } },
+				"modes",
+				"review.enable",
+				false,
+			),
+		).toBe(false);
 	});
 });
 
