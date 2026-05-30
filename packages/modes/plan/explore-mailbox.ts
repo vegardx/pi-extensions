@@ -57,6 +57,7 @@ import {
 	type MailboxState,
 	type TaskStatus,
 } from "./async-job-mailbox.js";
+import { hasRoom } from "./scaling-policy.js";
 
 // ---- Public types -----------------------------------------------------------
 
@@ -421,7 +422,7 @@ export class ExploreMailbox {
 		const childAvailable = typeof this.deps.spawnChildAgent === "function";
 		const maxChildren = Math.max(0, this.parallelism - 1);
 		const childInFlight = this.countInFlight(this.childMailbox);
-		const capRoom = childInFlight < maxChildren;
+		const capRoom = hasRoom(childInFlight, maxChildren);
 		const seedDepth = this.countInFlight(this.seedMailbox);
 		const burst = seedDepth >= this.queueDepthThreshold;
 		const orthogonal = opts.related === false;
