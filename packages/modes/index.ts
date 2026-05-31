@@ -108,6 +108,7 @@ import {
 	sanitiseQueueDepthThreshold,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
+import type { PhaseDriverBadge } from "./plan/panel.js";
 import { PlanPanelComponent } from "./plan/panel.js";
 import {
 	renderParentIssueBody,
@@ -473,6 +474,10 @@ export default defineExtension(
 		// mode-aware display controller; torn down on mode switch / shutdown.
 		let planPanel: PlanPanelComponent | null = null;
 		let planPanelHandle: OverlayHandle | null = null;
+		// Latest ctx seen by updateWidget — the attach callback (bound once at
+		// panel creation) reads this so session-switching never uses a ctx that
+		// went stale across a mode/session transition.
+		let planPanelCtx: ExtensionContext | null = null;
 		// Theme captured from the footer factory — needed to style the overlay,
 		// whose Component.render only receives a width.
 		let panelTheme: Theme | null = null;
@@ -1247,6 +1252,60 @@ export default defineExtension(
 				planPanelHandle = null;
 			}
 			planPanel = null;
+			// Don't retain the last ctx past the panel it served.
+			planPanelCtx = null;
+		}
+
+		/**
+		 * Per-phase concurrent-driver badges for the panel. The host owns this
+		 * because liveness needs an fs stat (`evaluateClaim` reads the driver
+		 * session file's mtime); the renderer stays pure and just paints the badge.
+		 */
+		function computeDriverBadges(
+			plan: Plan,
+			selfSessionId: string,
+		): Map<string, PhaseDriverBadge> {
+			const badges = new Map<string, PhaseDriverBadge>();
+			for (const phase of plan.phases) {
+				const decision = evaluateClaim(phase, selfSessionId);
+				if (decision.kind === "self") badges.set(phase.id, "self");
+				else if (decision.kind === "occupied")
+					badges.set(phase.id, "peer-live");
+				else if (decision.kind === "stale") badges.set(phase.id, "peer-stale");
+			}
+			return badges;
+		}
+
+		/**
+		 * Rebind this TUI into the session driving `phaseId`. Confirms first, then
+		 * `switchSession` lands the user in the peer agent's session (the current
+		 * session stays on disk). Groundwork for parallel `/implement --fanout`.
+		 */
+		async function attachToPhase(
+			ctx: ExtensionContext,
+			phaseId: string,
+		): Promise<void> {
+			const slug = modeState?.currentPlanSlug ?? null;
+			const plan = slug ? loadPlan(slug) : null;
+			const phase = plan?.phases.find((p) => p.id === phaseId) ?? null;
+			if (!phase?.sessionPath) {
+				notify(ctx, "phase has no session to attach to", "info");
+				return;
+			}
+			if (phase.driverSessionId === ctx.sessionManager.getSessionId()) return;
+			if (!hasSessionControl(ctx)) {
+				notify(ctx, "cannot switch sessions from here", "warning");
+				return;
+			}
+			// Drop panel focus before yielding to the confirm dialog / switch.
+			planPanelHandle?.unfocus();
+			planPanel?.setFocused(false);
+			const ok = await ctx.ui.confirm(
+				"Attach to phase agent?",
+				`Switch this TUI into the session driving "${phase.title}"? Your current session stays on disk.`,
+			);
+			if (!ok) return;
+			await ctx.switchSession(phase.sessionPath);
 		}
 
 		/**
@@ -1256,22 +1315,29 @@ export default defineExtension(
 		 */
 		function mountPlanOverlay(ctx: ExtensionContext, plan: Plan): void {
 			if (!footerTui || !panelTheme) return;
+			const selfSessionId = ctx.sessionManager.getSessionId();
+			planPanelCtx = ctx;
 			if (planPanel) {
 				planPanel.setPlan(plan);
+				planPanel.setDriverBadges(computeDriverBadges(plan, selfSessionId));
 				return;
 			}
 			const tui = footerTui;
 			const panel = new PlanPanelComponent({
 				plan,
 				theme: panelTheme,
-				selfSessionId: ctx.sessionManager.getSessionId(),
 				requestRender: () => tui.requestRender(),
 				onRequestUnfocus: () => {
 					planPanelHandle?.unfocus();
 					panel.setFocused(false);
 				},
+				onAttachPhase: (phaseId) => {
+					const attachCtx = planPanelCtx;
+					if (attachCtx) void attachToPhase(attachCtx, phaseId);
+				},
 			});
 			planPanel = panel;
+			panel.setDriverBadges(computeDriverBadges(plan, selfSessionId));
 			planPanelHandle = tui.showOverlay(panel, {
 				nonCapturing: true,
 				anchor: "top-right",
