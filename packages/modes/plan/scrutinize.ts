@@ -30,8 +30,12 @@ const SYSTEM_PROMPT_PATH = join(PROMPTS_DIR, "scrutinize-plan.md");
 /** Maximum body length included in the plan payload sent to the sub-agent. */
 const MAX_BODY_CHARS = 500;
 
-/** waitForIdle timeout — scrutiny over a multi-phase plan can take a while. */
-const TIMEOUT_MS = 120_000;
+/**
+ * waitForIdle timeout. The scrutinizer now investigates with read-only
+ * tools (codebase + web), so it does real multi-step I/O, not just
+ * one-shot reasoning — give it room.
+ */
+const TIMEOUT_MS = 180_000;
 
 export interface ScrutinyFinding {
 	severity: "high" | "medium" | "low";
@@ -162,7 +166,15 @@ export async function scrutinizePlan(
 		tag: "scrutinize",
 		task,
 		systemPromptPath: SYSTEM_PROMPT_PATH,
-		tools: [],
+		// Read-only investigative tools so the scrutinizer can ground its
+		// findings against the actual repo + web, not just reason over the
+		// plan JSON. read/grep/find/ls are built-in; websearch/webfetch come
+		// from the exa/webfetch extensions, re-enabled via env below. bash is
+		// deliberately excluded (no plan-mode write-block in a subagent), and
+		// delegate is excluded (needs modes → fork bomb, and is redundant
+		// since this is already an isolated subagent that can search inline).
+		tools: ["read", "grep", "find", "ls", "websearch", "webfetch"],
+		env: { PI_EXT_EXA: "on", PI_EXT_WEBFETCH: "on" },
 		provider,
 		model,
 		cwd: ctx.cwd,

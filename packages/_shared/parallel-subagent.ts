@@ -41,6 +41,14 @@ export interface SubagentTask<Tag = string> {
 	provider: string;
 	model: string;
 	cwd: string;
+	/**
+	 * Extra environment variables for the child process, merged over
+	 * `PI_SUBAGENT=1`. Use the `PI_EXT_<NAME>=on` override to re-enable a
+	 * specific extension in the subagent (e.g. `PI_EXT_EXA=on` so the child
+	 * has `websearch`). Never re-enable `modes` here — that reintroduces the
+	 * plan-minting fork bomb.
+	 */
+	env?: Record<string, string>;
 	/** Abort signal wired to the active agent turn, if any. */
 	signal?: AbortSignal;
 	/**
@@ -105,7 +113,7 @@ export async function runSubagent<Tag>(
 		// External provider extensions (backing `backgroundModels.*`) and
 		// `--extension` paths stay loaded. Re-enable a specific extension in a
 		// subagent via `PI_EXT_<NAME>=on` if ever needed.
-		env: { PI_SUBAGENT: "1" },
+		env: { PI_SUBAGENT: "1", ...input.env },
 		args: [
 			"--no-session",
 			"--tools",
