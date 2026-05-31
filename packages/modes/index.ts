@@ -415,6 +415,13 @@ export default defineExtension(
 				doc: "How the plan is displayed. `auto` (default): floating top-right overlay in plan mode, inline above the editor in auto/ask, nothing in hack. `overlay`/`inline` force one surface; `off` hides it. The overlay auto-hides on terminals narrower than 100 columns.",
 			},
 			{
+				key: "planPanelToggle",
+				type: "enum",
+				enumValues: ["cycle", "focus"],
+				default: "cycle",
+				doc: "Behaviour of the plan-panel toggle (Ctrl+Shift+O). `cycle` (default): collapsed → expanded (passive, editor still typable) → focused for ↑↓ scroll → collapsed. `focus`: collapsed → expanded+focused → collapsed, skipping the passive step.",
+			},
+			{
 				key: "research.timeoutMs",
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
@@ -1233,6 +1240,17 @@ export default defineExtension(
 			return "auto";
 		}
 
+		/** Read extensionConfig.modes.planPanelToggle (default "cycle"). */
+		function readPlanPanelToggleSetting(
+			ctx: ExtensionContext,
+		): "cycle" | "focus" {
+			const settings = readRelevantSettings(ctx.cwd);
+			const extCfg = settings.extensionConfig?.[EXT_ID] as
+				| Record<string, unknown>
+				| undefined;
+			return extCfg?.planPanelToggle === "focus" ? "focus" : "cycle";
+		}
+
 		/**
 		 * Decide which surface presents the plan, given the active mode and the
 		 * planPanel setting. In "auto": plan mode gets the floating overlay,
@@ -1256,6 +1274,7 @@ export default defineExtension(
 
 		function teardownPlanOverlay(): void {
 			if (planPanelHandle) {
+				planPanelHandle.unfocus();
 				planPanelHandle.hide();
 				planPanelHandle = null;
 			}
@@ -1274,19 +1293,27 @@ export default defineExtension(
 				return;
 			}
 			const tui = footerTui;
-			planPanel = new PlanPanelComponent({
+			const panel = new PlanPanelComponent({
 				plan,
 				theme: panelTheme,
 				selfSessionId: ctx.sessionManager.getSessionId(),
 				requestRender: () => tui.requestRender(),
+				onRequestUnfocus: () => {
+					planPanelHandle?.unfocus();
+					panel.setFocused(false);
+				},
 			});
-			planPanelHandle = tui.showOverlay(planPanel, {
+			planPanel = panel;
+			planPanelHandle = tui.showOverlay(panel, {
 				nonCapturing: true,
 				anchor: "top-right",
 				width: PLAN_PANEL_WIDTH,
 				maxHeight: "70%",
 				margin: { top: 1, right: 1 },
-				visible: (w) => w >= PLAN_PANEL_MIN_COLS,
+				visible: (w, h) => {
+					panel.setViewportHeight(h);
+					return w >= PLAN_PANEL_MIN_COLS;
+				},
 			});
 		}
 
@@ -5726,6 +5753,41 @@ export default defineExtension(
 
 				// auto → plan. Same as above — going back to plan after executing.
 				await shiftTabToPlan("auto", ctx);
+			},
+		});
+
+		// ---- Plan-panel toggle shortcut ---------------------------------------
+
+		/**
+		 * Cycle the floating plan panel. Only meaningful when the overlay is
+		 * mounted (plan mode + planPanel=overlay/auto).
+		 *
+		 * "cycle" (default): collapsed → expanded (passive, editor still typable)
+		 * → focused (↑↓ scroll) → collapsed.
+		 * "focus": collapsed → expanded+focused → collapsed (skip the passive step).
+		 */
+		pi.registerShortcut("ctrl+shift+o", {
+			description: "Plan panel: expand / focus-to-scroll / collapse",
+			handler: async (ctx) => {
+				const panel = planPanel;
+				const handle = planPanelHandle;
+				if (!panel || !handle) return;
+
+				const mode = readPlanPanelToggleSetting(ctx);
+				if (!panel.expanded) {
+					panel.setExpanded(true);
+					if (mode === "focus") {
+						handle.focus();
+						panel.setFocused(true);
+					}
+				} else if (mode === "cycle" && !panel.focused) {
+					handle.focus();
+					panel.setFocused(true);
+				} else {
+					if (panel.focused) handle.unfocus();
+					panel.setFocused(false);
+					panel.setExpanded(false);
+				}
 			},
 		});
 
