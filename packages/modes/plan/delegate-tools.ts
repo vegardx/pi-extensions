@@ -116,6 +116,12 @@ export class DelegateAgents {
 	/** Optional host hook fired whenever the blocking-path research set changes. */
 	private activeResearchChangeHook: (() => void) | null = null;
 	/**
+	 * Predicate the host sets to suppress the below-editor research widget when
+	 * the same data is already shown in the sidebar Info box (avoids duplicate
+	 * rendering when the sidebar is toggled on).
+	 */
+	private widgetSuppressed: () => boolean = () => false;
+	/**
 	 * Non-blocking research mailbox (#159a). `research_ask` enqueues
 	 * a job here; `research_check` / `research_wait` drain it.
 	 * `maxConcurrent: Infinity` because each research call spawns a
@@ -379,6 +385,16 @@ export class DelegateAgents {
 		this.activeResearchChangeHook = cb;
 	}
 
+	/** Set the predicate that hides the research widget (e.g. sidebar shown). */
+	setWidgetSuppressed(fn: () => boolean): void {
+		this.widgetSuppressed = fn;
+	}
+
+	/** Re-evaluate the research widget (used after the sidebar toggles). */
+	refreshResearchWidget(): void {
+		this.updateResearchWidget();
+	}
+
 	/** Topics of the currently-running research delegates (blocking path). */
 	getActiveResearch(): string[] {
 		return Array.from(this.activeResearch.values());
@@ -387,6 +403,11 @@ export class DelegateAgents {
 	private updateResearchWidget(): void {
 		if (!this.ctx.hasUI) return;
 		this.activeResearchChangeHook?.();
+		// Sidebar owns this data when shown — don't also paint it under the editor.
+		if (this.widgetSuppressed()) {
+			this.ctx.ui.setWidget("delegate-research", undefined);
+			return;
+		}
 		if (this.activeResearch.size === 0) {
 			this.ctx.ui.setWidget("delegate-research", undefined);
 			return;
