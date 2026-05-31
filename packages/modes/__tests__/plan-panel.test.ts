@@ -1,6 +1,8 @@
 import {
 	boxify,
 	buildTreeLines,
+	PlanPanelComponent,
+	phaseHeaderOffsets,
 	renderPlanPanel,
 	STATUS_GLYPH,
 	summarisePlan,
@@ -169,6 +171,50 @@ describe("buildTreeLines", () => {
 		expect(body[0]).toContain("[0/0]");
 		expect(body[1]).toContain("(no tasks)");
 	});
+
+	it("marks the selected phase with a cursor bar when selectedIndex is set", () => {
+		const plan = makePlan([
+			makePhase("First", "planned"),
+			makePhase("Second", "planned"),
+		]);
+		const body = buildTreeLines(plan, theme, 38, null, undefined, 1);
+		expect(body[0]).not.toContain("▌");
+		expect(body[1]).toContain("▌");
+	});
+
+	it("draws no cursor when selectedIndex is undefined", () => {
+		const plan = makePlan([makePhase("Only", "planned")]);
+		const body = buildTreeLines(plan, theme, 38);
+		expect(body[0]).not.toContain("▌");
+	});
+});
+
+describe("phaseHeaderOffsets", () => {
+	it("accounts for the auto-expanded active phase's task rows", () => {
+		const plan = makePlan([
+			makePhase("A", "planned"),
+			makePhase("B", "active", [makeTask("x", false), makeTask("y", false)]),
+			makePhase("C", "planned"),
+		]);
+		// A header at 0; B header at 1, two task rows at 2-3; C header at 4.
+		expect(phaseHeaderOffsets(plan)).toEqual([0, 1, 4]);
+	});
+
+	it("counts an explicitly expanded phase's rows", () => {
+		const plan = makePlan([
+			makePhase("A", "planned", [makeTask("x", false)]),
+			makePhase("B", "planned"),
+		]);
+		expect(phaseHeaderOffsets(plan, new Set(["a"]))).toEqual([0, 2]);
+	});
+
+	it("reserves one row for an expanded phase with no tasks", () => {
+		const plan = makePlan([
+			makePhase("Empty", "active", []),
+			makePhase("Next", "planned"),
+		]);
+		expect(phaseHeaderOffsets(plan)).toEqual([0, 2]);
+	});
 });
 
 describe("windowLines", () => {
@@ -266,10 +312,10 @@ describe("renderPlanPanel", () => {
 		});
 		expect(r.maxScroll).toBeGreaterThan(0);
 		const joined = r.lines.join("\n");
-		expect(joined).toContain("^⇧O to scroll");
+		expect(joined).toContain("^⇧O to focus");
 	});
 
-	it("shows the focus hint and clamps scroll when focused", () => {
+	it("shows the focus/navigate hint and clamps scroll when focused", () => {
 		const r = renderPlanPanel(plan, {
 			theme,
 			width: 40,
@@ -280,7 +326,7 @@ describe("renderPlanPanel", () => {
 		expect(r.maxScroll).toBeGreaterThan(0);
 		expect(r.scrollOffset).toBe(r.maxScroll);
 		const joined = r.lines.join("\n");
-		expect(joined).toContain("↑↓ scroll · Esc back");
+		expect(joined).toContain("↑↓ move · → expand · Esc back");
 	});
 
 	it("still produces a box for an empty plan (component short-circuits empties)", () => {
@@ -292,5 +338,101 @@ describe("renderPlanPanel", () => {
 			termHeight: 40,
 		});
 		expect(r.lines.length).toBeGreaterThan(0);
+	});
+});
+
+describe("PlanPanelComponent navigation", () => {
+	const KEY = {
+		up: "\x1b[A",
+		down: "\x1b[B",
+		right: "\x1b[C",
+		left: "\x1b[D",
+		escape: "\x1b",
+	};
+
+	function mount(plan: Plan) {
+		let unfocused = 0;
+		const component = new PlanPanelComponent({
+			plan,
+			theme,
+			requestRender: () => {},
+			onRequestUnfocus: () => {
+				unfocused++;
+			},
+		});
+		// Prime the cached viewport metrics the way the host does on render.
+		component.setViewportHeight(40);
+		component.render(40);
+		return { component, unfocused: () => unfocused };
+	}
+
+	function bodyOf(component: PlanPanelComponent): string {
+		return component.render(40).join("\n");
+	}
+
+	it("defaults the cursor to the active phase on focus", () => {
+		const { component } = mount(
+			makePlan([
+				makePhase("First", "shipped"),
+				makePhase("Active", "active"),
+				makePhase("Last", "planned"),
+			]),
+		);
+		component.setFocused(true);
+		expect(component.selectedIndex).toBe(1);
+	});
+
+	it("moves the cursor with up/down and clamps at the ends", () => {
+		const { component } = mount(
+			makePlan([
+				makePhase("A", "planned"),
+				makePhase("B", "planned"),
+				makePhase("C", "planned"),
+			]),
+		);
+		component.setFocused(true);
+		expect(component.selectedIndex).toBe(0);
+		component.handleInput(KEY.up); // already at top — clamp
+		expect(component.selectedIndex).toBe(0);
+		component.handleInput(KEY.down);
+		component.handleInput(KEY.down);
+		expect(component.selectedIndex).toBe(2);
+		component.handleInput(KEY.down); // at bottom — clamp
+		expect(component.selectedIndex).toBe(2);
+	});
+
+	it("expands and collapses the selected phase with right/left", () => {
+		const { component } = mount(
+			makePlan([makePhase("Planned", "planned", [makeTask("hidden", false)])]),
+		);
+		component.setFocused(true);
+		expect(bodyOf(component)).not.toContain("hidden");
+		component.handleInput(KEY.right);
+		expect(bodyOf(component)).toContain("☐ hidden");
+		component.handleInput(KEY.left);
+		expect(bodyOf(component)).not.toContain("hidden");
+	});
+
+	it("keeps the selected phase visible by scrolling on a tall plan", () => {
+		const phases = Array.from({ length: 30 }, (_, i) =>
+			makePhase(`Phase ${i}`, "planned"),
+		);
+		const { component } = mount(makePlan(phases));
+		component.setViewportHeight(10);
+		component.render(40);
+		component.setFocused(true);
+		for (let i = 0; i < 20; i++) component.handleInput(KEY.down);
+		expect(component.selectedIndex).toBe(20);
+		// The selected phase's header line must be inside the rendered window.
+		expect(bodyOf(component)).toContain("Phase 20");
+	});
+
+	it("releases focus on escape", () => {
+		const { component, unfocused } = mount(
+			makePlan([makePhase("A", "planned")]),
+		);
+		component.setFocused(true);
+		component.handleInput(KEY.escape);
+		expect(unfocused()).toBe(1);
 	});
 });

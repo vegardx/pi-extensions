@@ -572,19 +572,21 @@ by `planPanel` (default `auto`):
 
 Set `planPanel` to `off` to hide it; `overlay` is equivalent to `auto`.
 
-### Focusing and scrolling the panel
+### Focusing and navigating the panel
 
-`Ctrl+Shift+O` cycles the panel (behaviour set by `planPanelToggle`,
-default `cycle`):
+`Ctrl+Shift+O` toggles focus on the panel. While focused it grabs input
+and a phase cursor (`▌`) appears:
 
-1. **passive → focused** — the panel grabs input. `↑`/`↓` (and
-   `PageUp`/`PageDown`) scroll when the phase list overflows the
-   viewport; a `↑N ↓N` indicator shows the scroll position. `Esc` or `q`
-   releases focus back to the editor.
-2. **focused → passive.**
+- `↑`/`↓` move the cursor between phases, auto-scrolling so the selected
+  phase stays in view; a `↑N ↓N` indicator shows the scroll position when
+  the list overflows.
+- `→` / `⏎` / `Space` expand the selected phase's `☑`/`☐` checklist;
+  `←` collapses it. The active phase is always expanded.
+- `PageUp`/`PageDown` scroll a page at a time.
+- `Esc` or `q` releases focus back to the editor.
 
-Set `planPanelToggle` to `focus` for the same two-step toggle without the
-intermediate passive expand.
+Press `Ctrl+Shift+O` again to release focus. On focus the cursor starts
+on the active phase.
 
 ## Settings
 
@@ -613,7 +615,6 @@ intermediate passive expand.
 | `compaction.phaseTokens` | `10000` | Safety `maxTokens` cap for one phase-boundary summary. `summaryTokens` is the cumulative soft budget; this only catches a runaway single summary. |
 | `park.githubProject` | unset | GitHub Project to assign issues to when `/park` creates them. Leave unset to skip assignment. |
 | `planPanel` | `"auto"` | How the plan is displayed. `auto` (and `overlay`): an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded, in every mode. `off` hides it. Auto-hides below 100 columns. |
-| `planPanelToggle` | `"cycle"` | Behaviour of the plan-panel toggle (`Ctrl+Shift+O`). `cycle`: passive → focused for `↑↓` scroll → passive. `focus`: same two-step toggle. |
 | `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. |
 | `delegate.maxAnswerChars` | `6000` | Safety backstop on a delegated answer's size before it crosses back into the caller's context. Subagents are still prompted to be concise and complete. |
 | `delegate.maxConcurrent` | `10` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel. Excess calls block until a slot frees. |

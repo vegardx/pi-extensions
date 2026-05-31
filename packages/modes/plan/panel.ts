@@ -82,10 +82,49 @@ function phaseTally(phase: Plan["phases"][number]): string {
 }
 
 /**
+ * Whether a phase reveals its task checklist: it owns a worktree
+ * (active / needs-attention) or its id was explicitly expanded from the
+ * focused panel. {@link phaseHeaderOffsets} mirrors this rule — keep them in
+ * sync.
+ */
+function isPhaseExpanded(
+	phase: Plan["phases"][number],
+	expandedPhaseIds?: ReadonlySet<string>,
+): boolean {
+	return (
+		WORKTREE_STATUSES.includes(phase.status) ||
+		(expandedPhaseIds?.has(phase.id) ?? false)
+	);
+}
+
+/**
+ * Line index of each phase's header row within the list produced by
+ * {@link buildTreeLines}, given the same expansion state. Used to keep the
+ * selected phase inside the scroll window during keyboard navigation.
+ */
+export function phaseHeaderOffsets(
+	plan: Plan,
+	expandedPhaseIds?: ReadonlySet<string>,
+): number[] {
+	const offsets: number[] = [];
+	let line = 0;
+	for (const phase of plan.phases) {
+		offsets.push(line);
+		line += 1; // the phase header row
+		if (isPhaseExpanded(phase, expandedPhaseIds)) {
+			line += phase.tasks.length === 0 ? 1 : phase.tasks.length;
+		}
+	}
+	return offsets;
+}
+
+/**
  * Full phase list: every phase on one line as `<glyph> <title> [done/total]`,
  * with the tally right-aligned. A phase reveals its `☑`/`☐` task checklist when
  * it owns a worktree (active / needs-attention) or when its id is in
- * `expandedPhaseIds` (an explicit user expand from the focused panel).
+ * `expandedPhaseIds` (an explicit user expand from the focused panel). When
+ * `selectedIndex` is provided, that phase's header carries a cursor bar and its
+ * title is accented.
  */
 export function buildTreeLines(
 	plan: Plan,
@@ -93,32 +132,33 @@ export function buildTreeLines(
 	innerWidth: number,
 	selfSessionId?: string | null,
 	expandedPhaseIds?: ReadonlySet<string>,
+	selectedIndex?: number,
 ): string[] {
 	const lines: string[] = [];
-	for (const phase of plan.phases) {
+	plan.phases.forEach((phase, idx) => {
 		const glyph = STATUS_GLYPH[phase.status] ?? "○";
 		const peerSuffix =
 			phase.driverSessionId && phase.driverSessionId !== selfSessionId
 				? " [peer]"
 				: "";
 		const tally = phaseTally(phase);
-		const prefix = ` ${glyph} `;
-		const prefixW = visibleWidth(prefix);
+		const selected = selectedIndex === idx;
+		const cursor = selected ? theme.fg("accent", "▌") : " ";
+		const prefix = `${cursor}${glyph} `;
+		const prefixW = 1 + visibleWidth(glyph) + 1;
 		// Reserve a 1-col gutter on the right so the tally isn't glued to the border.
 		const titleMax = Math.max(1, innerWidth - prefixW - tally.length - 2);
 		const title = truncateToWidth(`${phase.title}${peerSuffix}`, titleMax);
+		const titleStyled = selected ? theme.fg("accent", title) : title;
 		const pad = " ".repeat(
 			Math.max(
 				1,
 				innerWidth - prefixW - visibleWidth(title) - tally.length - 1,
 			),
 		);
-		lines.push(`${prefix}${title}${pad}${theme.fg("muted", tally)}`);
+		lines.push(`${prefix}${titleStyled}${pad}${theme.fg("muted", tally)}`);
 
-		const expanded =
-			WORKTREE_STATUSES.includes(phase.status) ||
-			(expandedPhaseIds?.has(phase.id) ?? false);
-		if (!expanded) continue;
+		if (!isPhaseExpanded(phase, expandedPhaseIds)) return;
 
 		if (phase.tasks.length === 0) {
 			lines.push(
@@ -131,7 +171,7 @@ export function buildTreeLines(
 				lines.push(`   ${box} ${label}`);
 			}
 		}
-	}
+	});
 	return lines;
 }
 
@@ -246,14 +286,10 @@ export interface PlanPanelRenderState {
 	/** Terminal height in rows, used to size the scroll viewport. */
 	termHeight: number;
 	selfSessionId?: string | null;
-	/** Phase ids explicitly expanded from the focused panel (phase 2). */
+	/** Phase ids explicitly expanded from the focused panel. */
 	expandedPhaseIds?: ReadonlySet<string>;
-	/**
-	 * Controls which footer hint to show when overflowing but not focused.
-	 * `cycle` (default): next ^⇧O focuses for scroll.
-	 * `focus`: next ^⇧O collapses.
-	 */
-	toggleMode?: "cycle" | "focus";
+	/** Index of the cursor phase; only honoured (rendered) when `focused`. */
+	selectedIndex?: number;
 }
 
 export interface PlanPanelRenderResult {
@@ -284,6 +320,7 @@ export function renderPlanPanel(
 		innerW,
 		state.selfSessionId,
 		state.expandedPhaseIds,
+		state.focused ? state.selectedIndex : undefined,
 	);
 
 	// Use nearly the whole viewport (minus a top margin) so the always-on panel
@@ -300,10 +337,8 @@ export function renderPlanPanel(
 	let body = win.rows;
 	if (showFooter) {
 		const hint = state.focused
-			? "↑↓ scroll · Esc back"
-			: state.toggleMode === "focus"
-				? "^⇧O closes"
-				: "^⇧O to scroll";
+			? "↑↓ move · → expand · Esc back"
+			: "^⇧O to focus";
 		body = [...win.rows, footerLine(theme, win, hint, innerW)];
 	}
 
@@ -328,12 +363,14 @@ export class PlanPanelComponent implements Component {
 	private readonly requestRender: () => void;
 	private readonly onRequestUnfocus: () => void;
 
-	/** Compact by default; the toggle shortcut expands it. */
-	expanded = false;
+	/** Passive by default; the focus shortcut routes input here. */
 	focused = false;
 	scrollOffset = 0;
+	/** Cursor over `plan.phases` while focused. */
+	selectedIndex = 0;
+	/** Phases the user explicitly expanded (beyond the auto-expanded active one). */
+	private readonly expandedPhaseIds = new Set<string>();
 	private termHeight = 24;
-	private toggleMode: "cycle" | "focus" = "cycle";
 	private maxScroll = 0;
 	private pageRows = 5;
 
@@ -353,6 +390,8 @@ export class PlanPanelComponent implements Component {
 
 	setPlan(plan: Plan | null): void {
 		this.plan = plan;
+		const max = Math.max(0, (plan?.phases.length ?? 1) - 1);
+		if (this.selectedIndex > max) this.selectedIndex = max;
 		this.requestRender();
 	}
 
@@ -360,19 +399,24 @@ export class PlanPanelComponent implements Component {
 		this.termHeight = rows;
 	}
 
-	setExpanded(expanded: boolean): void {
-		this.expanded = expanded;
-		if (!expanded) this.scrollOffset = 0;
-		this.requestRender();
-	}
-
 	setFocused(focused: boolean): void {
 		this.focused = focused;
+		if (focused) {
+			this.selectActivePhase();
+			this.ensureSelectedVisible();
+		} else {
+			this.scrollOffset = 0;
+		}
 		this.requestRender();
 	}
 
-	setToggleMode(mode: "cycle" | "focus"): void {
-		this.toggleMode = mode;
+	/** Move the cursor onto the active phase (or the first phase) on focus. */
+	private selectActivePhase(): void {
+		if (!this.plan) return;
+		const idx = this.plan.phases.findIndex((p) =>
+			WORKTREE_STATUSES.includes(p.status),
+		);
+		this.selectedIndex = idx === -1 ? 0 : idx;
 	}
 
 	render(width: number): string[] {
@@ -384,7 +428,8 @@ export class PlanPanelComponent implements Component {
 			scrollOffset: this.scrollOffset,
 			termHeight: this.termHeight,
 			selfSessionId: this.selfSessionId,
-			toggleMode: this.toggleMode,
+			expandedPhaseIds: this.expandedPhaseIds,
+			selectedIndex: this.selectedIndex,
 		});
 		this.scrollOffset = result.scrollOffset;
 		this.maxScroll = result.maxScroll;
@@ -398,14 +443,65 @@ export class PlanPanelComponent implements Component {
 			return;
 		}
 		if (matchesKey(data, "up")) {
-			this.scrollBy(-1);
+			this.moveSelection(-1);
 		} else if (matchesKey(data, "down")) {
-			this.scrollBy(1);
+			this.moveSelection(1);
+		} else if (
+			matchesKey(data, "right") ||
+			matchesKey(data, "return") ||
+			matchesKey(data, "space")
+		) {
+			this.toggleSelectedExpand();
+		} else if (matchesKey(data, "left")) {
+			this.collapseSelected();
 		} else if (matchesKey(data, "pageUp")) {
 			this.scrollBy(-this.pageRows);
 		} else if (matchesKey(data, "pageDown")) {
 			this.scrollBy(this.pageRows);
 		}
+	}
+
+	private moveSelection(delta: number): void {
+		if (!this.plan) return;
+		const last = this.plan.phases.length - 1;
+		const next = Math.min(Math.max(0, this.selectedIndex + delta), last);
+		if (next === this.selectedIndex) return;
+		this.selectedIndex = next;
+		this.ensureSelectedVisible();
+		this.requestRender();
+	}
+
+	private selectedPhaseId(): string | null {
+		return this.plan?.phases[this.selectedIndex]?.id ?? null;
+	}
+
+	private toggleSelectedExpand(): void {
+		const id = this.selectedPhaseId();
+		if (!id) return;
+		if (this.expandedPhaseIds.has(id)) this.expandedPhaseIds.delete(id);
+		else this.expandedPhaseIds.add(id);
+		this.ensureSelectedVisible();
+		this.requestRender();
+	}
+
+	private collapseSelected(): void {
+		const id = this.selectedPhaseId();
+		if (!id || !this.expandedPhaseIds.has(id)) return;
+		this.expandedPhaseIds.delete(id);
+		this.requestRender();
+	}
+
+	/** Adjust the scroll window so the selected phase's header stays visible. */
+	private ensureSelectedVisible(): void {
+		if (!this.plan) return;
+		const offsets = phaseHeaderOffsets(this.plan, this.expandedPhaseIds);
+		const target = offsets[this.selectedIndex] ?? 0;
+		if (target < this.scrollOffset) {
+			this.scrollOffset = target;
+		} else if (target > this.scrollOffset + this.pageRows - 1) {
+			this.scrollOffset = target - this.pageRows + 1;
+		}
+		if (this.scrollOffset < 0) this.scrollOffset = 0;
 	}
 
 	private scrollBy(delta: number): void {
