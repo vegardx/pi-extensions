@@ -435,4 +435,34 @@ describe("PlanPanelComponent navigation", () => {
 		component.handleInput(KEY.escape);
 		expect(unfocused()).toBe(1);
 	});
+
+	it("clears expanded phases when swapped to a different plan", () => {
+		const { component } = mount(
+			makePlan([makePhase("Shared", "planned", [makeTask("hidden", false)])]),
+		);
+		component.setFocused(true);
+		component.handleInput(KEY.right); // expand "shared"
+		expect(bodyOf(component)).toContain("☐ hidden");
+		// A different plan that happens to reuse the same phase id must not
+		// inherit the expanded state.
+		const other = makePlan(
+			[makePhase("Shared", "planned", [makeTask("hidden", false)])],
+			"Other plan",
+		);
+		other.slug = "other-plan";
+		component.setPlan(other);
+		expect(bodyOf(component)).not.toContain("hidden");
+	});
+
+	it("keeps expanded phases when refreshed with the same plan", () => {
+		const plan = makePlan([
+			makePhase("Shared", "planned", [makeTask("hidden", false)]),
+		]);
+		const { component } = mount(plan);
+		component.setFocused(true);
+		component.handleInput(KEY.right);
+		expect(bodyOf(component)).toContain("☐ hidden");
+		component.setPlan(makePlan(plan.phases)); // same slug "test-plan"
+		expect(bodyOf(component)).toContain("☐ hidden");
+	});
 });
