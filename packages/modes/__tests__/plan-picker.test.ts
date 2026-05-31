@@ -405,16 +405,18 @@ describe("planPickerView", () => {
 		expect(view.action).toBe("bail");
 	});
 
-	it("returns a 'show' action with four options for a fresh plan (auto first by default)", () => {
+	it("returns a 'show' action with five options for a fresh plan (auto first by default)", () => {
 		const plan = makePlan([makePhase({ status: "planned" })]);
 		const view = planPickerView(plan, "feat/p-one");
 		expect(view.action).toBe("show");
 		if (view.action === "show") {
-			expect(view.options).toHaveLength(4);
+			expect(view.options).toHaveLength(5);
 			expect(view.options[0]).toMatch(/^Implement \(auto\)/);
 			expect(view.options[1]).toMatch(/^Implement \(ask\)/);
-			expect(view.options[2]).toMatch(/^Park/);
-			expect(view.options[3]).toMatch(/^Continue discussing/);
+			expect(view.options[2]).toBe(view.scrutinizeLabel);
+			expect(view.options[2]).toMatch(/Scrutinize/);
+			expect(view.options[3]).toMatch(/^Park/);
+			expect(view.options[4]).toMatch(/^Continue discussing/);
 			expect(view.title).toContain("plan ready");
 		}
 	});
@@ -426,8 +428,9 @@ describe("planPickerView", () => {
 		if (view.action === "show") {
 			expect(view.options[0]).toMatch(/^Implement \(ask\)/);
 			expect(view.options[1]).toMatch(/^Implement \(auto\)/);
-			expect(view.options[2]).toMatch(/^Park/);
-			expect(view.options[3]).toMatch(/^Continue discussing/);
+			expect(view.options[2]).toBe(view.scrutinizeLabel);
+			expect(view.options[3]).toMatch(/^Park/);
+			expect(view.options[4]).toMatch(/^Continue discussing/);
 		}
 	});
 

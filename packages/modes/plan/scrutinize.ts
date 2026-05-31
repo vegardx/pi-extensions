@@ -1,13 +1,14 @@
 /**
  * Plan scrutinizer — runs a one-shot sub-agent that reviews the plan for
- * gaps, risks, and missing considerations before the implement picker fires.
+ * gaps, risks, and missing considerations before you implement.
  *
  * The sub-agent uses `tools: []` (pure reasoning). Input is a stripped-down
  * JSON representation of the plan to keep the prompt tight. Output is parsed
  * back to a typed findings array.
  *
- * Opt-in via `extensionConfig.modes.scrutinize.enable: true`. Off by default
- * because the secondary-heavy model adds ~20–40s of latency.
+ * Runs on demand only — via the `/scrutinize` command or the "Scrutinize
+ * plan" option in the implement picker. The secondary-heavy model adds
+ * ~20–40s of latency, so it never runs automatically.
  */
 
 import { dirname, join } from "node:path";
