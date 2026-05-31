@@ -556,6 +556,9 @@ export default defineExtension(
 				delegateAgents = new DelegateAgents(ctx);
 				// Mirror research activity into the sidebar Info box (live).
 				delegateAgents.setOnResearchChange(() => refreshSidebar(ctx));
+				// When the sidebar is shown it owns sub-agent state, so the
+				// below-editor research widget stands down to avoid duplication.
+				delegateAgents.setWidgetSuppressed(() => sidebarEnabled);
 			}
 			return delegateAgents;
 		}
@@ -603,6 +606,11 @@ export default defineExtension(
 			if (!ctx.hasUI) return;
 			// Mirror explore activity into the sidebar Info box (live).
 			refreshSidebar(ctx);
+			// Sidebar owns this data when shown — keep the area under the editor clear.
+			if (sidebarEnabled) {
+				ctx.ui.setWidget("delegate-explore", undefined);
+				return;
+			}
 			const running = state.tasks.filter((t) => t.status === "running").length;
 			const queued = state.tasks.filter((t) => t.status === "queued").length;
 			// Hide when no active work remains: empty mailbox, all tasks settled
@@ -1619,7 +1627,17 @@ export default defineExtension(
 			// panel that's about to be torn down.
 			panelNav.release();
 			updateWidget(ctx);
+			// Reconcile the below-editor delegate widgets: hidden while the sidebar
+			// shows the same sub-agent data, restored when it's hidden again.
+			reconcileDelegateWidgets(ctx);
 			notify(ctx, sidebarEnabled ? "sidebar shown" : "sidebar hidden", "info");
+		}
+
+		/** Re-render the explore/research widgets against the current toggle. */
+		function reconcileDelegateWidgets(ctx: ExtensionContext): void {
+			if (!ctx.hasUI) return;
+			if (exploreMailbox) renderExploreWidget(ctx, exploreMailbox.getState());
+			delegateAgents?.refreshResearchWidget();
 		}
 
 		/**
@@ -1824,25 +1842,32 @@ export default defineExtension(
 						tui.requestRender();
 					},
 					render(width) {
+						// When the sidebar is shown it carries repo/branch/model/context
+						// in its Info box, so the footer slims to just other-extension
+						// statuses + the mode label. When hidden, the full footer stands.
+						const slim = sidebarEnabled;
 						// Left: path (branch) + context usage + other extensions.
 						const branch = footerData.getGitBranch();
 						const statuses = footerData.getExtensionStatuses();
 						const leftParts: string[] = [];
-						const home = homedir();
-						const shortPath = cwd.startsWith(home)
-							? `~${cwd.slice(home.length)}`
-							: cwd;
-						const location = branch ? `${shortPath} (${branch})` : shortPath;
-						leftParts.push(theme.fg("muted", location));
+						if (!slim) {
+							const home = homedir();
+							const shortPath = cwd.startsWith(home)
+								? `~${cwd.slice(home.length)}`
+								: cwd;
+							const location = branch ? `${shortPath} (${branch})` : shortPath;
+							leftParts.push(theme.fg("muted", location));
+						}
 
 						for (const [, val] of statuses) leftParts.push(val);
 						const leftText = leftParts.join("  ");
 
 						// Right: context usage | model | mode label.
 						// Phase status lives in the widget (glyph + active-phase task
-						// list), so we deliberately don't duplicate it here.
-						const ctxLabel = formatContextUsage(ctx);
-						const modelLabel = formatModelLabel(ctx);
+						// list), so we deliberately don't duplicate it here. With the
+						// sidebar shown, usage/model live in the Info box too.
+						const ctxLabel = slim ? null : formatContextUsage(ctx);
+						const modelLabel = slim ? null : formatModelLabel(ctx);
 						const usageLabel =
 							[ctxLabel, modelLabel]
 								.filter((s): s is string => Boolean(s))
