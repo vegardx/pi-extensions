@@ -389,6 +389,14 @@ export class PlanPanelComponent implements Component {
 	}
 
 	setPlan(plan: Plan | null): void {
+		// Swapping to a *different* plan (e.g. the host reused this overlay for
+		// another slug) must not carry over per-phase expand state: phase ids are
+		// only unique within a plan, so stale ids could wrongly expand a
+		// same-named phase. Reset the cursor too.
+		if (plan?.slug !== this.plan?.slug) {
+			this.expandedPhaseIds.clear();
+			this.selectedIndex = 0;
+		}
 		this.plan = plan;
 		const max = Math.max(0, (plan?.phases.length ?? 1) - 1);
 		if (this.selectedIndex > max) this.selectedIndex = max;
