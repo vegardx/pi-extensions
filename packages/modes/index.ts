@@ -416,13 +416,6 @@ export default defineExtension(
 				doc: "How the plan is displayed. `auto` (default) and `overlay`: an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded. `off` hides it. The panel auto-hides on terminals narrower than 100 columns.",
 			},
 			{
-				key: "planPanelToggle",
-				type: "enum",
-				enumValues: ["cycle", "focus"],
-				default: "cycle",
-				doc: "Behaviour of the plan-panel toggle (Ctrl+Shift+O). `cycle` (default): collapsed → expanded (passive, editor still typable) → focused for ↑↓ scroll → collapsed. `focus`: collapsed → expanded+focused → collapsed, skipping the passive step.",
-			},
-			{
 				key: "research.timeoutMs",
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
@@ -1234,17 +1227,6 @@ export default defineExtension(
 				return raw;
 			}
 			return "auto";
-		}
-
-		/** Read extensionConfig.modes.planPanelToggle (default "cycle"). */
-		function readPlanPanelToggleSetting(
-			ctx: ExtensionContext,
-		): "cycle" | "focus" {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			return extCfg?.planPanelToggle === "focus" ? "focus" : "cycle";
 		}
 
 		/**
@@ -5713,24 +5695,21 @@ export default defineExtension(
 
 		/**
 		 * Toggle focus on the always-on plan panel. Passive by default (the editor
-		 * keeps focus); focusing routes ↑/↓ to the panel so the phase list scrolls,
-		 * Esc/q releases. Phase 2 layers phase navigation + per-phase expand on the
-		 * focused state; `planPanelToggle` is retained for that future split.
+		 * keeps focus); focusing routes navigation to the panel: ↑/↓ move the phase
+		 * cursor (auto-scrolling to keep it visible), →/⏎/Space expand the selected
+		 * phase's checklist, ← collapses it, PgUp/PgDn scroll, Esc/q releases.
 		 */
 		pi.registerShortcut("ctrl+shift+o", {
-			description: "Plan panel: focus to scroll / release",
-			handler: async (ctx) => {
+			description: "Plan panel: focus to navigate / release",
+			handler: async () => {
 				const panel = planPanel;
 				const handle = planPanelHandle;
 				if (!panel || !handle) return;
 
-				panel.setToggleMode(readPlanPanelToggleSetting(ctx));
 				if (panel.focused) {
 					handle.unfocus();
 					panel.setFocused(false);
-					panel.setExpanded(false);
 				} else {
-					panel.setExpanded(true);
 					handle.focus();
 					panel.setFocused(true);
 				}
