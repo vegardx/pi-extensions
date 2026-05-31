@@ -110,6 +110,7 @@ import {
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import type { PhaseDriverBadge } from "./plan/panel.js";
 import { PlanPanelComponent } from "./plan/panel.js";
+import { PanelNavController } from "./plan/panel-nav.js";
 import {
 	renderParentIssueBody,
 	renderPhaseIssueBody,
@@ -1224,6 +1225,17 @@ export default defineExtension(
 		const PLAN_PANEL_MIN_WIDTH = 40;
 		const PLAN_PANEL_MIN_COLS = 100;
 
+		// Drives panel "navigate" mode. The panel overlay is always non-capturing,
+		// so the editor keeps TUI focus the whole time; navigation is routed via a
+		// consuming input listener instead of the overlay focus machinery. Releasing
+		// the panel just disposes that listener — there is no focus to "restore", so
+		// the editor can never be left unfocused (which previously froze the UI).
+		const panelNav = new PanelNavController({
+			getPanel: () => planPanel,
+			getTui: () => footerTui,
+			minCols: PLAN_PANEL_MIN_COLS,
+		});
+
 		/** Read extensionConfig.modes.planPanel (default "auto"). */
 		function readPlanPanelSetting(ctx: ExtensionContext): PlanPanelMode {
 			const settings = readRelevantSettings(ctx.cwd);
@@ -1249,8 +1261,8 @@ export default defineExtension(
 		}
 
 		function teardownPlanOverlay(): void {
+			panelNav.release();
 			if (planPanelHandle) {
-				planPanelHandle.unfocus();
 				planPanelHandle.hide();
 				planPanelHandle = null;
 			}
@@ -1301,8 +1313,7 @@ export default defineExtension(
 				return;
 			}
 			// Drop panel focus before yielding to the confirm dialog / switch.
-			planPanelHandle?.unfocus();
-			planPanel?.setFocused(false);
+			panelNav.release();
 			const ok = await ctx.ui.confirm(
 				"Attach to phase agent?",
 				`Switch this TUI into the session driving "${phase.title}"? Your current session stays on disk.`,
@@ -1331,8 +1342,7 @@ export default defineExtension(
 				theme: panelTheme,
 				requestRender: () => tui.requestRender(),
 				onRequestUnfocus: () => {
-					planPanelHandle?.unfocus();
-					panel.setFocused(false);
+					panelNav.release();
 				},
 				onAttachPhase: (phaseId) => {
 					const attachCtx = planPanelCtx;
@@ -5772,17 +5782,7 @@ export default defineExtension(
 		pi.registerShortcut("ctrl+shift+o", {
 			description: "Plan panel: focus to navigate / release",
 			handler: async () => {
-				const panel = planPanel;
-				const handle = planPanelHandle;
-				if (!panel || !handle) return;
-
-				if (panel.focused) {
-					handle.unfocus();
-					panel.setFocused(false);
-				} else {
-					handle.focus();
-					panel.setFocused(true);
-				}
+				panelNav.toggle();
 			},
 		});
 
