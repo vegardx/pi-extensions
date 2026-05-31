@@ -105,6 +105,26 @@ describe("scrutinizePlan", () => {
 			});
 		});
 
+		it("spawns with read-only investigative tools and re-enables exa/webfetch only", async () => {
+			await scrutinizePlan(makePlan(), MOCK_CTX);
+			const call = vi.mocked(runSubagent).mock.calls[0]?.[0];
+			expect(call?.tools).toEqual([
+				"read",
+				"grep",
+				"find",
+				"ls",
+				"websearch",
+				"webfetch",
+			]);
+			// Re-enables the web-tool extensions in the subagent, never modes
+			// (that would reintroduce the fork bomb). PI_SUBAGENT itself is added
+			// by runSubagent, not here.
+			expect(call?.env).toEqual({ PI_EXT_EXA: "on", PI_EXT_WEBFETCH: "on" });
+			expect(call?.env?.PI_EXT_MODES).toBeUndefined();
+			expect(call?.tools).not.toContain("bash");
+			expect(call?.tools).not.toContain("delegate");
+		});
+
 		it("returns empty findings (no error) for empty JSON array", async () => {
 			vi.mocked(runSubagent).mockResolvedValue({
 				tag: "scrutinize",
@@ -259,11 +279,18 @@ describe("scrutinizePlan", () => {
 			expect(call.task).not.toContain("x".repeat(501));
 		});
 
-		it("uses tools: [] for pure reasoning", async () => {
+		it("investigates with read-only tools (codebase + web)", async () => {
 			await scrutinizePlan(makePlan(), MOCK_CTX);
 
 			const call = vi.mocked(runSubagent).mock.calls[0]![0];
-			expect(call.tools).toEqual([]);
+			expect(call.tools).toEqual([
+				"read",
+				"grep",
+				"find",
+				"ls",
+				"websearch",
+				"webfetch",
+			]);
 		});
 
 		it("includes task.kind in the payload (defaults to deliverable)", async () => {
