@@ -1,16 +1,17 @@
 /**
  * Floating plan panel — a persistent, non-capturing overlay anchored to the
- * top-right corner in plan mode. Renders the phase/task tree as a glanceable
- * HUD that doesn't steal vertical space from the chat flow.
+ * top-right corner. It's always mounted whenever a plan exists, regardless of
+ * mode (plan / auto / ask / hack), and auto-hides only on terminals too narrow
+ * to carry it alongside the chat column.
  *
- * Two render modes:
- *   - compact (default): plan title + done/total tally + active phase line.
- *   - expanded: the full phase tree with the active phase's task checklist,
- *     scrollable when it overflows the viewport.
+ * The default view is the full phase list: every phase on one line as
+ * `<glyph> <title> [done/total]`, where the tally counts that phase's tasks.
+ * The active phase auto-expands its `☑`/`☐` checklist beneath it. The border
+ * carries no title — just the box edge.
  *
- * The overlay is non-capturing, so the editor stays typable while the panel is
- * merely expanded. Pressing the toggle a second time focuses it (input routes
- * to {@link PlanPanelComponent.handleInput}) so ↑/↓ scroll; Esc/q releases.
+ * The overlay is non-capturing, so the editor stays typable. Focusing it
+ * (via the toggle shortcut) routes input to {@link PlanPanelComponent.handleInput}
+ * so ↑/↓ scroll the list; Esc/q releases focus back to the editor.
  */
 
 import type { Theme } from "@mariozechner/pi-coding-agent";
@@ -21,7 +22,7 @@ import {
 	visibleWidth,
 } from "@mariozechner/pi-tui";
 import type { Plan } from "./schema.js";
-import { effectiveTaskKind, WORKTREE_STATUSES } from "./schema.js";
+import { WORKTREE_STATUSES } from "./schema.js";
 
 /** Glyphs shown next to a phase for each status. */
 export const STATUS_GLYPH: Record<string, string> = {
@@ -34,11 +35,9 @@ export const STATUS_GLYPH: Record<string, string> = {
 	abandoned: "✗",
 };
 
-/** Phases that count toward the "done" tally in the compact summary. */
+/** Phases that count toward the "done" tally in the overall summary. */
 const DONE_STATUSES = new Set(["ready-to-ship", "shipped"]);
 
-/** Fraction of terminal height the expanded panel may occupy. */
-const PANEL_HEIGHT_FRACTION = 0.7;
 /** Floor so the panel is usable even on short terminals. */
 const MIN_PANEL_ROWS = 6;
 
@@ -73,44 +72,27 @@ export function summarisePlan(plan: Plan): PlanSummary {
 	};
 }
 
-/** Compact body: plan title with a done/total tally + the active phase line. */
-export function buildCompactLines(
-	plan: Plan,
-	theme: Theme,
-	innerWidth: number,
-): string[] {
-	const summary = summarisePlan(plan);
-	const lines: string[] = [];
-
-	const tally = `${summary.donePhases}/${summary.totalPhases}`;
-	const titleText = truncateToWidth(
-		plan.title || "Plan",
-		Math.max(1, innerWidth - tally.length - 2),
-	);
-	const pad = " ".repeat(
-		Math.max(1, innerWidth - 1 - visibleWidth(titleText) - tally.length),
-	);
-	lines.push(` ${titleText}${pad}${theme.fg("muted", tally)}`);
-
-	if (summary.activeIndex !== null && summary.activeTitle) {
-		const label = truncateToWidth(
-			`● ${summary.activeTitle}`,
-			Math.max(1, innerWidth - 2),
-		);
-		lines.push(` ${theme.fg("accent", label)}`);
-	}
-	return lines;
+/**
+ * Per-phase task tally `[done/total]`, counting every task on the phase
+ * (deliverable or not) so it matches what the expanded checklist displays.
+ */
+function phaseTally(phase: Plan["phases"][number]): string {
+	const done = phase.tasks.filter((t) => t.done).length;
+	return `[${done}/${phase.tasks.length}]`;
 }
 
 /**
- * Full expanded tree: every phase with its status glyph, and the task
- * checklist for any phase that owns a worktree (active / needs-attention).
+ * Full phase list: every phase on one line as `<glyph> <title> [done/total]`,
+ * with the tally right-aligned. A phase reveals its `☑`/`☐` task checklist when
+ * it owns a worktree (active / needs-attention) or when its id is in
+ * `expandedPhaseIds` (an explicit user expand from the focused panel).
  */
 export function buildTreeLines(
 	plan: Plan,
 	theme: Theme,
 	innerWidth: number,
 	selfSessionId?: string | null,
+	expandedPhaseIds?: ReadonlySet<string>,
 ): string[] {
 	const lines: string[] = [];
 	for (const phase of plan.phases) {
@@ -119,26 +101,34 @@ export function buildTreeLines(
 			phase.driverSessionId && phase.driverSessionId !== selfSessionId
 				? " [peer]"
 				: "";
-		const title = truncateToWidth(
-			`${phase.title}${peerSuffix}`,
-			Math.max(1, innerWidth - 3),
+		const tally = phaseTally(phase);
+		const prefix = ` ${glyph} `;
+		const prefixW = visibleWidth(prefix);
+		// Reserve a 1-col gutter on the right so the tally isn't glued to the border.
+		const titleMax = Math.max(1, innerWidth - prefixW - tally.length - 2);
+		const title = truncateToWidth(`${phase.title}${peerSuffix}`, titleMax);
+		const pad = " ".repeat(
+			Math.max(
+				1,
+				innerWidth - prefixW - visibleWidth(title) - tally.length - 1,
+			),
 		);
-		lines.push(` ${glyph} ${title}`);
+		lines.push(`${prefix}${title}${pad}${theme.fg("muted", tally)}`);
 
-		if (WORKTREE_STATUSES.includes(phase.status)) {
-			if (phase.tasks.length === 0) {
-				lines.push(
-					`   ${theme.fg("muted", truncateToWidth("(no tasks)", innerWidth - 4))}`,
-				);
-			} else {
-				for (const task of phase.tasks) {
-					const box = task.done ? "☑" : "☐";
-					const label = truncateToWidth(
-						task.title,
-						Math.max(1, innerWidth - 5),
-					);
-					lines.push(`   ${box} ${label}`);
-				}
+		const expanded =
+			WORKTREE_STATUSES.includes(phase.status) ||
+			(expandedPhaseIds?.has(phase.id) ?? false);
+		if (!expanded) continue;
+
+		if (phase.tasks.length === 0) {
+			lines.push(
+				`   ${theme.fg("muted", truncateToWidth("(no tasks)", innerWidth - 4))}`,
+			);
+		} else {
+			for (const task of phase.tasks) {
+				const box = task.done ? "☑" : "☐";
+				const label = truncateToWidth(task.title, Math.max(1, innerWidth - 5));
+				lines.push(`   ${box} ${label}`);
 			}
 		}
 	}
@@ -186,7 +176,11 @@ export function windowLines(
 	};
 }
 
-/** Draw a rounded border around body lines with a centered title. */
+/**
+ * Draw a rounded border around body lines. With a non-empty `title`, it's
+ * centered on the top edge; with an empty title the top edge is a clean run of
+ * `─` (the panel deliberately carries no title).
+ */
 export function boxify(
 	theme: Theme,
 	title: string,
@@ -196,15 +190,19 @@ export function boxify(
 	const innerW = Math.max(1, width - 2);
 	const result: string[] = [];
 
-	const titleStr = truncateToWidth(` ${title} `, innerW);
-	const titleW = visibleWidth(titleStr);
-	const left = "─".repeat(Math.floor((innerW - titleW) / 2));
-	const right = "─".repeat(Math.max(0, innerW - titleW - left.length));
-	result.push(
-		theme.fg("border", `╭${left}`) +
-			theme.fg("accent", titleStr) +
-			theme.fg("border", `${right}╮`),
-	);
+	if (title) {
+		const titleStr = truncateToWidth(` ${title} `, innerW);
+		const titleW = visibleWidth(titleStr);
+		const left = "─".repeat(Math.floor((innerW - titleW) / 2));
+		const right = "─".repeat(Math.max(0, innerW - titleW - left.length));
+		result.push(
+			theme.fg("border", `╭${left}`) +
+				theme.fg("accent", titleStr) +
+				theme.fg("border", `${right}╮`),
+		);
+	} else {
+		result.push(theme.fg("border", `╭${"─".repeat(innerW)}╮`));
+	}
 
 	for (const line of body) {
 		const padded = padTo(line, innerW);
@@ -243,14 +241,15 @@ function footerLine(
 export interface PlanPanelRenderState {
 	theme: Theme;
 	width: number;
-	expanded: boolean;
 	focused: boolean;
 	scrollOffset: number;
 	/** Terminal height in rows, used to size the scroll viewport. */
 	termHeight: number;
 	selfSessionId?: string | null;
+	/** Phase ids explicitly expanded from the focused panel (phase 2). */
+	expandedPhaseIds?: ReadonlySet<string>;
 	/**
-	 * Controls which footer hint to show when expanded but not focused.
+	 * Controls which footer hint to show when overflowing but not focused.
 	 * `cycle` (default): next ^⇧O focuses for scroll.
 	 * `focus`: next ^⇧O collapses.
 	 */
@@ -267,8 +266,10 @@ export interface PlanPanelRenderResult {
 }
 
 /**
- * Pure panel render. Returns the bordered lines plus the clamped scroll state
- * so the component (and tests) can stay in sync without side effects here.
+ * Pure panel render. Always renders the full phase list (active phase expanded)
+ * with a title-less border. Returns the clamped scroll state so the component
+ * (and tests) can stay in sync without side effects here. A footer hint line is
+ * appended only when focused or when the list overflows the viewport.
  */
 export function renderPlanPanel(
 	plan: Plan,
@@ -277,35 +278,37 @@ export function renderPlanPanel(
 	const innerW = Math.max(1, state.width - 2);
 	const { theme } = state;
 
-	if (!state.expanded) {
-		const body = buildCompactLines(plan, theme, innerW);
-		return {
-			lines: boxify(theme, "Plan", body, state.width),
-			scrollOffset: 0,
-			maxScroll: 0,
-			pageRows: body.length,
-		};
-	}
-
-	const full = buildTreeLines(plan, theme, innerW, state.selfSessionId);
-	const maxPanelRows = Math.max(
-		MIN_PANEL_ROWS,
-		Math.floor(state.termHeight * PANEL_HEIGHT_FRACTION),
+	const full = buildTreeLines(
+		plan,
+		theme,
+		innerW,
+		state.selfSessionId,
+		state.expandedPhaseIds,
 	);
-	// chrome: top + bottom border + footer line.
-	const maxBody = Math.max(1, maxPanelRows - 3);
+
+	// Use nearly the whole viewport (minus a top margin) so the always-on panel
+	// can show as much of the plan as fits.
+	const maxPanelRows = Math.max(MIN_PANEL_ROWS, state.termHeight - 2);
+	// chrome without a footer: top + bottom border.
+	const noFooterBody = Math.max(1, maxPanelRows - 2);
+	const overflow = full.length > noFooterBody;
+	const showFooter = state.focused || overflow;
+	// With a footer, reserve one more row for it.
+	const maxBody = showFooter ? Math.max(1, maxPanelRows - 3) : noFooterBody;
 	const win = windowLines(full, state.scrollOffset, maxBody);
 
-	const hint = state.focused
-		? "↑↓ scroll · Esc back"
-		: state.toggleMode === "focus"
-			? "^⇧O closes"
-			: "^⇧O to scroll";
-	const body = [...win.rows, footerLine(theme, win, hint, innerW)];
-	const title = state.focused ? "Plan · scroll" : "Plan";
+	let body = win.rows;
+	if (showFooter) {
+		const hint = state.focused
+			? "↑↓ scroll · Esc back"
+			: state.toggleMode === "focus"
+				? "^⇧O closes"
+				: "^⇧O to scroll";
+		body = [...win.rows, footerLine(theme, win, hint, innerW)];
+	}
 
 	return {
-		lines: boxify(theme, title, body, state.width),
+		lines: boxify(theme, "", body, state.width),
 		scrollOffset: win.clampedOffset,
 		maxScroll: win.maxScroll,
 		pageRows: win.rows.length,
@@ -377,7 +380,6 @@ export class PlanPanelComponent implements Component {
 		const result = renderPlanPanel(this.plan, {
 			theme: this.theme,
 			width,
-			expanded: this.expanded,
 			focused: this.focused,
 			scrollOffset: this.scrollOffset,
 			termHeight: this.termHeight,
@@ -418,55 +420,4 @@ export class PlanPanelComponent implements Component {
 	}
 
 	invalidate(): void {}
-}
-
-export interface PlanProgress {
-	/** Current task title, or the active phase title when no task fits. */
-	task: string;
-	/** 1-based index of the active phase among non-abandoned phases. */
-	phaseIndex: number;
-	/** Count of non-abandoned phases. */
-	phaseCount: number;
-}
-
-/**
- * Derive the auto/ask progress indicator: the first incomplete deliverable
- * task in the active phase (falling back to the phase title), plus the active
- * phase's position. Abandoned phases are excluded from the X/N tally so the
- * count reflects real remaining work. Returns null when there's no active
- * phase to report on.
- */
-export function deriveProgress(plan: Plan): PlanProgress | null {
-	const phases = plan.phases.filter((p) => p.status !== "abandoned");
-	if (phases.length === 0) return null;
-	const activeIndex = phases.findIndex((p) =>
-		WORKTREE_STATUSES.includes(p.status),
-	);
-	if (activeIndex === -1) return null;
-	const phase = phases[activeIndex];
-	if (!phase) return null;
-	const nextTask = phase.tasks.find(
-		(t) => !t.done && effectiveTaskKind(t) === "deliverable",
-	);
-	return {
-		task: nextTask?.title ?? phase.title,
-		phaseIndex: activeIndex + 1,
-		phaseCount: phases.length,
-	};
-}
-
-/**
- * Render the single-line auto/ask footer indicator: `▸ <task> [X/N]`,
- * left-aligned and truncated to `width`.
- */
-export function formatProgressLine(
-	progress: PlanProgress,
-	theme: Theme,
-	width: number,
-): string {
-	const suffix = ` [${progress.phaseIndex}/${progress.phaseCount}]`;
-	const taskMax = Math.max(1, width - 2 - suffix.length);
-	const task = truncateToWidth(progress.task, taskMax);
-	const styled = `${theme.fg("accent", "▸")} ${task}${theme.fg("dim", suffix)}`;
-	return truncateToWidth(styled, width);
 }

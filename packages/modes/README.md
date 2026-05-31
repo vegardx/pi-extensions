@@ -558,39 +558,33 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 
 ## Plan display
 
-The plan is surfaced differently per mode, controlled by `planPanel`
-(default `auto`):
+Whenever a plan exists, an always-on floating panel is anchored to the
+top-right corner in **every mode** (plan / auto / ask / hack), controlled
+by `planPanel` (default `auto`):
 
-- **plan mode → floating panel.** A non-capturing overlay anchored
-  top-right. Compact by default (plan title + `done/total` phase tally
-  + the active phase line). It doesn't steal editor focus — you keep
-  typing while it's visible. Auto-hides on terminals narrower than 100
-  columns so it never collides with the chat column.
-- **auto / ask mode → footer line.** A second footer line shows
-  `▸ <current task> [X/N]`: the first incomplete deliverable in the
-  active phase (falling back to the phase title), where `X` is the
-  active phase's position among non-abandoned phases and `N` is their
-  count.
-- **hack mode → nothing.** No plan ceremony, no panel.
+- It lists **every phase** on one line as `<glyph> <title> [done/total]`,
+  where the tally counts that phase's tasks. The **active phase
+  auto-expands** its `☑`/`☐` task checklist beneath it.
+- The border carries **no title** — just the box edge.
+- It's non-capturing, so you keep typing while it's visible, and it
+  auto-hides on terminals narrower than 100 columns so it never collides
+  with the chat column.
 
-Force a single surface with `planPanel`: `overlay`, `inline`, or `off`.
+Set `planPanel` to `off` to hide it; `overlay` is equivalent to `auto`.
 
-### Expanding and scrolling the floating panel
+### Focusing and scrolling the panel
 
-`Ctrl+Shift+O` cycles the floating panel (behaviour set by
-`planPanelToggle`, default `cycle`):
+`Ctrl+Shift+O` cycles the panel (behaviour set by `planPanelToggle`,
+default `cycle`):
 
-1. **collapsed → expanded** — the full phase tree with the active
-   phase's task checklist (`☑`/`☐`). Still passive: the editor keeps
-   focus, so you can read the tree while typing.
-2. **expanded → focused** — the panel grabs input. `↑`/`↓` (and
-   `PageUp`/`PageDown`) scroll when the tree overflows ~70% of the
-   terminal height; a `↑N ↓N` indicator shows the scroll position.
-   `Esc` or `q` releases focus back to the editor.
-3. **focused → collapsed.**
+1. **passive → focused** — the panel grabs input. `↑`/`↓` (and
+   `PageUp`/`PageDown`) scroll when the phase list overflows the
+   viewport; a `↑N ↓N` indicator shows the scroll position. `Esc` or `q`
+   releases focus back to the editor.
+2. **focused → passive.**
 
-Set `planPanelToggle` to `focus` for a two-step toggle (collapsed →
-expanded **and** focused → collapsed), skipping the passive step.
+Set `planPanelToggle` to `focus` for the same two-step toggle without the
+intermediate passive expand.
 
 ## Settings
 
@@ -618,8 +612,8 @@ expanded **and** focused → collapsed), skipping the passive step.
 | `compaction.planMaxContextTokens` | unset | Optional footer cap (denominator) used while in plan mode. Leave unset to use the active model's `contextWindow`. Plan mode is exempt from mid-phase compaction. |
 | `compaction.phaseTokens` | `10000` | Safety `maxTokens` cap for one phase-boundary summary. `summaryTokens` is the cumulative soft budget; this only catches a runaway single summary. |
 | `park.githubProject` | unset | GitHub Project to assign issues to when `/park` creates them. Leave unset to skip assignment. |
-| `planPanel` | `"auto"` | How the plan is displayed. `auto`: floating top-right overlay in plan mode, inline footer line in auto/ask, nothing in hack. `overlay` \| `inline` force one surface; `off` hides it. The overlay auto-hides below 100 columns. |
-| `planPanelToggle` | `"cycle"` | Behaviour of the plan-panel toggle (`Ctrl+Shift+O`). `cycle`: collapsed → expanded (passive) → focused for `↑↓` scroll → collapsed. `focus`: collapsed → expanded+focused → collapsed, skipping the passive step. |
+| `planPanel` | `"auto"` | How the plan is displayed. `auto` (and `overlay`): an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded, in every mode. `off` hides it. Auto-hides below 100 columns. |
+| `planPanelToggle` | `"cycle"` | Behaviour of the plan-panel toggle (`Ctrl+Shift+O`). `cycle`: passive → focused for `↑↓` scroll → passive. `focus`: same two-step toggle. |
 | `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. |
 | `delegate.maxAnswerChars` | `6000` | Safety backstop on a delegated answer's size before it crosses back into the caller's context. Subagents are still prompted to be concise and complete. |
 | `delegate.maxConcurrent` | `10` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel. Excess calls block until a slot frees. |

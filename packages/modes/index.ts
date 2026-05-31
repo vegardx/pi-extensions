@@ -108,12 +108,7 @@ import {
 	sanitiseQueueDepthThreshold,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
-import {
-	deriveProgress,
-	formatProgressLine,
-	PlanPanelComponent,
-	type PlanProgress,
-} from "./plan/panel.js";
+import { PlanPanelComponent } from "./plan/panel.js";
 import {
 	renderParentIssueBody,
 	renderPhaseIssueBody,
@@ -416,9 +411,9 @@ export default defineExtension(
 			{
 				key: "planPanel",
 				type: "enum",
-				enumValues: ["auto", "overlay", "inline", "off"],
+				enumValues: ["auto", "overlay", "off"],
 				default: "auto",
-				doc: "How the plan is displayed. `auto` (default): floating top-right overlay in plan mode, inline above the editor in auto/ask, nothing in hack. `overlay`/`inline` force one surface; `off` hides it. The overlay auto-hides on terminals narrower than 100 columns.",
+				doc: "How the plan is displayed. `auto` (default) and `overlay`: an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded. `off` hides it. The panel auto-hides on terminals narrower than 100 columns.",
 			},
 			{
 				key: "planPanelToggle",
@@ -488,9 +483,6 @@ export default defineExtension(
 		// Theme captured from the footer factory — needed to style the overlay,
 		// whose Component.render only receives a width.
 		let panelTheme: Theme | null = null;
-		// Cached auto/ask footer progress indicator (`▸ task [X/N]`). Recomputed by
-		// updateWidget on mode/plan/task change; null hides the second footer line.
-		let inlineProgress: PlanProgress | null = null;
 
 		// Persistent codebase-explore mailbox and web-research sub-agent.
 		// Created lazily on first tool call; disposed when leaving plan mode,
@@ -1223,11 +1215,11 @@ export default defineExtension(
 			hack: "error",
 		};
 
-		type PlanSurface = "overlay" | "inline" | "off";
-		type PlanPanelMode = "auto" | "overlay" | "inline" | "off";
+		type PlanSurface = "overlay" | "off";
+		type PlanPanelMode = "auto" | "overlay" | "off";
 
 		// Overlay geometry. Hidden on narrow terminals so it never collides with
-		// the chat column; the inline/footer surface covers those cases.
+		// the chat column; there is no plan surface at all below this width.
 		const PLAN_PANEL_WIDTH = 40;
 		const PLAN_PANEL_MIN_COLS = 100;
 
@@ -1238,12 +1230,7 @@ export default defineExtension(
 				| Record<string, unknown>
 				| undefined;
 			const raw = extCfg?.planPanel;
-			if (
-				raw === "overlay" ||
-				raw === "inline" ||
-				raw === "off" ||
-				raw === "auto"
-			) {
+			if (raw === "overlay" || raw === "off" || raw === "auto") {
 				return raw;
 			}
 			return "auto";
@@ -1261,24 +1248,14 @@ export default defineExtension(
 		}
 
 		/**
-		 * Decide which surface presents the plan, given the active mode and the
-		 * planPanel setting. In "auto": plan mode gets the floating overlay,
-		 * auto/ask get the inline surface, hack shows nothing.
+		 * Decide which surface presents the plan. The panel is always-on: under
+		 * the `auto` setting (and `overlay`) the floating overlay shows in every
+		 * mode whenever a plan exists; `off` hides it. The narrow-terminal guard
+		 * (PLAN_PANEL_MIN_COLS) still suppresses the overlay via its `visible`
+		 * callback.
 		 */
-		function decidePlanSurface(
-			mode: Mode,
-			setting: PlanPanelMode,
-		): PlanSurface {
-			if (setting !== "auto") return setting;
-			switch (mode) {
-				case "plan":
-					return "overlay";
-				case "auto":
-				case "ask":
-					return "inline";
-				default:
-					return "off";
-			}
+		function decidePlanSurface(setting: PlanPanelMode): PlanSurface {
+			return setting === "off" ? "off" : "overlay";
 		}
 
 		function teardownPlanOverlay(): void {
@@ -1343,21 +1320,15 @@ export default defineExtension(
 			const hasPlan = !!plan && plan.phases.length > 0;
 			const surface: PlanSurface =
 				modeState && hasPlan
-					? decidePlanSurface(modeState.mode, readPlanPanelSetting(ctx))
+					? decidePlanSurface(readPlanPanelSetting(ctx))
 					: "off";
 
 			// Tear down the overlay when it's not selected so a mode switch never
-			// leaves a stale panel behind. The legacy `modes-steps` inline widget
-			// is fully retired — the auto/ask surface is now the second footer line
-			// (see installFooter).
+			// leaves a stale panel behind. The panel is the single plan surface in
+			// every mode now — the old auto/ask inline footer line is retired.
 			if (surface !== "overlay") teardownPlanOverlay();
 
 			if (plan && surface === "overlay") mountPlanOverlay(ctx, plan);
-
-			const showInline =
-				surface === "inline" &&
-				(modeState?.mode === "auto" || modeState?.mode === "ask");
-			inlineProgress = showInline && plan ? deriveProgress(plan) : null;
 		}
 
 		/**
@@ -1576,14 +1547,7 @@ export default defineExtension(
 						}
 						candidates.push({ visible: label, styled: modeText });
 
-						const lines = [composeFooterLine(leftText, candidates, width)];
-						// Second line: auto/ask progress indicator (`▸ task [X/N]`).
-						// Populated by updateWidget only in auto/ask with an active
-						// plan; null in plan/hack mode and when planPanel != inline.
-						if (inlineProgress) {
-							lines.push(formatProgressLine(inlineProgress, theme, width));
-						}
-						return lines;
+						return [composeFooterLine(leftText, candidates, width)];
 					},
 					dispose: footerData.onBranchChange(() => tui.requestRender()),
 				};
@@ -5745,38 +5709,30 @@ export default defineExtension(
 			},
 		});
 
-		// ---- Plan-panel toggle shortcut ---------------------------------------
+		// ---- Plan-panel focus shortcut ----------------------------------------
 
 		/**
-		 * Cycle the floating plan panel. Only meaningful when the overlay is
-		 * mounted (plan mode + planPanel=overlay/auto).
-		 *
-		 * "cycle" (default): collapsed → expanded (passive, editor still typable)
-		 * → focused (↑↓ scroll) → collapsed.
-		 * "focus": collapsed → expanded+focused → collapsed (skip the passive step).
+		 * Toggle focus on the always-on plan panel. Passive by default (the editor
+		 * keeps focus); focusing routes ↑/↓ to the panel so the phase list scrolls,
+		 * Esc/q releases. Phase 2 layers phase navigation + per-phase expand on the
+		 * focused state; `planPanelToggle` is retained for that future split.
 		 */
 		pi.registerShortcut("ctrl+shift+o", {
-			description: "Plan panel: expand / focus-to-scroll / collapse",
+			description: "Plan panel: focus to scroll / release",
 			handler: async (ctx) => {
 				const panel = planPanel;
 				const handle = planPanelHandle;
 				if (!panel || !handle) return;
 
-				const mode = readPlanPanelToggleSetting(ctx);
-				panel.setToggleMode(mode);
-				if (!panel.expanded) {
-					panel.setExpanded(true);
-					if (mode === "focus") {
-						handle.focus();
-						panel.setFocused(true);
-					}
-				} else if (mode === "cycle" && !panel.focused) {
-					handle.focus();
-					panel.setFocused(true);
-				} else {
-					if (panel.focused) handle.unfocus();
+				panel.setToggleMode(readPlanPanelToggleSetting(ctx));
+				if (panel.focused) {
+					handle.unfocus();
 					panel.setFocused(false);
 					panel.setExpanded(false);
+				} else {
+					panel.setExpanded(true);
+					handle.focus();
+					panel.setFocused(true);
 				}
 			},
 		});
