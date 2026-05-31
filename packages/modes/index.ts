@@ -25,11 +25,13 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	SessionManager,
+	Theme,
 } from "@mariozechner/pi-coding-agent";
 import {
 	convertToLlm,
 	serializeConversation,
 } from "@mariozechner/pi-coding-agent";
+import type { OverlayHandle, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { setActiveMode } from "@vegardx/pi-extensions-shared/active-mode.js";
@@ -105,6 +107,7 @@ import {
 	sanitiseQueueDepthThreshold,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
+import { PlanPanelComponent, STATUS_GLYPH } from "./plan/panel.js";
 import {
 	renderParentIssueBody,
 	renderPhaseIssueBody,
@@ -227,17 +230,6 @@ export function applyExecutionMode(
 	state.mode = implementMode;
 	setActiveTools(computeActiveTools(implementMode, state.priorTools));
 }
-
-/** Glyphs shown next to a phase in the widget for each status. */
-const STATUS_GLYPH: Record<string, string> = {
-	planned: "○",
-	active: "●",
-	"in-review": "➜",
-	"needs-attention": "!",
-	"ready-to-ship": "✓",
-	shipped: "✔",
-	abandoned: "✗",
-};
 
 // ---- Types ----------------------------------------------------------------
 
@@ -416,6 +408,13 @@ export default defineExtension(
 				doc: "Default option highlighted in the /implement picker: auto | ask. `auto` chugs through commit/ship/next phase autonomously; `ask` pauses at git boundaries. Set to `ask` if you want a human-in-the-loop default.",
 			},
 			{
+				key: "planPanel",
+				type: "enum",
+				enumValues: ["auto", "overlay", "inline", "off"],
+				default: "auto",
+				doc: "How the plan is displayed. `auto` (default): floating top-right overlay in plan mode, inline above the editor in auto/ask, nothing in hack. `overlay`/`inline` force one surface; `off` hides it. The overlay auto-hides on terminals narrower than 100 columns.",
+			},
+			{
 				key: "research.timeoutMs",
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
@@ -465,8 +464,17 @@ export default defineExtension(
 		let crashSessionAccessor: SessionAccessor | null = null;
 
 		// Stored TUI instance from the footer factory, used to trigger re-renders
-		// when the mode changes without reinstalling the footer.
-		let footerTui: { requestRender(): void } | null = null;
+		// when the mode changes without reinstalling the footer, and to mount the
+		// floating plan panel overlay (showOverlay lives on the TUI).
+		let footerTui: TUI | null = null;
+
+		// Floating plan panel (top-right overlay). Mounted in plan mode via the
+		// mode-aware display controller; torn down on mode switch / shutdown.
+		let planPanel: PlanPanelComponent | null = null;
+		let planPanelHandle: OverlayHandle | null = null;
+		// Theme captured from the footer factory — needed to style the overlay,
+		// whose Component.render only receives a width.
+		let panelTheme: Theme | null = null;
 
 		// Persistent codebase-explore mailbox and web-research sub-agent.
 		// Created lazily on first tool call; disposed when leaving plan mode,
@@ -1199,27 +1207,94 @@ export default defineExtension(
 			hack: "error",
 		};
 
-		function updateWidget(ctx: ExtensionContext): void {
-			if (!ctx.hasUI) return;
+		type PlanSurface = "overlay" | "inline" | "off";
+		type PlanPanelMode = "auto" | "overlay" | "inline" | "off";
 
-			// Trigger footer re-render so the mode label refreshes.
-			footerTui?.requestRender();
+		// Overlay geometry. Hidden on narrow terminals so it never collides with
+		// the chat column; the inline/footer surface covers those cases.
+		const PLAN_PANEL_WIDTH = 40;
+		const PLAN_PANEL_MIN_COLS = 100;
 
-			if (!modeState) {
-				ctx.ui.setWidget("modes-steps", undefined);
+		/** Read extensionConfig.modes.planPanel (default "auto"). */
+		function readPlanPanelSetting(ctx: ExtensionContext): PlanPanelMode {
+			const settings = readRelevantSettings(ctx.cwd);
+			const extCfg = settings.extensionConfig?.[EXT_ID] as
+				| Record<string, unknown>
+				| undefined;
+			const raw = extCfg?.planPanel;
+			if (
+				raw === "overlay" ||
+				raw === "inline" ||
+				raw === "off" ||
+				raw === "auto"
+			) {
+				return raw;
+			}
+			return "auto";
+		}
+
+		/**
+		 * Decide which surface presents the plan, given the active mode and the
+		 * planPanel setting. In "auto": plan mode gets the floating overlay,
+		 * auto/ask get the inline surface, hack shows nothing.
+		 */
+		function decidePlanSurface(
+			mode: Mode,
+			setting: PlanPanelMode,
+		): PlanSurface {
+			if (setting !== "auto") return setting;
+			switch (mode) {
+				case "plan":
+					return "overlay";
+				case "auto":
+				case "ask":
+					return "inline";
+				default:
+					return "off";
+			}
+		}
+
+		function teardownPlanOverlay(): void {
+			if (planPanelHandle) {
+				planPanelHandle.hide();
+				planPanelHandle = null;
+			}
+			planPanel = null;
+		}
+
+		/**
+		 * Mount (or refresh) the floating plan overlay. No-op until the footer
+		 * factory has handed us a TUI + theme; the factory calls updateWidget
+		 * again once it has, so the panel appears on the next render.
+		 */
+		function mountPlanOverlay(ctx: ExtensionContext, plan: Plan): void {
+			if (!footerTui || !panelTheme) return;
+			if (planPanel) {
+				planPanel.setPlan(plan);
 				return;
 			}
+			const tui = footerTui;
+			planPanel = new PlanPanelComponent({
+				plan,
+				theme: panelTheme,
+				selfSessionId: ctx.sessionManager.getSessionId(),
+				requestRender: () => tui.requestRender(),
+			});
+			planPanelHandle = tui.showOverlay(planPanel, {
+				nonCapturing: true,
+				anchor: "top-right",
+				width: PLAN_PANEL_WIDTH,
+				maxHeight: "70%",
+				margin: { top: 1, right: 1 },
+				visible: (w) => w >= PLAN_PANEL_MIN_COLS,
+			});
+		}
 
-			const slug = modeState.currentPlanSlug;
-			const plan = slug ? loadPlan(slug) : null;
-			if (!plan || plan.phases.length === 0) {
-				ctx.ui.setWidget("modes-steps", undefined);
-				return;
-			}
-
-			// Self vs peer driver detection: a phase claimed by another live
-			// session is annotated so the user understands why the local
-			// auto-loop won't pick it up.
+		/**
+		 * Inline phase/task list above the editor. Transitional surface for
+		 * auto/ask mode; superseded by the two-line footer in a later phase.
+		 */
+		function mountInlineWidget(ctx: ExtensionContext, plan: Plan): void {
 			const selfSessionId = ctx.sessionManager.getSessionId();
 			// Use the factory overload so MAX_LINE scales with the actual terminal
 			// width at render time rather than being a hard-coded constant.
@@ -1260,6 +1335,36 @@ export default defineExtension(
 				},
 				invalidate() {},
 			}));
+		}
+
+		/**
+		 * Mode-aware plan display controller. Picks the surface (floating overlay,
+		 * inline widget, or nothing) from the active mode + planPanel setting and
+		 * tears down whatever surface isn't selected. Kept named `updateWidget`
+		 * because it's called from many lifecycle hooks.
+		 */
+		function updateWidget(ctx: ExtensionContext): void {
+			if (!ctx.hasUI) return;
+
+			// Trigger footer re-render so the mode label refreshes.
+			footerTui?.requestRender();
+
+			const slug = modeState?.currentPlanSlug ?? null;
+			const plan = slug ? loadPlan(slug) : null;
+			const hasPlan = !!plan && plan.phases.length > 0;
+			const surface: PlanSurface =
+				modeState && hasPlan
+					? decidePlanSurface(modeState.mode, readPlanPanelSetting(ctx))
+					: "off";
+
+			// Tear down the surfaces we're not using so a mode switch never leaves
+			// a stale overlay or inline widget behind.
+			if (surface !== "overlay") teardownPlanOverlay();
+			if (surface !== "inline") ctx.ui.setWidget("modes-steps", undefined);
+
+			if (!plan || !hasPlan) return;
+			if (surface === "overlay") mountPlanOverlay(ctx, plan);
+			else if (surface === "inline") mountInlineWidget(ctx, plan);
 		}
 
 		/**
@@ -1416,6 +1521,10 @@ export default defineExtension(
 			const cwd = ctx.cwd ?? "";
 			ctx.ui.setFooter((tui, theme, footerData) => {
 				footerTui = tui;
+				panelTheme = theme;
+				// The TUI handle is now available; (re)mount the plan display in
+				// case the footer renders after the first updateWidget call.
+				updateWidget(ctx);
 				return {
 					invalidate() {
 						tui.requestRender();
@@ -4666,7 +4775,9 @@ export default defineExtension(
 			// Remove our custom footer so we don't leave it installed across
 			// session switches (/new, /resume, /fork).
 			if (ctx?.hasUI) ctx.ui.setFooter(undefined);
+			teardownPlanOverlay();
 			footerTui = null;
+			panelTheme = null;
 			crashSessionAccessor = null;
 			exploreOverviewService?.reset();
 			disposeDelegateAgents(ctx);
