@@ -12,7 +12,7 @@ import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 export interface BoxFooter {
 	/** Left-aligned scroll indicator (e.g. `↑2 ↓5`); shown only when overflowing. */
 	scroll?: string;
-	/** Right-aligned key hint (e.g. `^⇧O to focus`). */
+	/** Right-aligned key hint (e.g. `^⇧P to open`). */
 	hint?: string;
 }
 

@@ -65,11 +65,6 @@ export class SidebarComponent implements Component {
 		this.requestRender();
 	}
 
-	/** The plan view, so the host can route navigate-mode input to it. */
-	getPlanView(): PlanPanelComponent | null {
-		return this.planView;
-	}
-
 	/** Replace the stored Notes text; wrapped/rendered at draw time. */
 	setNotes(text: string): void {
 		this.notes = text;

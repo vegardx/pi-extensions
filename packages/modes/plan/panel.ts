@@ -9,9 +9,9 @@
  * The active phase auto-expands its `☑`/`☐` checklist beneath it. The border
  * carries no title — just the box edge.
  *
- * The overlay is non-capturing, so the editor stays typable. Focusing it
- * (via the toggle shortcut) routes input to {@link PlanPanelComponent.handleInput}
- * so ↑/↓ scroll the list; Esc/q releases focus back to the editor.
+ * The overlay is non-capturing, so the editor stays typable. It's a passive
+ * at-a-glance display; pressing the plan-view shortcut (ctrl+shift+p) opens a
+ * dedicated full-screen {@link PlanPanelComponent} for navigation.
  */
 
 import type { Theme } from "@mariozechner/pi-coding-agent";
@@ -309,8 +309,8 @@ function focusedHint(
 	driverBadges: ReadonlyMap<string, PhaseDriverBadge> | undefined,
 ): string {
 	return isPhaseAttachable(plan, selectedIndex, driverBadges)
-		? "↑↓ move · ⏎ attach agent · ^⇧O/Esc back"
-		: "↑↓ move · → expand · ^⇧O/Esc back";
+		? "↑↓ move · ⏎ attach agent · Esc close"
+		: "↑↓ move · → expand · Esc close";
 }
 
 /** Inputs for the pure body builder shared by the panel and the sidebar box. */
@@ -359,7 +359,7 @@ export function planPanelBody(plan: Plan, args: PlanBodyArgs): PlanBodyResult {
 	);
 	const hint = args.focused
 		? focusedHint(plan, args.selectedIndex, args.driverBadges)
-		: "^⇧O to focus";
+		: "^⇧P to open";
 	const scroll =
 		win.maxScroll > 0
 			? `↑${win.clampedOffset} ↓${win.maxScroll - win.clampedOffset}`
@@ -377,7 +377,7 @@ export function planPanelBody(plan: Plan, args: PlanBodyArgs): PlanBodyResult {
  * Pure panel render. Always renders the full phase list (active phase expanded)
  * with a title-less border. Returns the clamped scroll state so the component
  * (and tests) can stay in sync without side effects here. A key hint is always
- * embedded into the bottom border edge (`^⇧O to focus` when passive, navigation
+ * embedded into the bottom border edge (`^⇧P to open` when passive, navigation
  * keys when focused), so the focus toggle is discoverable without a body row.
  */
 export function renderPlanPanel(
