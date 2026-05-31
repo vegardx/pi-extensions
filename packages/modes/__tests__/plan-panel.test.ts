@@ -4,6 +4,7 @@ import {
 	isPhaseAttachable,
 	PlanPanelComponent,
 	phaseHeaderOffsets,
+	planPanelBody,
 	renderPlanPanel,
 	STATUS_GLYPH,
 	summarisePlan,
@@ -103,6 +104,83 @@ describe("summarisePlan", () => {
 			activeIndex: null,
 			activeTitle: null,
 		});
+	});
+});
+
+describe("planPanelBody", () => {
+	const plan = makePlan([
+		makePhase("One", "shipped"),
+		makePhase("Two", "active", [makeTask("a", false)]),
+		makePhase("Three", "planned"),
+	]);
+
+	it("returns border-free rows plus a passive focus hint", () => {
+		const body = planPanelBody(plan, {
+			theme,
+			contentWidth: 40,
+			maxBodyRows: 20,
+			focused: false,
+			scrollOffset: 0,
+		});
+		expect(body.rows.join("\n")).not.toMatch(/[│╭╮╰╯]/);
+		expect(body.rows.some((r) => r.includes("One"))).toBe(true);
+		expect(body.footer.hint).toContain("to focus");
+	});
+
+	it("shows navigation hints when focused", () => {
+		const body = planPanelBody(plan, {
+			theme,
+			contentWidth: 40,
+			maxBodyRows: 20,
+			focused: true,
+			scrollOffset: 0,
+			selectedIndex: 1,
+		});
+		expect(body.footer.hint).toContain("move");
+	});
+
+	it("clamps the window to maxBodyRows and reports scroll", () => {
+		const big = makePlan(
+			Array.from({ length: 30 }, (_, i) => makePhase(`P${i}`, "planned")),
+		);
+		const body = planPanelBody(big, {
+			theme,
+			contentWidth: 40,
+			maxBodyRows: 5,
+			focused: false,
+			scrollOffset: 0,
+		});
+		expect(body.rows).toHaveLength(5);
+		expect(body.maxScroll).toBeGreaterThan(0);
+		expect(body.footer.scroll).toBeDefined();
+	});
+});
+
+describe("PlanPanelComponent.renderBody", () => {
+	it("returns empty rows for a null plan", () => {
+		const c = new PlanPanelComponent({
+			plan: null,
+			theme,
+			requestRender: () => {},
+			onRequestUnfocus: () => {},
+		});
+		expect(c.renderBody(40, 10).rows).toEqual([]);
+	});
+
+	it("renders the tree without a border", () => {
+		const c = new PlanPanelComponent({
+			plan: makePlan([
+				makePhase("Alpha", "shipped"),
+				makePhase("Beta", "active"),
+			]),
+			theme,
+			requestRender: () => {},
+			onRequestUnfocus: () => {},
+		});
+		const { rows } = c.renderBody(40, 10);
+		expect(rows.join("\n")).toContain("Alpha");
+		expect(rows.join("\n")).toContain("Beta");
+		expect(rows.join("\n")).not.toMatch(/[│╭╮╰╯]/);
 	});
 });
 

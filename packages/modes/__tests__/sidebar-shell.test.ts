@@ -63,9 +63,12 @@ describe("SidebarComponent", () => {
 		expect(joined).toContain("abc12345");
 	});
 
-	it("fills Plan/Notes bodies via setBody", () => {
+	it("renders the plan view body in the Plan box, notes via setBody", () => {
 		const c = new SidebarComponent({ theme, requestRender: () => {} });
-		c.setBody("plan", [" phase 1"]);
+		const planView = {
+			renderBody: () => ({ rows: [" phase 1"], footer: {} }),
+		} as unknown as Parameters<SidebarComponent["setPlanView"]>[0];
+		c.setPlanView(planView);
 		c.setBody("notes", [" remember this"]);
 		const joined = c.render(40).join("\n");
 		expect(joined).toContain("phase 1");

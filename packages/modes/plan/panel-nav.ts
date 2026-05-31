@@ -43,7 +43,7 @@ export interface PanelNavOptions {
 	/** Live accessor for the current TUI (null before the footer mounts). */
 	getTui: () => NavTui | null;
 	/** Terminal columns below which the panel isn't rendered (don't capture). */
-	minCols: number;
+	minCols: number | (() => number);
 }
 
 /**
@@ -71,7 +71,11 @@ export class PanelNavController {
 		const panel = this.opts.getPanel();
 		const tui = this.opts.getTui();
 		if (!panel || !tui) return;
-		if (tui.terminal.columns < this.opts.minCols) return;
+		const minCols =
+			typeof this.opts.minCols === "function"
+				? this.opts.minCols()
+				: this.opts.minCols;
+		if (tui.terminal.columns < minCols) return;
 		// Guard against a double-install leaking the previous listener.
 		this.disposeListener();
 		panel.setFocused(true);

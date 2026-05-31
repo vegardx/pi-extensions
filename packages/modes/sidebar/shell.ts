@@ -1,42 +1,49 @@
 /**
  * Overlay sidebar shell — a non-capturing overlay anchored top-right that
  * stacks three bordered boxes: Info (top), Plan (middle), Notes (bottom). The
- * Info box is data-driven: the host pushes structured env facts (and, later,
- * sub-agent rows) via {@link setEnv}/{@link setAgents} and this component
- * formats them for the live width at render time, so content reflows on resize.
- * The Plan and Notes boxes take pre-rendered body lines via {@link setBody}
- * (filled by later phases). It deliberately paints over the conversation — the
- * show/hide toggle lets the user dismiss it when the full transcript is needed.
+ * Info box is data-driven: the host pushes structured env facts and sub-agent
+ * rows via {@link setEnv}/{@link setAgents} and this component formats them for
+ * the live width at render time, so content reflows on resize. The Plan box
+ * delegates to a shared {@link PlanPanelComponent} (via {@link setPlanView}) so
+ * the tree, scroll, and navigation behave identically to the standalone plan
+ * overlay. The Notes box takes pre-rendered body lines via {@link setBody}
+ * (filled by a later phase).
  *
- * Boxes are drawn with the shared {@link boxify} renderer so they match the
- * floating plan panel exactly.
+ * It deliberately paints over the conversation — the show/hide toggle lets the
+ * user dismiss it when the full transcript is needed. Boxes are drawn with the
+ * shared {@link boxify} renderer so they match the floating plan panel exactly.
  */
 
 import type { Theme } from "@mariozechner/pi-coding-agent";
 import type { Component } from "@mariozechner/pi-tui";
+import type { PlanPanelComponent } from "../plan/panel.js";
 import { type AgentRow, renderAgentRows } from "./agents.js";
 import { type BoxFooter, boxify } from "./box.js";
 import { divider, renderEnvRows, type SidebarEnv } from "./info.js";
 
-/** Pre-rendered body slots the host fills directly (Plan, Notes). */
-export type SidebarSlot = "plan" | "notes";
+/** Pre-rendered body slots the host fills directly (Notes). */
+export type SidebarSlot = "notes";
+
+/** Minimum rows the Plan box body keeps even when the viewport is tiny. */
+const MIN_PLAN_ROWS = 3;
+/** Fallback viewport height before the overlay reports its real height. */
+const DEFAULT_VIEWPORT_ROWS = 24;
 
 /**
- * The overlay Component. Holds the Info box's structured data plus the two
- * pre-rendered body slots, and renders all three boxes top-to-bottom for a
- * given width. Pure render — the host pushes data/content via the setters and
- * each one requests a re-render.
+ * The overlay Component. Holds the Info box's structured data, a shared plan
+ * view for the Plan box, and the Notes body slot; renders all three boxes
+ * top-to-bottom for a given width. The host pushes data/content via the setters
+ * and each one requests a re-render.
  */
 export class SidebarComponent implements Component {
 	private readonly theme: Theme;
 	private readonly requestRender: () => void;
 	private env: SidebarEnv | null = null;
 	private agents: AgentRow[] = [];
-	private readonly bodies: Record<SidebarSlot, string[]> = {
-		plan: [],
-		notes: [],
-	};
-	private readonly footers: Partial<Record<SidebarSlot, BoxFooter>> = {};
+	private planView: PlanPanelComponent | null = null;
+	private notesBody: string[] = [];
+	private notesFooter: BoxFooter | undefined;
+	private viewportHeight = DEFAULT_VIEWPORT_ROWS;
 
 	constructor(args: { theme: Theme; requestRender: () => void }) {
 		this.theme = args.theme;
@@ -55,36 +62,50 @@ export class SidebarComponent implements Component {
 		this.requestRender();
 	}
 
-	/** Replace a pre-rendered body slot (Plan/Notes); triggers a re-render. */
-	setBody(slot: SidebarSlot, body: string[], footer?: BoxFooter): void {
-		this.bodies[slot] = body;
-		this.footers[slot] = footer;
+	/** Attach the shared plan view that renders/navigates the Plan box. */
+	setPlanView(panel: PlanPanelComponent | null): void {
+		this.planView = panel;
 		this.requestRender();
+	}
+
+	/** The plan view, so the host can route navigate-mode input to it. */
+	getPlanView(): PlanPanelComponent | null {
+		return this.planView;
+	}
+
+	/** Replace the pre-rendered Notes body; triggers a re-render. */
+	setBody(slot: SidebarSlot, body: string[], footer?: BoxFooter): void {
+		if (slot === "notes") {
+			this.notesBody = body;
+			this.notesFooter = footer;
+		}
+		this.requestRender();
+	}
+
+	/** Overlay viewport height in rows, used to budget the Plan box window. */
+	setViewportHeight(rows: number): void {
+		this.viewportHeight = rows > 0 ? rows : DEFAULT_VIEWPORT_ROWS;
 	}
 
 	render(width: number): string[] {
 		const innerW = Math.max(1, width - 2);
-		const lines: string[] = [];
-		lines.push(...boxify(this.theme, "Info", this.infoBody(innerW), width));
-		lines.push(
-			...boxify(
-				this.theme,
-				"Plan",
-				this.bodyOr(innerW, "plan"),
-				width,
-				this.footers.plan,
-			),
+		const info = boxify(this.theme, "Info", this.infoBody(innerW), width);
+		const notes = boxify(
+			this.theme,
+			"Notes",
+			this.notesBody.length > 0 ? this.notesBody : [placeholder(this.theme)],
+			width,
+			this.notesFooter,
 		);
-		lines.push(
-			...boxify(
-				this.theme,
-				"Notes",
-				this.bodyOr(innerW, "notes"),
-				width,
-				this.footers.notes,
-			),
+
+		// The Plan box claims whatever rows remain after Info and Notes.
+		const planBudget = Math.max(
+			MIN_PLAN_ROWS,
+			this.viewportHeight - info.length - notes.length - 2,
 		);
-		return lines;
+		const plan = this.planBox(width, innerW, planBudget);
+
+		return [...info, ...plan, ...notes];
 	}
 
 	/** Theme/forced refresh hook required by the Component contract. */
@@ -96,17 +117,25 @@ export class SidebarComponent implements Component {
 	private infoBody(innerW: number): string[] {
 		const env = renderEnvRows(this.theme, this.env, innerW);
 		const agents = renderAgentRows(this.theme, this.agents, innerW);
-		if (env.length === 0 && agents.length === 0)
+		if (env.length === 0 && agents.length === 0) {
 			return [placeholder(this.theme)];
+		}
 		if (env.length > 0 && agents.length > 0) {
 			return [...env, divider(this.theme, innerW), ...agents];
 		}
 		return env.length > 0 ? env : agents;
 	}
 
-	private bodyOr(_innerW: number, slot: SidebarSlot): string[] {
-		const body = this.bodies[slot];
-		return body.length > 0 ? body : [placeholder(this.theme)];
+	/** Plan tree via the shared view, or a placeholder when there's no plan. */
+	private planBox(width: number, innerW: number, maxRows: number): string[] {
+		const view = this.planView;
+		if (view) {
+			const { rows, footer } = view.renderBody(innerW, maxRows);
+			if (rows.length > 0) {
+				return boxify(this.theme, "Plan", rows, width, footer);
+			}
+		}
+		return boxify(this.theme, "Plan", [placeholder(this.theme)], width);
 	}
 }
 
