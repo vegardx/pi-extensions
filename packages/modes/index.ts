@@ -110,7 +110,6 @@ import {
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import type { PhaseDriverBadge } from "./plan/panel.js";
 import { PlanPanelComponent } from "./plan/panel.js";
-import { PanelNavController } from "./plan/panel-nav.js";
 import {
 	renderParentIssueBody,
 	renderPhaseIssueBody,
@@ -504,9 +503,6 @@ export default defineExtension(
 		let sidebarEnabled = false;
 		// Shared plan view powering the sidebar's Plan box (created lazily on mount).
 		let sidebarPlanPanel: PlanPanelComponent | null = null;
-		// Last-resolved sidebar.minCols, so PanelNavController can gate navigate mode
-		// on the same threshold the overlay uses to auto-hide.
-		let sidebarMinColsCache = DEFAULT_SIDEBAR_MIN_COLS;
 		// Free-text Notes box content, persisted per session. Loaded lazily the
 		// first time the sidebar mounts or the editor opens; null = not yet loaded.
 		let sidebarNotes: string | null = null;
@@ -1268,21 +1264,6 @@ export default defineExtension(
 		const PLAN_PANEL_MIN_WIDTH = 40;
 		const PLAN_PANEL_MIN_COLS = 100;
 
-		// Drives panel "navigate" mode. The panel overlay is always non-capturing,
-		// so the editor keeps TUI focus the whole time; navigation is routed via a
-		// consuming input listener instead of the overlay focus machinery. Releasing
-		// the panel just disposes that listener — there is no focus to "restore", so
-		// the editor can never be left unfocused (which previously froze the UI).
-		const panelNav = new PanelNavController({
-			// When the sidebar owns the plan, route navigate-mode keys to its Plan
-			// box; otherwise drive the standalone overlay panel.
-			getPanel: () =>
-				sidebarEnabled ? (sidebar?.getPlanView() ?? null) : planPanel,
-			getTui: () => footerTui,
-			minCols: () =>
-				sidebarEnabled ? sidebarMinColsCache : PLAN_PANEL_MIN_COLS,
-		});
-
 		/** Read extensionConfig.modes.planPanel (default "auto"). */
 		function readPlanPanelSetting(ctx: ExtensionContext): PlanPanelMode {
 			const settings = readRelevantSettings(ctx.cwd);
@@ -1308,7 +1289,6 @@ export default defineExtension(
 		}
 
 		function teardownPlanOverlay(): void {
-			panelNav.release();
 			if (planPanelHandle) {
 				planPanelHandle.hide();
 				planPanelHandle = null;
@@ -1359,8 +1339,6 @@ export default defineExtension(
 				notify(ctx, "cannot switch sessions from here", "warning");
 				return;
 			}
-			// Drop panel focus before yielding to the confirm dialog / switch.
-			panelNav.release();
 			const ok = await ctx.ui.confirm(
 				"Attach to phase agent?",
 				`Switch this TUI into the session driving "${phase.title}"? Your current session stays on disk.`,
@@ -1388,9 +1366,7 @@ export default defineExtension(
 				plan,
 				theme: panelTheme,
 				requestRender: () => tui.requestRender(),
-				onRequestUnfocus: () => {
-					panelNav.release();
-				},
+				onRequestUnfocus: () => {},
 				onAttachPhase: (phaseId) => {
 					const attachCtx = planPanelCtx;
 					if (attachCtx) void attachToPhase(attachCtx, phaseId);
@@ -1412,6 +1388,43 @@ export default defineExtension(
 			});
 		}
 
+		/**
+		 * Open the plan in a dedicated, full-screen overlay that captures input —
+		 * the way the notes editor takes over the screen. Reuses
+		 * {@link PlanPanelComponent} (focused), so navigation/scroll/expand/attach
+		 * behave exactly like the passive panel, just roomy. Esc/q closes it.
+		 */
+		async function openPlanView(ctx: ExtensionContext): Promise<void> {
+			if (!ctx.hasUI) return;
+			const plan = currentPlan();
+			if (!plan || plan.phases.length === 0) {
+				notify(ctx, "no active plan", "info");
+				return;
+			}
+			await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+				const panel = new PlanPanelComponent({
+					plan,
+					theme,
+					requestRender: () => tui.requestRender(),
+					onRequestUnfocus: () => done(),
+					onAttachPhase: (phaseId) => {
+						done();
+						void attachToPhase(ctx, phaseId);
+					},
+				});
+				panel.setDriverBadges(
+					computeDriverBadges(plan, ctx.sessionManager.getSessionId()),
+				);
+				panel.setViewportHeight(tui.terminal.rows);
+				panel.setFocused(true);
+				return {
+					render: (width) => panel.render(width),
+					invalidate: () => panel.invalidate(),
+					handleInput: (data) => panel.handleInput(data),
+				};
+			});
+		}
+
 		/** Read extensionConfig.modes["sidebar.minCols"] (default 120). */
 		function readSidebarMinCols(ctx: ExtensionContext): number {
 			// Env override wins (handy for quick tuning without editing settings).
@@ -1427,10 +1440,9 @@ export default defineExtension(
 			const nested = extCfg?.sidebar as Record<string, unknown> | undefined;
 			const raw = extCfg?.["sidebar.minCols"] ?? nested?.minCols;
 			const n = typeof raw === "number" ? raw : Number(raw);
-			const resolved =
-				Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SIDEBAR_MIN_COLS;
-			sidebarMinColsCache = resolved;
-			return resolved;
+			return Number.isFinite(n) && n > 0
+				? Math.floor(n)
+				: DEFAULT_SIDEBAR_MIN_COLS;
 		}
 
 		function teardownSidebar(): void {
@@ -1463,9 +1475,7 @@ export default defineExtension(
 				plan: currentPlan(),
 				theme,
 				requestRender: () => tui.requestRender(),
-				onRequestUnfocus: () => {
-					panelNav.release();
-				},
+				onRequestUnfocus: () => {},
 				onAttachPhase: (phaseId) => void attachToPhase(ctx, phaseId),
 			});
 			sidebarPlanPanel = planView;
@@ -1623,9 +1633,6 @@ export default defineExtension(
 		/** Flip the per-session sidebar toggle and reconcile overlays. */
 		function toggleSidebar(ctx: ExtensionContext): void {
 			sidebarEnabled = !sidebarEnabled;
-			// Drop navigate mode before swapping surfaces so input isn't routed to a
-			// panel that's about to be torn down.
-			panelNav.release();
 			updateWidget(ctx);
 			// Reconcile the below-editor delegate widgets: hidden while the sidebar
 			// shows the same sub-agent data, restored when it's hidden again.
@@ -6071,18 +6078,17 @@ export default defineExtension(
 			},
 		});
 
-		// ---- Plan-panel focus shortcut ----------------------------------------
+		// ---- Plan view shortcut -----------------------------------------------
 
 		/**
-		 * Toggle focus on the always-on plan panel. Passive by default (the editor
-		 * keeps focus); focusing routes navigation to the panel: ↑/↓ move the phase
-		 * cursor (auto-scrolling to keep it visible), →/⏎/Space expand the selected
-		 * phase's checklist, ← collapses it, PgUp/PgDn scroll, Esc/q releases.
+		 * Open the plan in a dedicated full-screen view (like the notes editor).
+		 * Navigate with ↑/↓, →/⏎/Space expand the selected phase's checklist, ←
+		 * collapses it, PgUp/PgDn scroll, Esc/q closes.
 		 */
-		pi.registerShortcut("ctrl+shift+o", {
-			description: "Plan panel: focus to navigate / release",
-			handler: async () => {
-				panelNav.toggle();
+		pi.registerShortcut("ctrl+shift+p", {
+			description: "Open the plan view",
+			handler: async (ctx) => {
+				await openPlanView(ctx);
 			},
 		});
 

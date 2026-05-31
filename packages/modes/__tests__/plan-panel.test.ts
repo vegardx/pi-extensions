@@ -124,7 +124,7 @@ describe("planPanelBody", () => {
 		});
 		expect(body.rows.join("\n")).not.toMatch(/[│╭╮╰╯]/);
 		expect(body.rows.some((r) => r.includes("One"))).toBe(true);
-		expect(body.footer.hint).toContain("to focus");
+		expect(body.footer.hint).toContain("to open");
 	});
 
 	it("shows navigation hints when focused", () => {
@@ -432,7 +432,7 @@ describe("renderPlanPanel", () => {
 		expect(joined).toContain("☑ task 0");
 		// The focus hint is always discoverable — embedded in the bottom border
 		// even when the plan fits and the panel is passive.
-		expect(r.lines.at(-1)).toContain("^⇧O to focus");
+		expect(r.lines.at(-1)).toContain("^⇧P to open");
 		// No scroll indicator when nothing overflows.
 		expect(r.lines.at(-1)).not.toContain("↑");
 	});
@@ -447,7 +447,7 @@ describe("renderPlanPanel", () => {
 		});
 		expect(r.maxScroll).toBeGreaterThan(0);
 		const bottom = r.lines.at(-1) ?? "";
-		expect(bottom).toContain("^⇧O to focus");
+		expect(bottom).toContain("^⇧P to open");
 		// Scroll indicator rides the bottom-left of the same edge when overflowing.
 		expect(bottom).toContain("↑");
 		expect(bottom).toContain("↓");
@@ -464,7 +464,7 @@ describe("renderPlanPanel", () => {
 		expect(r.maxScroll).toBeGreaterThan(0);
 		expect(r.scrollOffset).toBe(r.maxScroll);
 		const joined = r.lines.join("\n");
-		expect(joined).toContain("↑↓ move · → expand · ^⇧O/Esc back");
+		expect(joined).toContain("↑↓ move · → expand · Esc close");
 	});
 
 	it("swaps in the attach hint when the cursor sits on a peer phase", () => {
