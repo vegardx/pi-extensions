@@ -60,6 +60,7 @@ import {
 } from "./helpers.js";
 import {
 	diagnoseAgentEndCompletion,
+	diagnoseCommitAbort,
 	diagnoseResumeAfterCompaction,
 } from "./plan/auto-loop-gates.js";
 import {
@@ -1944,7 +1945,13 @@ export default defineExtension(
 		 *
 		 * Sequencing notes:
 		 *   - `runCommit({ nonInteractive: true })` stages, commits, and
-		 *     pushes. It does NOT manage the PR — that's `/ship`'s job.
+		 *     pushes. It does NOT manage the PR — that's `/ship`'s job. If it
+		 *     aborts with a "nothing new to commit" reason (clean-tree,
+		 *     no-commits, agent-no-pr-output — e.g. the agent committed/
+		 *     pushed/PR'd the phase out-of-band), we still proceed to ship;
+		 *     `diagnoseCommitAbort` only halts on genuine blockers. Letting
+		 *     doShip arbitrate is what keeps a bypassed commit from killing
+		 *     the whole auto run.
 		 *   - `doShip` then pushes again (idempotent fast-forward), opens
 		 *     the PR, transitions the phase to `in-review`, and — if this
 		 *     was the last actionable phase — fires the existing
@@ -1972,13 +1979,24 @@ export default defineExtension(
 				nonInteractive: true,
 				mode: "auto",
 			});
-			// `clean-tree` means the agent finished the phase without staging
-			// any changes (e.g. tests-only phase whose work happened in earlier
-			// commits). That's still a valid ship, so we let it through.
-			if (!commitResult.ran && commitResult.abortReason !== "clean-tree") {
-				throw new Error(
-					`commit aborted (${commitResult.abortReason ?? "unknown"})`,
+			// Decide whether the commit outcome is ship-eligible. "Nothing new
+			// to commit" reasons (clean-tree, no-commits, agent-no-pr-output)
+			// route into doShip as the arbiter rather than throwing: the
+			// agent may have committed/pushed/PR'd the phase out-of-band, and
+			// doShip reconciles the existing PR (or pushes + creates one). A
+			// fatal throw here would drop the loop into the agent_end picker
+			// and halt auto progression — see diagnoseCommitAbort. Genuine
+			// blockers halt cleanly (return, not throw) with an actionable
+			// message; the post-ship `status === "active"` guard below still
+			// catches the case where doShip itself couldn't establish a PR.
+			const commitDecision = diagnoseCommitAbort(commitResult);
+			if (commitDecision.action === "halt") {
+				notify(
+					ctx,
+					`auto: commit step blocked (${commitDecision.reason}) — resolve and run /ship.`,
+					"warning",
 				);
+				return;
 			}
 
 			notify(ctx, `auto: shipping Phase \`${phaseLabel}\`…`, "info");
