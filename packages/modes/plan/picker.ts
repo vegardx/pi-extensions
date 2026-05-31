@@ -221,7 +221,7 @@ export type PickerView =
 	| {
 			action: "show";
 			title: string;
-			options: [string, string, string, string];
+			options: [string, string, string, string, string];
 			/**
 			 * The exact label string used for the ask option in `options`.
 			 * Returned alongside so the caller can dispatch by identity
@@ -231,7 +231,16 @@ export type PickerView =
 			askLabel: string;
 			/** Companion to {@link askLabel} for the auto option. */
 			autoLabel: string;
+			/** Companion for the on-demand scrutinize option. */
+			scrutinizeLabel: string;
 	  };
+
+/**
+ * Label for the on-demand "scrutinize this plan" picker option. Stable so
+ * `runPicker` can dispatch by identity. Replaces the old always-on
+ * `scrutinize.enable` gate: scrutiny now runs only when the user picks it.
+ */
+export const SCRUTINIZE_LABEL = "🔍 Scrutinize plan — find gaps & risks";
 
 export function planPickerView(
 	plan: Plan | null,
@@ -255,11 +264,13 @@ export function planPickerView(
 		options: [
 			implementOptions[0],
 			implementOptions[1],
+			SCRUTINIZE_LABEL,
 			"Park — create GitHub tracking issue",
 			"Continue discussing — stay in plan mode",
 		],
 		askLabel: copy.implementAskLabel,
 		autoLabel: copy.implementAutoLabel,
+		scrutinizeLabel: SCRUTINIZE_LABEL,
 	};
 }
 

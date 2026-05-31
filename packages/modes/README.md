@@ -14,7 +14,7 @@ Permission-mode cycle with phase/task plan model and worktree-bound execution.
 Current mode is shown in the footer (`hack` renders red — no safety net; `ask` renders green — supervised; `auto` renders accent). **Shift+Tab** cycles `hack → plan → ask → auto → hack`. The cycle adds structure step by step, then drops it again.
 
 - `hack → plan`: prompts for handling carried-over context (keep / lossy-compact the active phase). Headless skips the prompt and silently keeps context.
-- `plan → ask`: opens the picker (Implement (auto) / Implement (ask) / Park / Continue discussing) when a plan is in flight; otherwise just flips. The picker forces an explicit `/implement` so you don't stumble into execution with stale plan text.
+- `plan → ask`: opens the picker (Implement (auto) / Implement (ask) / Scrutinize plan / Park / Continue discussing) when a plan is in flight; otherwise just flips. The picker forces an explicit `/implement` so you don't stumble into execution with stale plan text.
 - `ask → auto`: flips silently — going more permissive, context flows through.
 - `auto → hack`: flips silently — going more permissive, context flows through.
 
@@ -48,7 +48,7 @@ stateDiagram-v2
 Two edges open a picker; everything else flips silently — including `/implement`, which starts execution with no confirmation step:
 
 - `hack → plan` (Shift+Tab) — carry-over context: keep or lossy-compact the active phase. Skipped headless.
-- `plan → ask` (Shift+Tab, when a plan is in flight) — Implement (auto) / Implement (ask) / Park / Continue discussing.
+- `plan → ask` (Shift+Tab, when a plan is in flight) — Implement (auto) / Implement (ask) / Scrutinize plan / Park / Continue discussing.
 
 Session-restore boundaries (full table under [Session model](#session-model)):
 
@@ -77,6 +77,15 @@ When you commit to a plan via the picker (Shift+Tab plan→ask) or `/implement`,
 `extensionConfig.modes.implement.default` (default `auto`) controls which option is highlighted first — set it to `ask` if you prefer human-in-the-loop by default.
 
 When `/implement` is invoked from `ask` or `auto` mode it preserves that mode rather than reading the setting. This means a scripted `ask → /implement` flow stays in ask without any config change. `hack` mode maps to `auto` (ImplementMode excludes hack). Use `/hack`, `/ask`, or `/auto` to flip modes without going through the implement flow.
+
+### Scrutinizing a plan
+
+Before committing to a plan you can run a one-shot sub-agent that reads it and surfaces gaps, risks, and missing tasks. It runs **on demand only** — there's no always-on toggle (the secondary-heavy model adds ~20–40s):
+
+- **`/scrutinize`** — run it any time in plan mode while you iterate.
+- **Scrutinize plan** — the same flow as a picker option when you Shift+Tab plan→ask.
+
+Findings are shown in a dialog; choose **Apply findings to plan** to send them back as a planning follow-up (the agent revises the plan and the picker re-arms), or **Dismiss** to carry on.
 
 ### End-of-plan PR sweep
 

@@ -402,12 +402,6 @@ export default defineExtension(
 				doc: "Deadline for a single mid-phase compaction. pi's compaction is fire-and-forget; if its summariser stalls, the turn_end hook would await forever and wedge the agent 'working' with no way to interrupt. On timeout modes stops awaiting, warns, and lets pi auto-compaction handle the next overflow. Default 90000.",
 			},
 			{
-				key: "scrutinize.enable",
-				type: "boolean",
-				default: false,
-				doc: "Run a plan-scrutinizer sub-agent before the implement picker. Finds gaps, risks, and missing tasks. Uses backgroundModels.secondary.heavy (falls back to primary.heavy then session model). Off by default — adds ~20–40s latency.",
-			},
-			{
 				key: "mode.default",
 				type: "enum",
 				enumValues: ALL_MODES,
@@ -1709,6 +1703,15 @@ export default defineExtension(
 				notify(ctx, "staying in plan mode", "info");
 				return;
 			}
+			if (choice === view.scrutinizeLabel) {
+				// On-demand scrutiny from the picker. If the user applies findings
+				// we trigger a planning turn (agent_end re-arms the picker); if not
+				// (no findings / dismissed / error) we re-show the picker so they
+				// can still implement/park/continue.
+				const applied = await runScrutiny(ctx);
+				if (!applied) return runPicker(ctx);
+				return;
+			}
 			if (choice.startsWith("Park")) {
 				await doPark(ctx);
 			} else {
@@ -1760,52 +1763,51 @@ export default defineExtension(
 		}
 
 		/**
-		 * Run the plan scrutinizer (if enabled) then show the picker.
+		 * Run the plan scrutinizer on demand and surface findings.
 		 *
-		 * Called from `agent_end` via `runDetached`. Headless sessions skip the
-		 * scrutinizer — there is no UI to surface findings through.
+		 * Shared by the picker's "Scrutinize plan" option and the
+		 * `/scrutinize` command. Replaces the old always-on
+		 * `scrutinize.enable` gate — scrutiny now runs only when the user
+		 * explicitly asks, so it never taxes the normal plan→implement flow.
+		 *
+		 * Returns `true` when findings were applied (a planning turn was
+		 * triggered, so callers should let `agent_end` re-arm the picker) and
+		 * `false` otherwise (no plan / no findings / dismissed / error — the
+		 * caller decides what to show next). Headless sessions can't surface a
+		 * findings dialog, so they no-op and return `false`.
 		 */
-		async function runPickerMaybeScrutinize(
-			ctx: ExtensionContext,
-		): Promise<void> {
-			const settings = readRelevantSettings(ctx.cwd);
-			const scrutinizeCfg = settings.extensionConfig?.[EXT_ID]?.scrutinize;
-			const scrutinizeEnabled =
-				ctx.hasUI &&
-				scrutinizeCfg !== null &&
-				typeof scrutinizeCfg === "object" &&
-				!Array.isArray(scrutinizeCfg) &&
-				(scrutinizeCfg as Record<string, unknown>).enable === true;
-
-			if (!scrutinizeEnabled) {
-				return runPicker(ctx);
+		async function runScrutiny(ctx: ExtensionContext): Promise<boolean> {
+			if (!ctx.hasUI) {
+				notify(ctx, "scrutinize needs an interactive session", "warning");
+				return false;
 			}
-
 			const plan = currentPlan();
-			if (!plan) return runPicker(ctx);
+			if (!plan) {
+				notify(ctx, "no active plan to scrutinize", "info");
+				return false;
+			}
 
 			notify(ctx, "🔍 Scrutinizing plan…", "info");
 			const result = await scrutinizePlan(plan, ctx);
 
 			if (result.error) {
-				// Non-fatal — log and proceed to picker.
 				notify(ctx, `scrutinize error: ${result.error}`, "warning");
-				return runPicker(ctx);
+				return false;
 			}
 
 			if (result.findings.length === 0) {
-				return runPicker(ctx);
+				notify(ctx, "✅ plan scrutiny found no gaps or risks", "info");
+				return false;
 			}
 
-			// Surface findings to the user.
 			const choice = await ctx.ui.select(formatFindingsTitle(result.findings), [
 				"Apply findings to plan",
-				"Dismiss — proceed to picker",
+				"Dismiss",
 			]);
 
 			if (choice === "Apply findings to plan") {
-				// Send findings as a follow-up so the agent incorporates them
-				// in the next planning turn. Reset stage so the picker re-arms.
+				// Send findings as a follow-up so the agent incorporates them in
+				// the next planning turn. Reset stage so the picker re-arms.
 				pi.sendMessage(
 					{
 						customType: EXT_ID,
@@ -1819,11 +1821,10 @@ export default defineExtension(
 					modeState.stage = "planning";
 					persist();
 				}
-				return;
+				return true;
 			}
 
-			// "Dismiss — proceed to picker"
-			return runPicker(ctx);
+			return false;
 		}
 
 		/**
@@ -5138,7 +5139,7 @@ export default defineExtension(
 				modeState.stage = "awaiting-choice";
 				persist();
 				clearPlanTurnSnapshot();
-				runDetached("plan picker", ctx, () => runPickerMaybeScrutinize(ctx));
+				runDetached("plan picker", ctx, () => runPicker(ctx));
 				return;
 			}
 
@@ -5906,6 +5907,20 @@ export default defineExtension(
 					return;
 				}
 				return doPark(ctx);
+			},
+		});
+
+		pi.registerCommand("scrutinize", {
+			description:
+				"Run a sub-agent over the current plan to surface gaps, risks, and " +
+				"missing tasks before you implement. Review findings and optionally " +
+				"apply them as a planning follow-up.",
+			handler: async (_args, ctx) => {
+				if (modeState?.mode !== "plan") {
+					notify(ctx, "/scrutinize is only available in plan mode", "warning");
+					return;
+				}
+				await runScrutiny(ctx);
 			},
 		});
 
