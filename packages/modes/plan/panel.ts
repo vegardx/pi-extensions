@@ -249,6 +249,12 @@ export interface PlanPanelRenderState {
 	/** Terminal height in rows, used to size the scroll viewport. */
 	termHeight: number;
 	selfSessionId?: string | null;
+	/**
+	 * Controls which footer hint to show when expanded but not focused.
+	 * `cycle` (default): next ^⇧O focuses for scroll.
+	 * `focus`: next ^⇧O collapses.
+	 */
+	toggleMode?: "cycle" | "focus";
 }
 
 export interface PlanPanelRenderResult {
@@ -292,7 +298,9 @@ export function renderPlanPanel(
 
 	const hint = state.focused
 		? "↑↓ scroll · Esc back"
-		: "^⇧O scroll · again closes";
+		: state.toggleMode === "focus"
+			? "^⇧O closes"
+			: "^⇧O scroll · again closes";
 	const body = [...win.rows, footerLine(theme, win, hint, innerW)];
 	const title = state.focused ? "Plan · scroll" : "Plan";
 
@@ -322,6 +330,7 @@ export class PlanPanelComponent implements Component {
 	focused = false;
 	scrollOffset = 0;
 	private termHeight = 24;
+	private toggleMode: "cycle" | "focus" = "cycle";
 	private maxScroll = 0;
 	private pageRows = 5;
 
@@ -359,6 +368,10 @@ export class PlanPanelComponent implements Component {
 		this.requestRender();
 	}
 
+	setToggleMode(mode: "cycle" | "focus"): void {
+		this.toggleMode = mode;
+	}
+
 	render(width: number): string[] {
 		if (!this.plan || this.plan.phases.length === 0) return [];
 		const result = renderPlanPanel(this.plan, {
@@ -369,6 +382,7 @@ export class PlanPanelComponent implements Component {
 			scrollOffset: this.scrollOffset,
 			termHeight: this.termHeight,
 			selfSessionId: this.selfSessionId,
+			toggleMode: this.toggleMode,
 		});
 		this.scrollOffset = result.scrollOffset;
 		this.maxScroll = result.maxScroll;

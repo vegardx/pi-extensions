@@ -1308,7 +1308,7 @@ export default defineExtension(
 				nonCapturing: true,
 				anchor: "top-right",
 				width: PLAN_PANEL_WIDTH,
-				maxHeight: "70%",
+				maxHeight: "100%",
 				margin: { top: 1, right: 1 },
 				visible: (w, h) => {
 					panel.setViewportHeight(h);
@@ -5774,6 +5774,7 @@ export default defineExtension(
 				if (!panel || !handle) return;
 
 				const mode = readPlanPanelToggleSetting(ctx);
+				panel.setToggleMode(mode);
 				if (!panel.expanded) {
 					panel.setExpanded(true);
 					if (mode === "focus") {
