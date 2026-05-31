@@ -569,9 +569,10 @@ by `planPanel` (default `auto`):
   for the local session, `◆ peer·live` for another live session, and
   `◆ peer·stale` when that session's claim has gone quiet.
 - The border carries **no title** — just the box edge.
-- It's non-capturing, so you keep typing while it's visible, and it
-  auto-hides on terminals narrower than 100 columns so it never collides
-  with the chat column.
+- It's non-capturing, so you keep typing while it's visible. Its width
+  tracks ~33% of the terminal (floored at 40 columns) so it stays
+  readable on wide screens, and it auto-hides on terminals narrower than
+  100 columns so it never collides with the chat column.
 
 Set `planPanel` to `off` to hide it; `overlay` is equivalent to `auto`.
 
@@ -626,7 +627,7 @@ watch or steer them.
 | `compaction.planMaxContextTokens` | unset | Optional footer cap (denominator) used while in plan mode. Leave unset to use the active model's `contextWindow`. Plan mode is exempt from mid-phase compaction. |
 | `compaction.phaseTokens` | `10000` | Safety `maxTokens` cap for one phase-boundary summary. `summaryTokens` is the cumulative soft budget; this only catches a runaway single summary. |
 | `park.githubProject` | unset | GitHub Project to assign issues to when `/park` creates them. Leave unset to skip assignment. |
-| `planPanel` | `"auto"` | How the plan is displayed. `auto` (and `overlay`): an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded, in every mode. `off` hides it. Auto-hides below 100 columns. |
+| `planPanel` | `"auto"` | How the plan is displayed. `auto` (and `overlay`): an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded, in every mode. `off` hides it. Width is ~33% of the terminal (min 40 columns); auto-hides below 100 columns. |
 | `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. |
 | `delegate.maxAnswerChars` | `6000` | Safety backstop on a delegated answer's size before it crosses back into the caller's context. Subagents are still prompted to be concise and complete. |
 | `delegate.maxConcurrent` | `10` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel. Excess calls block until a slot frees. |

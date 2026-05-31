@@ -1216,9 +1216,12 @@ export default defineExtension(
 		type PlanSurface = "overlay" | "off";
 		type PlanPanelMode = "auto" | "overlay" | "off";
 
-		// Overlay geometry. Hidden on narrow terminals so it never collides with
-		// the chat column; there is no plan surface at all below this width.
-		const PLAN_PANEL_WIDTH = 40;
+		// Overlay geometry. Width tracks a fraction of the terminal so the panel
+		// is readable on wide terminals, with a floor so it never gets cramped.
+		// Hidden on narrow terminals so it never collides with the chat column;
+		// there is no plan surface at all below PLAN_PANEL_MIN_COLS.
+		const PLAN_PANEL_WIDTH_PCT = "33%";
+		const PLAN_PANEL_MIN_WIDTH = 40;
 		const PLAN_PANEL_MIN_COLS = 100;
 
 		/** Read extensionConfig.modes.planPanel (default "auto"). */
@@ -1341,7 +1344,8 @@ export default defineExtension(
 			planPanelHandle = tui.showOverlay(panel, {
 				nonCapturing: true,
 				anchor: "top-right",
-				width: PLAN_PANEL_WIDTH,
+				width: PLAN_PANEL_WIDTH_PCT,
+				minWidth: PLAN_PANEL_MIN_WIDTH,
 				maxHeight: "100%",
 				margin: { top: 1, right: 1 },
 				visible: (w, h) => {
