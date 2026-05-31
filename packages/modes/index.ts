@@ -185,6 +185,7 @@ import {
 } from "./plan/worktree.js";
 import type { AgentRow } from "./sidebar/agents.js";
 import type { SidebarEnv } from "./sidebar/info.js";
+import { loadNotes, saveNotes } from "./sidebar/notes-store.js";
 import { SidebarComponent } from "./sidebar/shell.js";
 
 const EXT_ID = "modes";
@@ -506,6 +507,9 @@ export default defineExtension(
 		// Last-resolved sidebar.minCols, so PanelNavController can gate navigate mode
 		// on the same threshold the overlay uses to auto-hide.
 		let sidebarMinColsCache = DEFAULT_SIDEBAR_MIN_COLS;
+		// Free-text Notes box content, persisted per session. Loaded lazily the
+		// first time the sidebar mounts or the editor opens; null = not yet loaded.
+		let sidebarNotes: string | null = null;
 		// Live `/implement --fanout` fleet, captured so the sidebar Info box can
 		// list its workers. Set when the orchestrator starts, cleared when it ends.
 		let activeFleet: FleetManager | null = null;
@@ -1573,6 +1577,7 @@ export default defineExtension(
 			if (!sidebar || !ctx.hasUI) return;
 			sidebar.setEnv(buildSidebarEnv(ctx));
 			sidebar.setAgents(buildSidebarAgents(ctx));
+			sidebar.setNotes(loadSidebarNotes(ctx));
 			// Feed the Plan box the live plan + driver badges (mirrors mountPlanOverlay).
 			if (sidebarPlanPanel) {
 				const plan = currentPlan();
@@ -1583,6 +1588,28 @@ export default defineExtension(
 					);
 				}
 			}
+		}
+
+		/** Lazily read the per-session notes from disk, caching in-memory. */
+		function loadSidebarNotes(ctx: ExtensionContext): string {
+			if (sidebarNotes === null) {
+				const sm = ctx.sessionManager;
+				sidebarNotes = loadNotes(sm.getSessionDir(), sm.getSessionId());
+			}
+			return sidebarNotes;
+		}
+
+		/** Open the host editor on the current notes, then persist + refresh. */
+		async function editSidebarNotes(ctx: ExtensionContext): Promise<void> {
+			if (!ctx.hasUI) return;
+			const current = loadSidebarNotes(ctx);
+			const edited = await ctx.ui.editor("Notes", current);
+			// Editor cancelled (Esc) returns undefined — keep the existing notes.
+			if (edited === undefined) return;
+			sidebarNotes = edited;
+			const sm = ctx.sessionManager;
+			saveNotes(sm.getSessionDir(), sm.getSessionId(), edited);
+			sidebar?.setNotes(edited);
 		}
 
 		/** Flip the per-session sidebar toggle and reconcile overlays. */
@@ -6043,6 +6070,13 @@ export default defineExtension(
 			},
 		});
 
+		pi.registerShortcut("ctrl+shift+n", {
+			description: "Edit the sidebar Notes box",
+			handler: async (ctx) => {
+				await editSidebarNotes(ctx);
+			},
+		});
+
 		// ---- Commands ---------------------------------------------------------
 
 		pi.registerCommand("sidebar", {
@@ -6050,6 +6084,14 @@ export default defineExtension(
 				"Show/hide the overlay sidebar (Info/Plan/Notes). Alias: ctrl+b.",
 			handler: async (_args, ctx) => {
 				toggleSidebar(ctx);
+			},
+		});
+
+		pi.registerCommand("notes", {
+			description:
+				"Edit the sidebar Notes box (per-session free text). Alias: ctrl+shift+n.",
+			handler: async (_args, ctx) => {
+				await editSidebarNotes(ctx);
 			},
 		});
 

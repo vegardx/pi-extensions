@@ -20,9 +20,7 @@ import type { PlanPanelComponent } from "../plan/panel.js";
 import { type AgentRow, renderAgentRows } from "./agents.js";
 import { type BoxFooter, boxify } from "./box.js";
 import { divider, renderEnvRows, type SidebarEnv } from "./info.js";
-
-/** Pre-rendered body slots the host fills directly (Notes). */
-export type SidebarSlot = "notes";
+import { NOTES_EDIT_HINT, renderNotesBody } from "./notes.js";
 
 /** Minimum rows the Plan box body keeps even when the viewport is tiny. */
 const MIN_PLAN_ROWS = 3;
@@ -31,7 +29,7 @@ const DEFAULT_VIEWPORT_ROWS = 24;
 
 /**
  * The overlay Component. Holds the Info box's structured data, a shared plan
- * view for the Plan box, and the Notes body slot; renders all three boxes
+ * view for the Plan box, and the stored Notes text; renders all three boxes
  * top-to-bottom for a given width. The host pushes data/content via the setters
  * and each one requests a re-render.
  */
@@ -41,8 +39,7 @@ export class SidebarComponent implements Component {
 	private env: SidebarEnv | null = null;
 	private agents: AgentRow[] = [];
 	private planView: PlanPanelComponent | null = null;
-	private notesBody: string[] = [];
-	private notesFooter: BoxFooter | undefined;
+	private notes = "";
 	private viewportHeight = DEFAULT_VIEWPORT_ROWS;
 
 	constructor(args: { theme: Theme; requestRender: () => void }) {
@@ -73,12 +70,9 @@ export class SidebarComponent implements Component {
 		return this.planView;
 	}
 
-	/** Replace the pre-rendered Notes body; triggers a re-render. */
-	setBody(slot: SidebarSlot, body: string[], footer?: BoxFooter): void {
-		if (slot === "notes") {
-			this.notesBody = body;
-			this.notesFooter = footer;
-		}
+	/** Replace the stored Notes text; wrapped/rendered at draw time. */
+	setNotes(text: string): void {
+		this.notes = text;
 		this.requestRender();
 	}
 
@@ -90,12 +84,14 @@ export class SidebarComponent implements Component {
 	render(width: number): string[] {
 		const innerW = Math.max(1, width - 2);
 		const info = boxify(this.theme, "Info", this.infoBody(innerW), width);
+		const notesFooter: BoxFooter | undefined =
+			this.notes.trim() === "" ? undefined : { hint: NOTES_EDIT_HINT };
 		const notes = boxify(
 			this.theme,
 			"Notes",
-			this.notesBody.length > 0 ? this.notesBody : [placeholder(this.theme)],
+			renderNotesBody(this.theme, this.notes, innerW),
 			width,
-			this.notesFooter,
+			notesFooter,
 		);
 
 		// The Plan box claims whatever rows remain after Info and Notes.
