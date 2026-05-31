@@ -171,3 +171,91 @@ export function diagnoseResumeAfterCompaction(
 	}
 	return { resume: true };
 }
+
+/**
+ * Abort reasons the non-interactive `/commit` step can report. Mirrors
+ * the `RunCommitResult.abortReason` union in `pi-ext-commit/core`. Kept
+ * as a local copy so this pure module stays self-contained (no
+ * cross-extension value import) and testable in isolation.
+ */
+export type CommitAbortReason =
+	| "not-git"
+	| "clean-tree"
+	| "no-branch"
+	| "unsafe-branch"
+	| "user-cancelled"
+	| "deferred-to-review"
+	| "no-commits"
+	| "agent-no-pr-output";
+
+export interface CommitAbortInput {
+	/** Whether `/commit` actually committed (and pushed). */
+	ran: boolean;
+	/** Set only when `ran === false`. */
+	abortReason?: CommitAbortReason;
+}
+
+export type CommitAbortDecision =
+	| { action: "ship" }
+	| { action: "halt"; reason: string };
+
+/**
+ * Decide what the auto-loop should do after the per-phase commit step.
+ *
+ * The historical guard threw on *any* abort except `clean-tree`, which
+ * dropped the loop into the agent_end fallback picker and halted auto
+ * progression. The bug: when the agent committed/pushed/PR'd a phase
+ * out-of-band, the non-interactive `/commit` legitimately had nothing
+ * new to do and reported `no-commits` (HEAD never advanced) — a
+ * non-fatal "nothing to commit" that nonetheless killed the run.
+ *
+ * Fix: treat every "nothing new to commit" outcome as ship-eligible and
+ * let `doShip` be the arbiter. `doShip` already reconciles an existing
+ * out-of-band PR (probe by branch) or pushes + creates one, and the
+ * caller's post-ship `status === "active"` guard catches the case where
+ * shipping genuinely couldn't establish a PR. Only abort reasons that
+ * shipping cannot recover from halt the loop.
+ */
+export function diagnoseCommitAbort(
+	input: CommitAbortInput,
+): CommitAbortDecision {
+	// A real commit happened — proceed to ship as usual.
+	if (input.ran) return { action: "ship" };
+
+	switch (input.abortReason) {
+		// No staged changes — tests-only phase, or work landed in earlier
+		// commits. Always shippable (historical whitelisted behaviour).
+		case "clean-tree":
+		// HEAD didn't advance: the phase was already committed (and likely
+		// pushed/PR'd) out-of-band. doShip reconciles the existing PR or
+		// pushes + creates one. THIS is the bypass-recovery path.
+		case "no-commits":
+		// Commit succeeded but the agent never emitted the PR sentinels;
+		// the PR layer is doShip's job anyway, so ship it.
+		case "agent-no-pr-output":
+			return { action: "ship" };
+
+		// Genuine blockers — shipping cannot recover. Halt with a reason.
+		case "not-git":
+			return { action: "halt", reason: "not inside a git repository" };
+		case "no-branch":
+			return {
+				action: "halt",
+				reason: "could not resolve current branch (detached HEAD?)",
+			};
+		case "unsafe-branch":
+			return {
+				action: "halt",
+				reason: "unsafe branch (default branch or bad name) — branch first",
+			};
+		case "user-cancelled":
+			return { action: "halt", reason: "commit was cancelled" };
+		case "deferred-to-review":
+			return { action: "halt", reason: "commit deferred to /review" };
+		default:
+			return {
+				action: "halt",
+				reason: `commit aborted (${input.abortReason ?? "unknown"})`,
+			};
+	}
+}

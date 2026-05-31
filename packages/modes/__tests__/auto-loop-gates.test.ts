@@ -10,6 +10,7 @@ import {
 	type AgentEndCompletionInput,
 	type CompactionResumeDecision,
 	diagnoseAgentEndCompletion,
+	diagnoseCommitAbort,
 	diagnoseResumeAfterCompaction,
 } from "../plan/auto-loop-gates.js";
 import { shouldResumeAfterCompaction } from "../plan/compaction.js";
@@ -288,5 +289,51 @@ describe("no-tasks gate sub-cases — discriminating predicates", () => {
 			gate: "no-tasks",
 			diagnostic: true,
 		});
+	});
+});
+
+// ---- diagnoseCommitAbort ------------------------------------------------
+
+describe("diagnoseCommitAbort", () => {
+	it("ships when a real commit happened", () => {
+		expect(diagnoseCommitAbort({ ran: true })).toEqual({ action: "ship" });
+	});
+
+	it("ships on clean-tree (tests-only / no staged changes)", () => {
+		expect(
+			diagnoseCommitAbort({ ran: false, abortReason: "clean-tree" }),
+		).toEqual({ action: "ship" });
+	});
+
+	// Regression: the bypassed-ship bug. The agent committed/pushed/PR'd
+	// the phase out-of-band, so /commit found HEAD unchanged and reported
+	// `no-commits`. The old guard threw here and halted the whole auto run
+	// (phase left active, prNumber unset). It MUST stay ship-eligible so
+	// doShip can reconcile the existing PR and the loop advances. Do not
+	// re-silence this path.
+	it("ships on no-commits (out-of-band bypass recovery)", () => {
+		expect(
+			diagnoseCommitAbort({ ran: false, abortReason: "no-commits" }),
+		).toEqual({ action: "ship" });
+	});
+
+	it("ships on agent-no-pr-output (PR layer is doShip's job)", () => {
+		expect(
+			diagnoseCommitAbort({ ran: false, abortReason: "agent-no-pr-output" }),
+		).toEqual({ action: "ship" });
+	});
+
+	it.each([
+		"not-git",
+		"no-branch",
+		"unsafe-branch",
+		"user-cancelled",
+		"deferred-to-review",
+	] as const)("halts with a reason on %s", (abortReason) => {
+		const d = diagnoseCommitAbort({ ran: false, abortReason });
+		expect(d.action).toBe("halt");
+		if (d.action === "halt") {
+			expect(d.reason.length).toBeGreaterThan(0);
+		}
 	});
 });
