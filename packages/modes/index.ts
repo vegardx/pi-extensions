@@ -428,7 +428,7 @@ export default defineExtension(
 				key: "sidebar.minCols",
 				type: "number",
 				default: DEFAULT_SIDEBAR_MIN_COLS,
-				doc: "Minimum terminal width (columns) for the overlay sidebar (Info/Plan/Notes). Below this it auto-hides so it never crushes a narrow pane, regardless of the show/hide toggle. Toggle the sidebar with the `/sidebar` command or ctrl+b. Override via env `PI_MODES_SIDEBAR_MIN_COLS`. Default 120.",
+				doc: "Minimum terminal width (columns) for the overlay sidebar (Info/Plan/Notes). Below this it auto-hides so it never crushes a narrow pane, regardless of the show/hide toggle. Toggle the sidebar with the `/sidebar` command or ctrl+shift+b. Override via env `PI_MODES_SIDEBAR_MIN_COLS`. Default 120.",
 			},
 			{
 				key: "research.timeoutMs",
@@ -497,7 +497,7 @@ export default defineExtension(
 		let panelTheme: Theme | null = null;
 
 		// Overlay sidebar (Info/Plan/Notes). Opt-in: hidden until toggled on via
-		// `/sidebar` or ctrl+b. The toggle state is per-session (in-memory for the
+		// `/sidebar` or ctrl+shift+b. The toggle state is per-session (in-memory for the
 		// life of this session); durable persistence arrives with the notes box.
 		let sidebar: SidebarComponent | null = null;
 		let sidebarHandle: OverlayHandle | null = null;
@@ -6088,7 +6088,7 @@ export default defineExtension(
 
 		// ---- Sidebar toggle ---------------------------------------------------
 
-		pi.registerShortcut("ctrl+b", {
+		pi.registerShortcut("ctrl+shift+b", {
 			description: "Toggle the overlay sidebar (Info/Plan/Notes)",
 			handler: async (ctx) => {
 				toggleSidebar(ctx);
@@ -6106,7 +6106,7 @@ export default defineExtension(
 
 		pi.registerCommand("sidebar", {
 			description:
-				"Show/hide the overlay sidebar (Info/Plan/Notes). Alias: ctrl+b.",
+				"Show/hide the overlay sidebar (Info/Plan/Notes). Alias: ctrl+shift+b.",
 			handler: async (_args, ctx) => {
 				toggleSidebar(ctx);
 			},
