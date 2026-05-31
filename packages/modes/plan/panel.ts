@@ -254,16 +254,27 @@ export function windowLines(
 	};
 }
 
+/** Optional content embedded into the box's bottom border edge. */
+export interface BoxFooter {
+	/** Left-aligned scroll indicator (e.g. `↑2 ↓5`); shown only when overflowing. */
+	scroll?: string;
+	/** Right-aligned key hint (e.g. `^⇧O to focus`). */
+	hint?: string;
+}
+
 /**
  * Draw a rounded border around body lines. With a non-empty `title`, it's
  * centered on the top edge; with an empty title the top edge is a clean run of
- * `─` (the panel deliberately carries no title).
+ * `─` (the panel deliberately carries no title). An optional `footer` embeds a
+ * scroll indicator (left) and a key hint (right) into the bottom edge — the
+ * same trick the title uses on the top edge — so hints cost no body row.
  */
 export function boxify(
 	theme: Theme,
 	title: string,
 	body: string[],
 	width: number,
+	footer?: BoxFooter,
 ): string[] {
 	const innerW = Math.max(1, width - 2);
 	const result: string[] = [];
@@ -287,8 +298,54 @@ export function boxify(
 		result.push(theme.fg("border", "│") + padded + theme.fg("border", "│"));
 	}
 
-	result.push(theme.fg("border", `╰${"─".repeat(innerW)}╯`));
+	result.push(bottomEdge(theme, innerW, footer));
 	return result;
+}
+
+/**
+ * Build the bottom border line, embedding an optional left-aligned scroll
+ * indicator and right-aligned hint between runs of `─`. Layout:
+ * `╰─ <scroll> ──…── <hint> ─╯`. The hint is truncated before the scroll
+ * indicator so the line never exceeds `innerW`.
+ */
+function bottomEdge(theme: Theme, innerW: number, footer?: BoxFooter): string {
+	const plainBorder = (n: number) =>
+		theme.fg("border", "─".repeat(Math.max(0, n)));
+	if (!footer || (!footer.scroll && !footer.hint)) {
+		return theme.fg("border", `╰${"─".repeat(innerW)}╯`);
+	}
+
+	const lead = 1;
+	const trail = 1;
+	// The hint (how to get in/out) takes priority over the scroll indicator: size
+	// it against the full edge first, then show the scroll indicator only if the
+	// leftover dash run can still spare room for it. On a tight 40-col panel the
+	// exit hint stays intact and the scroll indicator yields.
+	const hintBudget = innerW - lead - trail - 1 - 2;
+	const rawHint = footer.hint ?? "";
+	const hint =
+		hintBudget < visibleWidth(rawHint)
+			? truncateToWidth(rawHint, Math.max(0, hintBudget))
+			: rawHint;
+	const hintSeg = hint ? ` ${hint} ` : "";
+	const hintW = visibleWidth(hintSeg);
+
+	const rawScrollSeg = footer.scroll ? ` ${footer.scroll} ` : "";
+	const rawScrollW = visibleWidth(rawScrollSeg);
+	const fitsScroll = innerW - lead - trail - hintW - rawScrollW >= 1;
+	const scrollSeg = fitsScroll ? rawScrollSeg : "";
+	const scrollW = visibleWidth(scrollSeg);
+	const mid = Math.max(1, innerW - lead - trail - scrollW - hintW);
+
+	return (
+		theme.fg("border", "╰") +
+		plainBorder(lead) +
+		(scrollSeg ? theme.fg("dim", scrollSeg) : "") +
+		plainBorder(mid) +
+		(hintSeg ? theme.fg("dim", hintSeg) : "") +
+		plainBorder(trail) +
+		theme.fg("border", "╯")
+	);
 }
 
 /** Pad (or truncate) a possibly-styled line to exactly `width` cells. */
@@ -296,24 +353,6 @@ function padTo(line: string, width: number): string {
 	const w = visibleWidth(line);
 	if (w > width) return truncateToWidth(line, width);
 	return line + " ".repeat(width - w);
-}
-
-/** Build the footer line: scroll position (when overflowing) + a key hint. */
-function footerLine(
-	theme: Theme,
-	win: ScrollWindow,
-	hint: string,
-	innerWidth: number,
-): string {
-	const scroll =
-		win.maxScroll > 0
-			? `↑${win.clampedOffset} ↓${win.maxScroll - win.clampedOffset}`
-			: "";
-	const hintW = visibleWidth(hint);
-	const scrollW = visibleWidth(scroll);
-	const gap = Math.max(1, innerWidth - 1 - scrollW - hintW);
-	const left = scroll ? ` ${theme.fg("dim", scroll)}` : " ";
-	return `${left}${" ".repeat(gap)}${theme.fg("dim", hint)}`;
 }
 
 export interface PlanPanelRenderState {
@@ -359,15 +398,16 @@ export function isPhaseAttachable(
 /** Focused footer hint, attach-aware when the cursor sits on a peer phase. */
 function focusedHint(plan: Plan, state: PlanPanelRenderState): string {
 	return isPhaseAttachable(plan, state.selectedIndex, state.driverBadges)
-		? "↑↓ move · ⏎ attach agent · Esc back"
-		: "↑↓ move · → expand · Esc back";
+		? "↑↓ move · ⏎ attach agent · ^⇧O/Esc back"
+		: "↑↓ move · → expand · ^⇧O/Esc back";
 }
 
 /**
  * Pure panel render. Always renders the full phase list (active phase expanded)
  * with a title-less border. Returns the clamped scroll state so the component
- * (and tests) can stay in sync without side effects here. A footer hint line is
- * appended only when focused or when the list overflows the viewport.
+ * (and tests) can stay in sync without side effects here. A key hint is always
+ * embedded into the bottom border edge (`^⇧O to focus` when passive, navigation
+ * keys when focused), so the focus toggle is discoverable without a body row.
  */
 export function renderPlanPanel(
 	plan: Plan,
@@ -386,24 +426,20 @@ export function renderPlanPanel(
 	);
 
 	// Use nearly the whole viewport (minus a top margin) so the always-on panel
-	// can show as much of the plan as fits.
+	// can show as much of the plan as fits. The hint lives on the bottom border
+	// edge, so the body claims the full height between the two borders.
 	const maxPanelRows = Math.max(MIN_PANEL_ROWS, state.termHeight - 2);
-	// chrome without a footer: top + bottom border.
-	const noFooterBody = Math.max(1, maxPanelRows - 2);
-	const overflow = full.length > noFooterBody;
-	const showFooter = state.focused || overflow;
-	// With a footer, reserve one more row for it.
-	const maxBody = showFooter ? Math.max(1, maxPanelRows - 3) : noFooterBody;
+	const maxBody = Math.max(1, maxPanelRows - 2);
 	const win = windowLines(full, state.scrollOffset, maxBody);
 
-	let body = win.rows;
-	if (showFooter) {
-		const hint = state.focused ? focusedHint(plan, state) : "^⇧O to focus";
-		body = [...win.rows, footerLine(theme, win, hint, innerW)];
-	}
+	const hint = state.focused ? focusedHint(plan, state) : "^⇧O to focus";
+	const scroll =
+		win.maxScroll > 0
+			? `↑${win.clampedOffset} ↓${win.maxScroll - win.clampedOffset}`
+			: undefined;
 
 	return {
-		lines: boxify(theme, "", body, state.width),
+		lines: boxify(theme, "", win.rows, state.width, { scroll, hint }),
 		scrollOffset: win.clampedOffset,
 		maxScroll: win.maxScroll,
 		pageRows: win.rows.length,

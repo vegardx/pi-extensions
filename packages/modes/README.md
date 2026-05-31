@@ -577,25 +577,28 @@ Set `planPanel` to `off` to hide it; `overlay` is equivalent to `auto`.
 
 ### Focusing and navigating the panel
 
-`Ctrl+Shift+O` toggles focus on the panel. While focused it grabs input
-and a phase cursor (`▌`) appears:
+`Ctrl+Shift+O` toggles focus on the panel. The panel's bottom border
+always carries a key hint: `^⇧O to focus` when passive, and the navigation
+keys (ending in `^⇧O/Esc back`) once focused — so the way in and out is
+always visible. While focused it grabs input and a phase cursor (`▌`)
+appears:
 
 - `↑`/`↓` move the cursor between phases, auto-scrolling so the selected
-  phase stays in view; a `↑N ↓N` indicator shows the scroll position when
-  the list overflows.
+  phase stays in view; a `↑N ↓N` indicator shows the scroll position on
+  the bottom-left of the border when the list overflows.
 - `→` / `Space` expand the selected phase's `☑`/`☐` checklist;
   `←` collapses it. The active phase is always expanded.
 - `⏎` **attaches** to a peer-driven phase (one with a `◆ peer` badge):
   after a confirm, it rebinds this TUI into that agent's session — your
   current session stays on disk. On any other phase `⏎` just expands it.
 - `PageUp`/`PageDown` scroll a page at a time.
-- `Esc` or `q` releases focus back to the editor.
+- `Ctrl+Shift+O`, `Esc`, or `q` releases focus back to the editor.
 
-Press `Ctrl+Shift+O` again to release focus. On focus the cursor starts
-on the active phase. The footer hint swaps to `⏎ attach agent` whenever
-the cursor sits on an attachable peer phase. Attach is the manual
-counterpart to `/implement --fanout` (FleetManager) parallel execution:
-it lets you jump between sibling agents' sessions to watch or steer them.
+On focus the cursor starts on the active phase. The border hint swaps to
+`⏎ attach agent` whenever the cursor sits on an attachable peer phase.
+Attach is the manual counterpart to `/implement --fanout` (FleetManager)
+parallel execution: it lets you jump between sibling agents' sessions to
+watch or steer them.
 
 ## Settings
 

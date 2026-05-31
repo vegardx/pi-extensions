@@ -301,6 +301,28 @@ describe("boxify", () => {
 		expect(out[0]).toBe(`╭${"─".repeat(18)}╮`);
 		expect(out[2]).toBe(`╰${"─".repeat(18)}╯`);
 	});
+
+	it("embeds a right-aligned hint into the bottom edge", () => {
+		const out = boxify(theme, "", [" body"], 24, { hint: "hi" });
+		expect(out[2].length).toBe(24);
+		expect(out[2].startsWith("╰")).toBe(true);
+		expect(out[2].endsWith("╯")).toBe(true);
+		expect(out[2]).toContain("hi");
+		// Hint hugs the right edge: hint then a single trailing dash.
+		expect(out[2]).toContain("hi ─╯");
+	});
+
+	it("embeds the scroll indicator on the bottom-left of the edge", () => {
+		const out = boxify(theme, "", [" body"], 30, {
+			scroll: "↑1 ↓2",
+			hint: "hi",
+		});
+		expect(out[2].length).toBe(30);
+		expect(out[2]).toContain("↑1 ↓2");
+		expect(out[2]).toContain("hi");
+		// Scroll sits at the left, hint at the right.
+		expect(out[2].indexOf("↑1 ↓2")).toBeLessThan(out[2].indexOf("hi"));
+	});
 });
 
 describe("renderPlanPanel", () => {
@@ -330,8 +352,11 @@ describe("renderPlanPanel", () => {
 		expect(joined).toContain("● Active");
 		expect(joined).toContain("[2/12]");
 		expect(joined).toContain("☑ task 0");
-		// No footer hint when everything fits and the panel isn't focused.
-		expect(joined).not.toContain("scroll");
+		// The focus hint is always discoverable — embedded in the bottom border
+		// even when the plan fits and the panel is passive.
+		expect(r.lines.at(-1)).toContain("^⇧O to focus");
+		// No scroll indicator when nothing overflows.
+		expect(r.lines.at(-1)).not.toContain("↑");
 	});
 
 	it("windows and shows a scroll hint when overflowing but not focused", () => {
@@ -343,8 +368,11 @@ describe("renderPlanPanel", () => {
 			termHeight: 8,
 		});
 		expect(r.maxScroll).toBeGreaterThan(0);
-		const joined = r.lines.join("\n");
-		expect(joined).toContain("^⇧O to focus");
+		const bottom = r.lines.at(-1) ?? "";
+		expect(bottom).toContain("^⇧O to focus");
+		// Scroll indicator rides the bottom-left of the same edge when overflowing.
+		expect(bottom).toContain("↑");
+		expect(bottom).toContain("↓");
 	});
 
 	it("shows the focus/navigate hint and clamps scroll when focused", () => {
@@ -358,7 +386,7 @@ describe("renderPlanPanel", () => {
 		expect(r.maxScroll).toBeGreaterThan(0);
 		expect(r.scrollOffset).toBe(r.maxScroll);
 		const joined = r.lines.join("\n");
-		expect(joined).toContain("↑↓ move · → expand · Esc back");
+		expect(joined).toContain("↑↓ move · → expand · ^⇧O/Esc back");
 	});
 
 	it("swaps in the attach hint when the cursor sits on a peer phase", () => {
