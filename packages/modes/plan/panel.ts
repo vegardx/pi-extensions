@@ -21,6 +21,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@mariozechner/pi-tui";
+import type { BoxFooter } from "../sidebar/box.js";
 import { boxify } from "../sidebar/box.js";
 import type { Plan } from "./schema.js";
 import { WORKTREE_STATUSES } from "./schema.js";
@@ -302,10 +303,74 @@ export function isPhaseAttachable(
 }
 
 /** Focused footer hint, attach-aware when the cursor sits on a peer phase. */
-function focusedHint(plan: Plan, state: PlanPanelRenderState): string {
-	return isPhaseAttachable(plan, state.selectedIndex, state.driverBadges)
+function focusedHint(
+	plan: Plan,
+	selectedIndex: number | undefined,
+	driverBadges: ReadonlyMap<string, PhaseDriverBadge> | undefined,
+): string {
+	return isPhaseAttachable(plan, selectedIndex, driverBadges)
 		? "↑↓ move · ⏎ attach agent · ^⇧O/Esc back"
 		: "↑↓ move · → expand · ^⇧O/Esc back";
+}
+
+/** Inputs for the pure body builder shared by the panel and the sidebar box. */
+export interface PlanBodyArgs {
+	theme: Theme;
+	/** Inner width available for tree lines (border already accounted for). */
+	contentWidth: number;
+	/** Height budget for the scroll window (rows between borders). */
+	maxBodyRows: number;
+	focused: boolean;
+	scrollOffset: number;
+	expandedPhaseIds?: ReadonlySet<string>;
+	selectedIndex?: number;
+	driverBadges?: ReadonlyMap<string, PhaseDriverBadge>;
+}
+
+export interface PlanBodyResult {
+	/** Windowed tree rows (no border). */
+	rows: string[];
+	/** Scroll indicator + key hint for the box's bottom edge. */
+	footer: BoxFooter;
+	scrollOffset: number;
+	maxScroll: number;
+	pageRows: number;
+}
+
+/**
+ * Build the windowed tree rows plus a {@link BoxFooter}, *without* drawing a
+ * border. Shared by {@link renderPlanPanel} (which wraps it in a titleless box)
+ * and the sidebar Plan box (which wraps it in a titled box), so both surfaces
+ * show an identical tree with the same scroll/hint affordances.
+ */
+export function planPanelBody(plan: Plan, args: PlanBodyArgs): PlanBodyResult {
+	const full = buildTreeLines(
+		plan,
+		args.theme,
+		args.contentWidth,
+		args.driverBadges,
+		args.expandedPhaseIds,
+		args.focused ? args.selectedIndex : undefined,
+	);
+	const win = windowLines(
+		full,
+		args.scrollOffset,
+		Math.max(1, args.maxBodyRows),
+	);
+	const hint = args.focused
+		? focusedHint(plan, args.selectedIndex, args.driverBadges)
+		: "^⇧O to focus";
+	const scroll =
+		win.maxScroll > 0
+			? `↑${win.clampedOffset} ↓${win.maxScroll - win.clampedOffset}`
+			: undefined;
+	return {
+		rows: win.rows,
+		footer: { scroll, hint },
+		scrollOffset: win.clampedOffset,
+		maxScroll: win.maxScroll,
+		pageRows: win.rows.length,
+	};
 }
 
 /**
@@ -320,35 +385,25 @@ export function renderPlanPanel(
 	state: PlanPanelRenderState,
 ): PlanPanelRenderResult {
 	const innerW = Math.max(1, state.width - 2);
-	const { theme } = state;
-
-	const full = buildTreeLines(
-		plan,
-		theme,
-		innerW,
-		state.driverBadges,
-		state.expandedPhaseIds,
-		state.focused ? state.selectedIndex : undefined,
-	);
-
 	// Use nearly the whole viewport (minus a top margin) so the always-on panel
 	// can show as much of the plan as fits. The hint lives on the bottom border
 	// edge, so the body claims the full height between the two borders.
 	const maxPanelRows = Math.max(MIN_PANEL_ROWS, state.termHeight - 2);
-	const maxBody = Math.max(1, maxPanelRows - 2);
-	const win = windowLines(full, state.scrollOffset, maxBody);
-
-	const hint = state.focused ? focusedHint(plan, state) : "^⇧O to focus";
-	const scroll =
-		win.maxScroll > 0
-			? `↑${win.clampedOffset} ↓${win.maxScroll - win.clampedOffset}`
-			: undefined;
-
+	const body = planPanelBody(plan, {
+		theme: state.theme,
+		contentWidth: innerW,
+		maxBodyRows: Math.max(1, maxPanelRows - 2),
+		focused: state.focused,
+		scrollOffset: state.scrollOffset,
+		expandedPhaseIds: state.expandedPhaseIds,
+		selectedIndex: state.selectedIndex,
+		driverBadges: state.driverBadges,
+	});
 	return {
-		lines: boxify(theme, "", win.rows, state.width, { scroll, hint }),
-		scrollOffset: win.clampedOffset,
-		maxScroll: win.maxScroll,
-		pageRows: win.rows.length,
+		lines: boxify(state.theme, "", body.rows, state.width, body.footer),
+		scrollOffset: body.scrollOffset,
+		maxScroll: body.maxScroll,
+		pageRows: body.pageRows,
 	};
 }
 
@@ -453,6 +508,35 @@ export class PlanPanelComponent implements Component {
 		this.maxScroll = result.maxScroll;
 		this.pageRows = Math.max(1, result.pageRows);
 		return result.lines;
+	}
+
+	/**
+	 * Render just the windowed tree rows + footer (no border) for a host that
+	 * draws its own box — e.g. the overlay sidebar's titled Plan box. Shares all
+	 * view state (cursor/scroll/expansion) with {@link render}, so focus and
+	 * navigation behave identically whichever surface paints the tree.
+	 */
+	renderBody(
+		contentWidth: number,
+		maxBodyRows: number,
+	): { rows: string[]; footer: BoxFooter } {
+		if (!this.plan || this.plan.phases.length === 0) {
+			return { rows: [], footer: {} };
+		}
+		const body = planPanelBody(this.plan, {
+			theme: this.theme,
+			contentWidth: Math.max(1, contentWidth),
+			maxBodyRows: Math.max(1, maxBodyRows),
+			focused: this.focused,
+			scrollOffset: this.scrollOffset,
+			expandedPhaseIds: this.expandedPhaseIds,
+			selectedIndex: this.selectedIndex,
+			driverBadges: this.driverBadges,
+		});
+		this.scrollOffset = body.scrollOffset;
+		this.maxScroll = body.maxScroll;
+		this.pageRows = Math.max(1, body.pageRows);
+		return { rows: body.rows, footer: body.footer };
 	}
 
 	handleInput(data: string): void {

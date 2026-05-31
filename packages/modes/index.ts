@@ -501,6 +501,11 @@ export default defineExtension(
 		let sidebar: SidebarComponent | null = null;
 		let sidebarHandle: OverlayHandle | null = null;
 		let sidebarEnabled = false;
+		// Shared plan view powering the sidebar's Plan box (created lazily on mount).
+		let sidebarPlanPanel: PlanPanelComponent | null = null;
+		// Last-resolved sidebar.minCols, so PanelNavController can gate navigate mode
+		// on the same threshold the overlay uses to auto-hide.
+		let sidebarMinColsCache = DEFAULT_SIDEBAR_MIN_COLS;
 		// Live `/implement --fanout` fleet, captured so the sidebar Info box can
 		// list its workers. Set when the orchestrator starts, cleared when it ends.
 		let activeFleet: FleetManager | null = null;
@@ -1257,9 +1262,13 @@ export default defineExtension(
 		// the panel just disposes that listener — there is no focus to "restore", so
 		// the editor can never be left unfocused (which previously froze the UI).
 		const panelNav = new PanelNavController({
-			getPanel: () => planPanel,
+			// When the sidebar owns the plan, route navigate-mode keys to its Plan
+			// box; otherwise drive the standalone overlay panel.
+			getPanel: () =>
+				sidebarEnabled ? (sidebar?.getPlanView() ?? null) : planPanel,
 			getTui: () => footerTui,
-			minCols: PLAN_PANEL_MIN_COLS,
+			minCols: () =>
+				sidebarEnabled ? sidebarMinColsCache : PLAN_PANEL_MIN_COLS,
 		});
 
 		/** Read extensionConfig.modes.planPanel (default "auto"). */
@@ -1406,9 +1415,10 @@ export default defineExtension(
 			const nested = extCfg?.sidebar as Record<string, unknown> | undefined;
 			const raw = extCfg?.["sidebar.minCols"] ?? nested?.minCols;
 			const n = typeof raw === "number" ? raw : Number(raw);
-			return Number.isFinite(n) && n > 0
-				? Math.floor(n)
-				: DEFAULT_SIDEBAR_MIN_COLS;
+			const resolved =
+				Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_SIDEBAR_MIN_COLS;
+			sidebarMinColsCache = resolved;
+			return resolved;
 		}
 
 		function teardownSidebar(): void {
@@ -1417,6 +1427,7 @@ export default defineExtension(
 				sidebarHandle = null;
 			}
 			sidebar = null;
+			sidebarPlanPanel = null;
 		}
 
 		/**
@@ -1429,10 +1440,24 @@ export default defineExtension(
 			if (!footerTui || !panelTheme || sidebar) return;
 			const tui = footerTui;
 			const minCols = readSidebarMinCols(ctx);
+			const theme = panelTheme;
 			const component = new SidebarComponent({
-				theme: panelTheme,
+				theme,
 				requestRender: () => tui.requestRender(),
 			});
+			// Shared plan view for the Plan box: same component class as the
+			// standalone overlay, so tree/scroll/navigation behave identically.
+			const planView = new PlanPanelComponent({
+				plan: currentPlan(),
+				theme,
+				requestRender: () => tui.requestRender(),
+				onRequestUnfocus: () => {
+					panelNav.release();
+				},
+				onAttachPhase: (phaseId) => void attachToPhase(ctx, phaseId),
+			});
+			sidebarPlanPanel = planView;
+			component.setPlanView(planView);
 			sidebar = component;
 			sidebarHandle = tui.showOverlay(component, {
 				nonCapturing: true,
@@ -1441,7 +1466,10 @@ export default defineExtension(
 				minWidth: PLAN_PANEL_MIN_WIDTH,
 				maxHeight: "100%",
 				margin: { top: 1, right: 1 },
-				visible: (w) => w >= minCols,
+				visible: (w, h) => {
+					component.setViewportHeight(h);
+					return w >= minCols;
+				},
 			});
 		}
 
@@ -1545,11 +1573,24 @@ export default defineExtension(
 			if (!sidebar || !ctx.hasUI) return;
 			sidebar.setEnv(buildSidebarEnv(ctx));
 			sidebar.setAgents(buildSidebarAgents(ctx));
+			// Feed the Plan box the live plan + driver badges (mirrors mountPlanOverlay).
+			if (sidebarPlanPanel) {
+				const plan = currentPlan();
+				sidebarPlanPanel.setPlan(plan);
+				if (plan) {
+					sidebarPlanPanel.setDriverBadges(
+						computeDriverBadges(plan, ctx.sessionManager.getSessionId()),
+					);
+				}
+			}
 		}
 
 		/** Flip the per-session sidebar toggle and reconcile overlays. */
 		function toggleSidebar(ctx: ExtensionContext): void {
 			sidebarEnabled = !sidebarEnabled;
+			// Drop navigate mode before swapping surfaces so input isn't routed to a
+			// panel that's about to be torn down.
+			panelNav.release();
 			updateWidget(ctx);
 			notify(ctx, sidebarEnabled ? "sidebar shown" : "sidebar hidden", "info");
 		}
