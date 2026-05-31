@@ -21,7 +21,7 @@ import {
 	visibleWidth,
 } from "@mariozechner/pi-tui";
 import type { Plan } from "./schema.js";
-import { WORKTREE_STATUSES } from "./schema.js";
+import { effectiveTaskKind, WORKTREE_STATUSES } from "./schema.js";
 
 /** Glyphs shown next to a phase for each status. */
 export const STATUS_GLYPH: Record<string, string> = {
@@ -418,4 +418,55 @@ export class PlanPanelComponent implements Component {
 	}
 
 	invalidate(): void {}
+}
+
+export interface PlanProgress {
+	/** Current task title, or the active phase title when no task fits. */
+	task: string;
+	/** 1-based index of the active phase among non-abandoned phases. */
+	phaseIndex: number;
+	/** Count of non-abandoned phases. */
+	phaseCount: number;
+}
+
+/**
+ * Derive the auto/ask progress indicator: the first incomplete deliverable
+ * task in the active phase (falling back to the phase title), plus the active
+ * phase's position. Abandoned phases are excluded from the X/N tally so the
+ * count reflects real remaining work. Returns null when there's no active
+ * phase to report on.
+ */
+export function deriveProgress(plan: Plan): PlanProgress | null {
+	const phases = plan.phases.filter((p) => p.status !== "abandoned");
+	if (phases.length === 0) return null;
+	const activeIndex = phases.findIndex((p) =>
+		WORKTREE_STATUSES.includes(p.status),
+	);
+	if (activeIndex === -1) return null;
+	const phase = phases[activeIndex];
+	if (!phase) return null;
+	const nextTask = phase.tasks.find(
+		(t) => !t.done && effectiveTaskKind(t) === "deliverable",
+	);
+	return {
+		task: nextTask?.title ?? phase.title,
+		phaseIndex: activeIndex + 1,
+		phaseCount: phases.length,
+	};
+}
+
+/**
+ * Render the single-line auto/ask footer indicator: `▸ <task> [X/N]`,
+ * left-aligned and truncated to `width`.
+ */
+export function formatProgressLine(
+	progress: PlanProgress,
+	theme: Theme,
+	width: number,
+): string {
+	const suffix = ` [${progress.phaseIndex}/${progress.phaseCount}]`;
+	const taskMax = Math.max(1, width - 2 - suffix.length);
+	const task = truncateToWidth(progress.task, taskMax);
+	const styled = `${theme.fg("accent", "▸")} ${task}${theme.fg("dim", suffix)}`;
+	return truncateToWidth(styled, width);
 }
