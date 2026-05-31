@@ -271,7 +271,7 @@ pi --resume <session-id>
 ```
 
 Both sessions ship their chains independently. Status updates flow
-through the lockfile-protected plan file; the widget shows a `[peer]`
+through the lockfile-protected plan file; the plan panel shows a `[peer]`
 marker on phases driven by another session, and `plan` annotates
 the header with `driver: \`<id-prefix>\``.
 
@@ -556,6 +556,42 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 2. **System prompt injection** — the agent is told what mode it's in and what's allowed.
 3. **Bash classifier** — the `tool_call` hook screens each `bash` invocation through a static priority allowlist, a denylist, and a static allowlist. Only commands that match none of these are sent to a fast-tier LLM for an `allow` / `block` / `redirect` verdict; when no fast model is configured, the LLM step is skipped entirely. The LLM call **falls open** on error (the static denylist has already passed at that point) — relying on this layer for security is a mistake.
 
+## Plan display
+
+The plan is surfaced differently per mode, controlled by `planPanel`
+(default `auto`):
+
+- **plan mode → floating panel.** A non-capturing overlay anchored
+  top-right. Compact by default (plan title + `done/total` phase tally
+  + the active phase line). It doesn't steal editor focus — you keep
+  typing while it's visible. Auto-hides on terminals narrower than 100
+  columns so it never collides with the chat column.
+- **auto / ask mode → footer line.** A second footer line shows
+  `▸ <current task> [X/N]`: the first incomplete deliverable in the
+  active phase (falling back to the phase title), where `X` is the
+  active phase's position among non-abandoned phases and `N` is their
+  count.
+- **hack mode → nothing.** No plan ceremony, no panel.
+
+Force a single surface with `planPanel`: `overlay`, `inline`, or `off`.
+
+### Expanding and scrolling the floating panel
+
+`Ctrl+Shift+O` cycles the floating panel (behaviour set by
+`planPanelToggle`, default `cycle`):
+
+1. **collapsed → expanded** — the full phase tree with the active
+   phase's task checklist (`☑`/`☐`). Still passive: the editor keeps
+   focus, so you can read the tree while typing.
+2. **expanded → focused** — the panel grabs input. `↑`/`↓` (and
+   `PageUp`/`PageDown`) scroll when the tree overflows ~70% of the
+   terminal height; a `↑N ↓N` indicator shows the scroll position.
+   `Esc` or `q` releases focus back to the editor.
+3. **focused → collapsed.**
+
+Set `planPanelToggle` to `focus` for a two-step toggle (collapsed →
+expanded **and** focused → collapsed), skipping the passive step.
+
 ## Settings
 
 ```json
@@ -582,6 +618,8 @@ Plan mode steers the agent toward read-only behaviour through three layers. The 
 | `compaction.planMaxContextTokens` | unset | Optional footer cap (denominator) used while in plan mode. Leave unset to use the active model's `contextWindow`. Plan mode is exempt from mid-phase compaction. |
 | `compaction.phaseTokens` | `10000` | Safety `maxTokens` cap for one phase-boundary summary. `summaryTokens` is the cumulative soft budget; this only catches a runaway single summary. |
 | `park.githubProject` | unset | GitHub Project to assign issues to when `/park` creates them. Leave unset to skip assignment. |
+| `planPanel` | `"auto"` | How the plan is displayed. `auto`: floating top-right overlay in plan mode, inline footer line in auto/ask, nothing in hack. `overlay` \| `inline` force one surface; `off` hides it. The overlay auto-hides below 100 columns. |
+| `planPanelToggle` | `"cycle"` | Behaviour of the plan-panel toggle (`Ctrl+Shift+O`). `cycle`: collapsed → expanded (passive) → focused for `↑↓` scroll → collapsed. `focus`: collapsed → expanded+focused → collapsed, skipping the passive step. |
 | `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. |
 | `delegate.maxAnswerChars` | `6000` | Safety backstop on a delegated answer's size before it crosses back into the caller's context. Subagents are still prompted to be concise and complete. |
 | `delegate.maxConcurrent` | `10` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel. Excess calls block until a slot frees. |
