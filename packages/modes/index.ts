@@ -183,10 +183,14 @@ import {
 	worktreeExists,
 	worktreePath,
 } from "./plan/worktree.js";
+import { SidebarComponent } from "./sidebar/shell.js";
 
 const EXT_ID = "modes";
 const STATE_ENTRY = "modes-state";
 const CUSTOM_MODE_CONTEXT = "modes-context";
+
+/** Default min terminal width for the overlay sidebar (see `sidebar.minCols`). */
+const DEFAULT_SIDEBAR_MIN_COLS = 120;
 
 // Tools available in plan mode. edit/write are absent entirely.
 export const PLAN_ONLY_TOOLS = [
@@ -418,6 +422,12 @@ export default defineExtension(
 				doc: "How the plan is displayed. `auto` (default) and `overlay`: an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded. `off` hides it. The panel auto-hides on terminals narrower than 100 columns.",
 			},
 			{
+				key: "sidebar.minCols",
+				type: "number",
+				default: DEFAULT_SIDEBAR_MIN_COLS,
+				doc: "Minimum terminal width (columns) for the overlay sidebar (Info/Plan/Notes). Below this it auto-hides so it never crushes a narrow pane, regardless of the show/hide toggle. Toggle the sidebar with the `/sidebar` command or ctrl+b. Override via env `PI_MODES_SIDEBAR_MIN_COLS`. Default 120.",
+			},
+			{
 				key: "research.timeoutMs",
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
@@ -482,6 +492,13 @@ export default defineExtension(
 		// Theme captured from the footer factory — needed to style the overlay,
 		// whose Component.render only receives a width.
 		let panelTheme: Theme | null = null;
+
+		// Overlay sidebar (Info/Plan/Notes). Opt-in: hidden until toggled on via
+		// `/sidebar` or ctrl+b. The toggle state is per-session (in-memory for the
+		// life of this session); durable persistence arrives with the notes box.
+		let sidebar: SidebarComponent | null = null;
+		let sidebarHandle: OverlayHandle | null = null;
+		let sidebarEnabled = false;
 
 		// Persistent codebase-explore mailbox and web-research sub-agent.
 		// Created lazily on first tool call; disposed when leaving plan mode,
@@ -1365,6 +1382,67 @@ export default defineExtension(
 			});
 		}
 
+		/** Read extensionConfig.modes["sidebar.minCols"] (default 120). */
+		function readSidebarMinCols(ctx: ExtensionContext): number {
+			// Env override wins (handy for quick tuning without editing settings).
+			const envRaw = process.env.PI_MODES_SIDEBAR_MIN_COLS;
+			if (envRaw !== undefined) {
+				const envN = Number(envRaw);
+				if (Number.isFinite(envN) && envN > 0) return Math.floor(envN);
+			}
+			const settings = readRelevantSettings(ctx.cwd);
+			const extCfg = settings.extensionConfig?.[EXT_ID] as
+				| Record<string, unknown>
+				| undefined;
+			const nested = extCfg?.sidebar as Record<string, unknown> | undefined;
+			const raw = extCfg?.["sidebar.minCols"] ?? nested?.minCols;
+			const n = typeof raw === "number" ? raw : Number(raw);
+			return Number.isFinite(n) && n > 0
+				? Math.floor(n)
+				: DEFAULT_SIDEBAR_MIN_COLS;
+		}
+
+		function teardownSidebar(): void {
+			if (sidebarHandle) {
+				sidebarHandle.hide();
+				sidebarHandle = null;
+			}
+			sidebar = null;
+		}
+
+		/**
+		 * Mount the overlay sidebar (no-op until the footer factory has handed us a
+		 * TUI + theme, and idempotent once mounted). Anchored top-right like the plan
+		 * panel; the `visible` callback auto-hides it below `sidebar.minCols` so it
+		 * never crushes a narrow pane.
+		 */
+		function mountSidebar(ctx: ExtensionContext): void {
+			if (!footerTui || !panelTheme || sidebar) return;
+			const tui = footerTui;
+			const minCols = readSidebarMinCols(ctx);
+			const component = new SidebarComponent({
+				theme: panelTheme,
+				requestRender: () => tui.requestRender(),
+			});
+			sidebar = component;
+			sidebarHandle = tui.showOverlay(component, {
+				nonCapturing: true,
+				anchor: "top-right",
+				width: PLAN_PANEL_WIDTH_PCT,
+				minWidth: PLAN_PANEL_MIN_WIDTH,
+				maxHeight: "100%",
+				margin: { top: 1, right: 1 },
+				visible: (w) => w >= minCols,
+			});
+		}
+
+		/** Flip the per-session sidebar toggle and reconcile overlays. */
+		function toggleSidebar(ctx: ExtensionContext): void {
+			sidebarEnabled = !sidebarEnabled;
+			updateWidget(ctx);
+			notify(ctx, sidebarEnabled ? "sidebar shown" : "sidebar hidden", "info");
+		}
+
 		/**
 		 * Mode-aware plan display controller. Picks the surface (floating overlay,
 		 * inline footer indicator, or nothing) from the active mode + planPanel
@@ -1376,6 +1454,16 @@ export default defineExtension(
 
 			// Trigger footer re-render so the mode label + progress line refresh.
 			footerTui?.requestRender();
+
+			// The sidebar owns the top-right corner when enabled; the floating plan
+			// panel stands down so the two overlays never overlap. (The plan tree
+			// moves into the sidebar's Plan box in a later phase.)
+			if (sidebarEnabled) {
+				teardownPlanOverlay();
+				mountSidebar(ctx);
+				return;
+			}
+			teardownSidebar();
 
 			const slug = modeState?.currentPlanSlug ?? null;
 			const plan = slug ? loadPlan(slug) : null;
@@ -4818,6 +4906,7 @@ export default defineExtension(
 			// session switches (/new, /resume, /fork).
 			if (ctx?.hasUI) ctx.ui.setFooter(undefined);
 			teardownPlanOverlay();
+			teardownSidebar();
 			footerTui = null;
 			panelTheme = null;
 			crashSessionAccessor = null;
@@ -5786,7 +5875,24 @@ export default defineExtension(
 			},
 		});
 
+		// ---- Sidebar toggle ---------------------------------------------------
+
+		pi.registerShortcut("ctrl+b", {
+			description: "Toggle the overlay sidebar (Info/Plan/Notes)",
+			handler: async (ctx) => {
+				toggleSidebar(ctx);
+			},
+		});
+
 		// ---- Commands ---------------------------------------------------------
+
+		pi.registerCommand("sidebar", {
+			description:
+				"Show/hide the overlay sidebar (Info/Plan/Notes). Alias: ctrl+b.",
+			handler: async (_args, ctx) => {
+				toggleSidebar(ctx);
+			},
+		});
 
 		pi.registerCommand("plan", {
 			description:
