@@ -1,10 +1,6 @@
-import { visibleWidth } from "@mariozechner/pi-tui";
 import {
 	boxify,
-	buildCompactLines,
 	buildTreeLines,
-	deriveProgress,
-	formatProgressLine,
 	renderPlanPanel,
 	STATUS_GLYPH,
 	summarisePlan,
@@ -107,41 +103,48 @@ describe("summarisePlan", () => {
 	});
 });
 
-describe("buildCompactLines", () => {
-	it("renders title with a done/total tally and the active phase line", () => {
-		const plan = makePlan([
-			makePhase("Groundwork", "shipped"),
-			makePhase("Build it", "active"),
-			makePhase("Docs", "planned"),
-		]);
-		const lines = buildCompactLines(plan, theme, 38);
-		expect(lines[0]).toContain("Test plan");
-		expect(lines[0]).toContain("1/3");
-		expect(lines[1]).toContain("● Build it");
-	});
-
-	it("omits the active line when there is no active phase", () => {
-		const plan = makePlan([makePhase("Done", "shipped")]);
-		expect(buildCompactLines(plan, theme, 38)).toHaveLength(1);
-	});
-});
-
 describe("buildTreeLines", () => {
-	it("maps each status to its glyph and renders task checkboxes", () => {
+	it("lists every phase with its glyph and a per-phase [done/total] tally", () => {
 		const plan = makePlan([
-			makePhase("Shipped phase", "shipped"),
+			makePhase("Shipped phase", "shipped", [
+				makeTask("a", true),
+				makeTask("b", true),
+				makeTask("c", true),
+			]),
 			makePhase("Active phase", "active", [
 				makeTask("done task", true),
 				makeTask("todo task", false),
 			]),
-			makePhase("Planned phase", "planned"),
+			makePhase("Planned phase", "planned", [makeTask("later", false)]),
 		]);
 		const body = buildTreeLines(plan, theme, 38);
 		expect(body[0]).toContain(`${STATUS_GLYPH.shipped} Shipped phase`);
+		expect(body[0]).toContain("[3/3]");
+		// Active phase header carries its tally, then its checklist follows.
 		expect(body[1]).toContain(`${STATUS_GLYPH.active} Active phase`);
+		expect(body[1]).toContain("[1/2]");
 		expect(body[2]).toContain("☑ done task");
 		expect(body[3]).toContain("☐ todo task");
 		expect(body[4]).toContain(`${STATUS_GLYPH.planned} Planned phase`);
+		expect(body[4]).toContain("[0/1]");
+	});
+
+	it("auto-expands the active phase but not other phases", () => {
+		const plan = makePlan([
+			makePhase("Planned", "planned", [makeTask("hidden", false)]),
+			makePhase("Active", "active", [makeTask("shown", false)]),
+		]);
+		const body = buildTreeLines(plan, theme, 38);
+		expect(body.some((l) => l.includes("hidden"))).toBe(false);
+		expect(body.some((l) => l.includes("☐ shown"))).toBe(true);
+	});
+
+	it("expands a non-active phase whose id is in expandedPhaseIds", () => {
+		const plan = makePlan([
+			makePhase("Planned", "planned", [makeTask("reveal me", false)]),
+		]);
+		const body = buildTreeLines(plan, theme, 38, null, new Set(["planned"]));
+		expect(body.some((l) => l.includes("☐ reveal me"))).toBe(true);
 	});
 
 	it("annotates phases driven by another session with [peer]", () => {
@@ -163,15 +166,8 @@ describe("buildTreeLines", () => {
 	it("shows an explicit placeholder for an active phase with no tasks", () => {
 		const plan = makePlan([makePhase("Empty", "active", [])]);
 		const body = buildTreeLines(plan, theme, 38);
+		expect(body[0]).toContain("[0/0]");
 		expect(body[1]).toContain("(no tasks)");
-	});
-
-	it("hides tasks for non-worktree phases", () => {
-		const plan = makePlan([
-			makePhase("Planned", "planned", [makeTask("hidden", false)]),
-		]);
-		const body = buildTreeLines(plan, theme, 38);
-		expect(body).toHaveLength(1);
 	});
 });
 
@@ -213,12 +209,18 @@ describe("windowLines", () => {
 });
 
 describe("boxify", () => {
-	it("draws a rounded border padded to the requested width", () => {
+	it("draws a rounded border padded to the requested width with a title", () => {
 		const out = boxify(theme, "Title", [" body"], 20);
 		expect(out).toHaveLength(3);
 		for (const line of out) expect(line.length).toBe(20);
 		expect(out[0]).toContain("Title");
 		expect(out[0].startsWith("╭")).toBe(true);
+		expect(out[2]).toBe(`╰${"─".repeat(18)}╯`);
+	});
+
+	it("draws a clean title-less top edge when title is empty", () => {
+		const out = boxify(theme, "", [" body"], 20);
+		expect(out[0]).toBe(`╭${"─".repeat(18)}╮`);
 		expect(out[2]).toBe(`╰${"─".repeat(18)}╯`);
 	});
 });
@@ -234,41 +236,43 @@ describe("renderPlanPanel", () => {
 		makePhase("Planned", "planned"),
 	]);
 
-	it("renders the compact summary when collapsed", () => {
+	it("renders the full phase list with per-phase tallies and a title-less border", () => {
 		const r = renderPlanPanel(plan, {
 			theme,
 			width: 40,
-			expanded: false,
 			focused: false,
 			scrollOffset: 0,
 			termHeight: 40,
 		});
 		expect(r.maxScroll).toBe(0);
+		// Title-less top border: a clean run of box-drawing characters.
+		expect(r.lines[0]).toBe(`╭${"─".repeat(38)}╮`);
 		const body = stripBox(r.lines);
-		expect(body[0]).toContain("Test plan");
-		expect(body.some((l) => l.includes("☐"))).toBe(false);
+		const joined = body.join("\n");
+		expect(joined).toContain("● Active");
+		expect(joined).toContain("[2/12]");
+		expect(joined).toContain("☑ task 0");
+		// No footer hint when everything fits and the panel isn't focused.
+		expect(joined).not.toContain("scroll");
 	});
 
-	it("renders the full tree with a hint footer when expanded and untruncated", () => {
+	it("windows and shows a scroll hint when overflowing but not focused", () => {
 		const r = renderPlanPanel(plan, {
 			theme,
 			width: 40,
-			expanded: true,
 			focused: false,
 			scrollOffset: 0,
-			termHeight: 60,
+			termHeight: 8,
 		});
-		expect(r.maxScroll).toBe(0);
+		expect(r.maxScroll).toBeGreaterThan(0);
 		const joined = r.lines.join("\n");
-		expect(joined).toContain("☑ task 0");
 		expect(joined).toContain("^⇧O to scroll");
 	});
 
-	it("windows and clamps scroll on a short terminal, focused title + indicator", () => {
+	it("shows the focus hint and clamps scroll when focused", () => {
 		const r = renderPlanPanel(plan, {
 			theme,
 			width: 40,
-			expanded: true,
 			focused: true,
 			scrollOffset: 999,
 			termHeight: 14,
@@ -276,102 +280,17 @@ describe("renderPlanPanel", () => {
 		expect(r.maxScroll).toBeGreaterThan(0);
 		expect(r.scrollOffset).toBe(r.maxScroll);
 		const joined = r.lines.join("\n");
-		expect(joined).toContain("Plan · scroll");
 		expect(joined).toContain("↑↓ scroll · Esc back");
-		expect(joined).toContain("↑");
 	});
 
-	it("renders nothing implicitly via the component for an empty plan", () => {
+	it("still produces a box for an empty plan (component short-circuits empties)", () => {
 		const r = renderPlanPanel(makePlan([]), {
 			theme,
 			width: 40,
-			expanded: false,
 			focused: false,
 			scrollOffset: 0,
 			termHeight: 40,
 		});
-		// summarise of an empty plan still produces a (titled) box; the
-		// component short-circuits empties before calling render.
 		expect(r.lines.length).toBeGreaterThan(0);
-	});
-});
-
-describe("deriveProgress", () => {
-	it("picks the first incomplete deliverable in the active phase", () => {
-		const plan = makePlan([
-			makePhase("Schema", "shipped"),
-			makePhase("Build", "active", [
-				makeTask("done", true),
-				makeTask("the next thing", false),
-				makeTask("a later thing", false),
-			]),
-			makePhase("Docs", "planned"),
-		]);
-		expect(deriveProgress(plan)).toEqual({
-			task: "the next thing",
-			phaseIndex: 2,
-			phaseCount: 3,
-		});
-	});
-
-	it("excludes abandoned phases from index and count", () => {
-		const plan = makePlan([
-			makePhase("Schema", "shipped"),
-			makePhase("Dead", "abandoned"),
-			makePhase("Build", "active", [makeTask("go", false)]),
-			makePhase("Docs", "planned"),
-		]);
-		expect(deriveProgress(plan)).toMatchObject({
-			phaseIndex: 2,
-			phaseCount: 3,
-		});
-	});
-
-	it("skips non-deliverable tasks", () => {
-		const plan = makePlan([
-			makePhase("Build", "active", [
-				makeTask("a question", false, "question"),
-				makeTask("real work", false, "deliverable"),
-			]),
-		]);
-		expect(deriveProgress(plan)?.task).toBe("real work");
-	});
-
-	it("falls back to the phase title when no incomplete deliverable remains", () => {
-		const plan = makePlan([
-			makePhase("Build it", "active", [makeTask("done", true)]),
-		]);
-		expect(deriveProgress(plan)?.task).toBe("Build it");
-	});
-
-	it("returns null when there is no active phase", () => {
-		const plan = makePlan([makePhase("Done", "shipped")]);
-		expect(deriveProgress(plan)).toBeNull();
-	});
-
-	it("returns null when every phase is abandoned", () => {
-		const plan = makePlan([makePhase("Dead", "abandoned")]);
-		expect(deriveProgress(plan)).toBeNull();
-	});
-});
-
-describe("formatProgressLine", () => {
-	it("renders the marker, task, and [X/N] tally", () => {
-		const line = formatProgressLine(
-			{ task: "wire it up", phaseIndex: 2, phaseCount: 3 },
-			theme,
-			80,
-		);
-		expect(line).toBe("▸ wire it up [2/3]");
-	});
-
-	it("truncates the task but keeps the tally visible within width", () => {
-		const line = formatProgressLine(
-			{ task: "x".repeat(100), phaseIndex: 2, phaseCount: 3 },
-			theme,
-			30,
-		);
-		expect(visibleWidth(line)).toBeLessThanOrEqual(30);
-		expect(line).toContain("[2/3]");
 	});
 });
