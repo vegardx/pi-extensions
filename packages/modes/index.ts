@@ -107,7 +107,12 @@ import {
 	sanitiseQueueDepthThreshold,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
-import { PlanPanelComponent, STATUS_GLYPH } from "./plan/panel.js";
+import {
+	deriveProgress,
+	formatProgressLine,
+	PlanPanelComponent,
+	type PlanProgress,
+} from "./plan/panel.js";
 import {
 	renderParentIssueBody,
 	renderPhaseIssueBody,
@@ -482,6 +487,9 @@ export default defineExtension(
 		// Theme captured from the footer factory — needed to style the overlay,
 		// whose Component.render only receives a width.
 		let panelTheme: Theme | null = null;
+		// Cached auto/ask footer progress indicator (`▸ task [X/N]`). Recomputed by
+		// updateWidget on mode/plan/task change; null hides the second footer line.
+		let inlineProgress: PlanProgress | null = null;
 
 		// Persistent codebase-explore mailbox and web-research sub-agent.
 		// Created lazily on first tool call; disposed when leaving plan mode,
@@ -1318,62 +1326,15 @@ export default defineExtension(
 		}
 
 		/**
-		 * Inline phase/task list above the editor. Transitional surface for
-		 * auto/ask mode; superseded by the two-line footer in a later phase.
-		 */
-		function mountInlineWidget(ctx: ExtensionContext, plan: Plan): void {
-			const selfSessionId = ctx.sessionManager.getSessionId();
-			// Use the factory overload so MAX_LINE scales with the actual terminal
-			// width at render time rather than being a hard-coded constant.
-			// pi-tui re-invokes render(width) on resize automatically.
-			ctx.ui.setWidget("modes-steps", (_tui, _theme) => ({
-				render(width) {
-					const maxLine = width;
-					const result: string[] = [];
-					for (const phase of plan.phases) {
-						const statusGlyph = STATUS_GLYPH[phase.status] ?? "○";
-						const peerSuffix =
-							phase.driverSessionId && phase.driverSessionId !== selfSessionId
-								? ` [peer]`
-								: "";
-						const title = truncateToWidth(
-							`${phase.title}${peerSuffix}`,
-							maxLine - 6,
-						);
-						result.push(`${statusGlyph} ${title}`);
-						// Show tasks only for phases with a worktree (active or needs-attention)
-						if (WORKTREE_STATUSES.includes(phase.status)) {
-							if (phase.tasks.length === 0) {
-								// Explicit placeholder so the user can distinguish
-								// the active phase's (empty) task list from the
-								// planned phases rendered below it (#188).
-								result.push(
-									`  (no tasks — use task(add) to add a deliverable)`,
-								);
-							} else {
-								for (const task of phase.tasks) {
-									const label = truncateToWidth(task.title, maxLine - 4);
-									result.push(`  ${task.done ? "☑" : "☐"} ${label}`);
-								}
-							}
-						}
-					}
-					return result;
-				},
-				invalidate() {},
-			}));
-		}
-
-		/**
 		 * Mode-aware plan display controller. Picks the surface (floating overlay,
-		 * inline widget, or nothing) from the active mode + planPanel setting and
-		 * tears down whatever surface isn't selected. Kept named `updateWidget`
+		 * inline footer indicator, or nothing) from the active mode + planPanel
+		 * setting and tears down whatever isn't selected. Kept named `updateWidget`
 		 * because it's called from many lifecycle hooks.
 		 */
 		function updateWidget(ctx: ExtensionContext): void {
 			if (!ctx.hasUI) return;
 
-			// Trigger footer re-render so the mode label refreshes.
+			// Trigger footer re-render so the mode label + progress line refresh.
 			footerTui?.requestRender();
 
 			const slug = modeState?.currentPlanSlug ?? null;
@@ -1384,14 +1345,18 @@ export default defineExtension(
 					? decidePlanSurface(modeState.mode, readPlanPanelSetting(ctx))
 					: "off";
 
-			// Tear down the surfaces we're not using so a mode switch never leaves
-			// a stale overlay or inline widget behind.
+			// Tear down the overlay when it's not selected so a mode switch never
+			// leaves a stale panel behind. The legacy `modes-steps` inline widget
+			// is fully retired — the auto/ask surface is now the second footer line
+			// (see installFooter).
 			if (surface !== "overlay") teardownPlanOverlay();
-			if (surface !== "inline") ctx.ui.setWidget("modes-steps", undefined);
 
-			if (!plan || !hasPlan) return;
-			if (surface === "overlay") mountPlanOverlay(ctx, plan);
-			else if (surface === "inline") mountInlineWidget(ctx, plan);
+			if (plan && surface === "overlay") mountPlanOverlay(ctx, plan);
+
+			const showInline =
+				surface === "inline" &&
+				(modeState?.mode === "auto" || modeState?.mode === "ask");
+			inlineProgress = showInline && plan ? deriveProgress(plan) : null;
 		}
 
 		/**
@@ -1597,7 +1562,6 @@ export default defineExtension(
 							}
 							return [composeFooterLine(leftText, candidates, width)];
 						}
-
 						const label = MODE_LABELS[modeState.mode];
 						const color = MODE_COLORS[modeState.mode];
 						const sep = theme.fg("muted", " | ");
@@ -1611,7 +1575,14 @@ export default defineExtension(
 						}
 						candidates.push({ visible: label, styled: modeText });
 
-						return [composeFooterLine(leftText, candidates, width)];
+						const lines = [composeFooterLine(leftText, candidates, width)];
+						// Second line: auto/ask progress indicator (`▸ task [X/N]`).
+						// Populated by updateWidget only in auto/ask with an active
+						// plan; null in plan/hack mode and when planPanel != inline.
+						if (inlineProgress) {
+							lines.push(formatProgressLine(inlineProgress, theme, width));
+						}
+						return lines;
 					},
 					dispose: footerData.onBranchChange(() => tui.requestRender()),
 				};
