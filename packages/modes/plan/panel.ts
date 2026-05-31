@@ -119,44 +119,82 @@ export function phaseHeaderOffsets(
 }
 
 /**
+ * How a phase's concurrent driver is shown in the panel. The host derives this
+ * (it owns the fs liveness check via `evaluateClaim`) and passes a per-phase map
+ * into the renderer so `panel.ts` stays pure.
+ *
+ * - `self`: the local session drives this phase.
+ * - `peer-live`: another session drives it and its claim is fresh.
+ * - `peer-stale`: another session's claim has gone quiet (crashed/abandoned).
+ */
+export type PhaseDriverBadge = "self" | "peer-live" | "peer-stale";
+
+/** Plain + styled forms of a driver badge, or null for no badge. */
+function renderDriverBadge(
+	theme: Theme,
+	badge: PhaseDriverBadge | undefined,
+): { plain: string; styled: string } | null {
+	switch (badge) {
+		case "self":
+			return { plain: " ◆ self", styled: ` ${theme.fg("accent", "◆ self")}` };
+		case "peer-live":
+			return {
+				plain: " ◆ peer·live",
+				styled: ` ${theme.fg("warning", "◆ peer·live")}`,
+			};
+		case "peer-stale":
+			return {
+				plain: " ◆ peer·stale",
+				styled: ` ${theme.fg("dim", "◆ peer·stale")}`,
+			};
+		default:
+			return null;
+	}
+}
+
+/**
  * Full phase list: every phase on one line as `<glyph> <title> [done/total]`,
  * with the tally right-aligned. A phase reveals its `☑`/`☐` task checklist when
  * it owns a worktree (active / needs-attention) or when its id is in
  * `expandedPhaseIds` (an explicit user expand from the focused panel). When
  * `selectedIndex` is provided, that phase's header carries a cursor bar and its
- * title is accented.
+ * title is accented. `driverBadges` annotates phases driven by a concurrent
+ * session (see {@link PhaseDriverBadge}).
  */
 export function buildTreeLines(
 	plan: Plan,
 	theme: Theme,
 	innerWidth: number,
-	selfSessionId?: string | null,
+	driverBadges?: ReadonlyMap<string, PhaseDriverBadge>,
 	expandedPhaseIds?: ReadonlySet<string>,
 	selectedIndex?: number,
 ): string[] {
 	const lines: string[] = [];
 	plan.phases.forEach((phase, idx) => {
 		const glyph = STATUS_GLYPH[phase.status] ?? "○";
-		const peerSuffix =
-			phase.driverSessionId && phase.driverSessionId !== selfSessionId
-				? " [peer]"
-				: "";
+		const badge = renderDriverBadge(theme, driverBadges?.get(phase.id));
+		const badgeW = badge ? visibleWidth(badge.plain) : 0;
 		const tally = phaseTally(phase);
 		const selected = selectedIndex === idx;
 		const cursor = selected ? theme.fg("accent", "▌") : " ";
 		const prefix = `${cursor}${glyph} `;
 		const prefixW = 1 + visibleWidth(glyph) + 1;
 		// Reserve a 1-col gutter on the right so the tally isn't glued to the border.
-		const titleMax = Math.max(1, innerWidth - prefixW - tally.length - 2);
-		const title = truncateToWidth(`${phase.title}${peerSuffix}`, titleMax);
+		const titleMax = Math.max(
+			1,
+			innerWidth - prefixW - tally.length - 2 - badgeW,
+		);
+		const title = truncateToWidth(phase.title, titleMax);
 		const titleStyled = selected ? theme.fg("accent", title) : title;
 		const pad = " ".repeat(
 			Math.max(
 				1,
-				innerWidth - prefixW - visibleWidth(title) - tally.length - 1,
+				innerWidth - prefixW - visibleWidth(title) - badgeW - tally.length - 1,
 			),
 		);
-		lines.push(`${prefix}${titleStyled}${pad}${theme.fg("muted", tally)}`);
+		lines.push(
+			`${prefix}${titleStyled}${badge?.styled ?? ""}${pad}${theme.fg("muted", tally)}`,
+		);
 
 		if (!isPhaseExpanded(phase, expandedPhaseIds)) return;
 
@@ -285,11 +323,12 @@ export interface PlanPanelRenderState {
 	scrollOffset: number;
 	/** Terminal height in rows, used to size the scroll viewport. */
 	termHeight: number;
-	selfSessionId?: string | null;
 	/** Phase ids explicitly expanded from the focused panel. */
 	expandedPhaseIds?: ReadonlySet<string>;
 	/** Index of the cursor phase; only honoured (rendered) when `focused`. */
 	selectedIndex?: number;
+	/** Per-phase concurrent-driver badges, keyed by phase id. */
+	driverBadges?: ReadonlyMap<string, PhaseDriverBadge>;
 }
 
 export interface PlanPanelRenderResult {
@@ -299,6 +338,29 @@ export interface PlanPanelRenderResult {
 	maxScroll: number;
 	/** Body rows visible in the expanded window (for page scrolling). */
 	pageRows: number;
+}
+
+/**
+ * Whether the selected phase can be attached to: it's driven by a concurrent
+ * session and has a recorded session file to switch into.
+ */
+export function isPhaseAttachable(
+	plan: Plan,
+	selectedIndex: number | undefined,
+	driverBadges: ReadonlyMap<string, PhaseDriverBadge> | undefined,
+): boolean {
+	if (selectedIndex === undefined) return false;
+	const phase = plan.phases[selectedIndex];
+	if (!phase?.sessionPath) return false;
+	const badge = driverBadges?.get(phase.id);
+	return badge === "peer-live" || badge === "peer-stale";
+}
+
+/** Focused footer hint, attach-aware when the cursor sits on a peer phase. */
+function focusedHint(plan: Plan, state: PlanPanelRenderState): string {
+	return isPhaseAttachable(plan, state.selectedIndex, state.driverBadges)
+		? "↑↓ move · ⏎ attach agent · Esc back"
+		: "↑↓ move · → expand · Esc back";
 }
 
 /**
@@ -318,7 +380,7 @@ export function renderPlanPanel(
 		plan,
 		theme,
 		innerW,
-		state.selfSessionId,
+		state.driverBadges,
 		state.expandedPhaseIds,
 		state.focused ? state.selectedIndex : undefined,
 	);
@@ -336,9 +398,7 @@ export function renderPlanPanel(
 
 	let body = win.rows;
 	if (showFooter) {
-		const hint = state.focused
-			? "↑↓ move · → expand · Esc back"
-			: "^⇧O to focus";
+		const hint = state.focused ? focusedHint(plan, state) : "^⇧O to focus";
 		body = [...win.rows, footerLine(theme, win, hint, innerW)];
 	}
 
@@ -359,9 +419,9 @@ export function renderPlanPanel(
 export class PlanPanelComponent implements Component {
 	private plan: Plan | null;
 	private readonly theme: Theme;
-	private readonly selfSessionId: string | null;
 	private readonly requestRender: () => void;
 	private readonly onRequestUnfocus: () => void;
+	private readonly onAttachPhase: ((phaseId: string) => void) | null;
 
 	/** Passive by default; the focus shortcut routes input here. */
 	focused = false;
@@ -370,6 +430,8 @@ export class PlanPanelComponent implements Component {
 	selectedIndex = 0;
 	/** Phases the user explicitly expanded (beyond the auto-expanded active one). */
 	private readonly expandedPhaseIds = new Set<string>();
+	/** Per-phase driver badges, supplied by the host (it owns fs liveness). */
+	private driverBadges: ReadonlyMap<string, PhaseDriverBadge> = new Map();
 	private termHeight = 24;
 	private maxScroll = 0;
 	private pageRows = 5;
@@ -377,15 +439,15 @@ export class PlanPanelComponent implements Component {
 	constructor(args: {
 		plan: Plan | null;
 		theme: Theme;
-		selfSessionId?: string | null;
 		requestRender: () => void;
 		onRequestUnfocus: () => void;
+		onAttachPhase?: (phaseId: string) => void;
 	}) {
 		this.plan = args.plan;
 		this.theme = args.theme;
-		this.selfSessionId = args.selfSessionId ?? null;
 		this.requestRender = args.requestRender;
 		this.onRequestUnfocus = args.onRequestUnfocus;
+		this.onAttachPhase = args.onAttachPhase ?? null;
 	}
 
 	setPlan(plan: Plan | null): void {
@@ -400,6 +462,12 @@ export class PlanPanelComponent implements Component {
 		this.plan = plan;
 		const max = Math.max(0, (plan?.phases.length ?? 1) - 1);
 		if (this.selectedIndex > max) this.selectedIndex = max;
+		this.requestRender();
+	}
+
+	/** Replace the per-phase driver badges (host recomputes on plan reload). */
+	setDriverBadges(badges: ReadonlyMap<string, PhaseDriverBadge>): void {
+		this.driverBadges = badges;
 		this.requestRender();
 	}
 
@@ -435,9 +503,9 @@ export class PlanPanelComponent implements Component {
 			focused: this.focused,
 			scrollOffset: this.scrollOffset,
 			termHeight: this.termHeight,
-			selfSessionId: this.selfSessionId,
 			expandedPhaseIds: this.expandedPhaseIds,
 			selectedIndex: this.selectedIndex,
+			driverBadges: this.driverBadges,
 		});
 		this.scrollOffset = result.scrollOffset;
 		this.maxScroll = result.maxScroll;
@@ -454,11 +522,10 @@ export class PlanPanelComponent implements Component {
 			this.moveSelection(-1);
 		} else if (matchesKey(data, "down")) {
 			this.moveSelection(1);
-		} else if (
-			matchesKey(data, "right") ||
-			matchesKey(data, "return") ||
-			matchesKey(data, "space")
-		) {
+		} else if (matchesKey(data, "return")) {
+			// ⏎ attaches to a peer-driven phase; otherwise it expands like →.
+			if (!this.attachSelected()) this.toggleSelectedExpand();
+		} else if (matchesKey(data, "right") || matchesKey(data, "space")) {
 			this.toggleSelectedExpand();
 		} else if (matchesKey(data, "left")) {
 			this.collapseSelected();
@@ -467,6 +534,22 @@ export class PlanPanelComponent implements Component {
 		} else if (matchesKey(data, "pageDown")) {
 			this.scrollBy(this.pageRows);
 		}
+	}
+
+	/**
+	 * If the cursor sits on an attachable peer phase, hand it to the host's
+	 * attach callback and report true. Otherwise a no-op returning false so the
+	 * caller falls back to expand/collapse.
+	 */
+	private attachSelected(): boolean {
+		if (!this.plan || !this.onAttachPhase) return false;
+		if (!isPhaseAttachable(this.plan, this.selectedIndex, this.driverBadges)) {
+			return false;
+		}
+		const id = this.selectedPhaseId();
+		if (!id) return false;
+		this.onAttachPhase(id);
+		return true;
 	}
 
 	private moveSelection(delta: number): void {

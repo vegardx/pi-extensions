@@ -271,9 +271,9 @@ pi --resume <session-id>
 ```
 
 Both sessions ship their chains independently. Status updates flow
-through the lockfile-protected plan file; the plan panel shows a `[peer]`
-marker on phases driven by another session, and `plan` annotates
-the header with `driver: \`<id-prefix>\``.
+through the lockfile-protected plan file; the plan panel shows a
+`◆ peer·live` / `◆ peer·stale` badge on phases driven by another session,
+and `plan` annotates the header with `driver: \`<id-prefix>\``.
 
 #### Recovery from raw `git` / `gh`
 
@@ -565,6 +565,9 @@ by `planPanel` (default `auto`):
 - It lists **every phase** on one line as `<glyph> <title> [done/total]`,
   where the tally counts that phase's tasks. The **active phase
   auto-expands** its `☑`/`☐` task checklist beneath it.
+- Phases driven by a concurrent session carry a driver badge: `◆ self`
+  for the local session, `◆ peer·live` for another live session, and
+  `◆ peer·stale` when that session's claim has gone quiet.
 - The border carries **no title** — just the box edge.
 - It's non-capturing, so you keep typing while it's visible, and it
   auto-hides on terminals narrower than 100 columns so it never collides
@@ -580,13 +583,19 @@ and a phase cursor (`▌`) appears:
 - `↑`/`↓` move the cursor between phases, auto-scrolling so the selected
   phase stays in view; a `↑N ↓N` indicator shows the scroll position when
   the list overflows.
-- `→` / `⏎` / `Space` expand the selected phase's `☑`/`☐` checklist;
+- `→` / `Space` expand the selected phase's `☑`/`☐` checklist;
   `←` collapses it. The active phase is always expanded.
+- `⏎` **attaches** to a peer-driven phase (one with a `◆ peer` badge):
+  after a confirm, it rebinds this TUI into that agent's session — your
+  current session stays on disk. On any other phase `⏎` just expands it.
 - `PageUp`/`PageDown` scroll a page at a time.
 - `Esc` or `q` releases focus back to the editor.
 
 Press `Ctrl+Shift+O` again to release focus. On focus the cursor starts
-on the active phase.
+on the active phase. The footer hint swaps to `⏎ attach agent` whenever
+the cursor sits on an attachable peer phase. Attach is the manual
+counterpart to `/implement --fanout` (FleetManager) parallel execution:
+it lets you jump between sibling agents' sessions to watch or steer them.
 
 ## Settings
 

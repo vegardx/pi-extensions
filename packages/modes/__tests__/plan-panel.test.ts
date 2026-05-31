@@ -1,6 +1,7 @@
 import {
 	boxify,
 	buildTreeLines,
+	isPhaseAttachable,
 	PlanPanelComponent,
 	phaseHeaderOffsets,
 	renderPlanPanel,
@@ -145,24 +146,55 @@ describe("buildTreeLines", () => {
 		const plan = makePlan([
 			makePhase("Planned", "planned", [makeTask("reveal me", false)]),
 		]);
-		const body = buildTreeLines(plan, theme, 38, null, new Set(["planned"]));
+		const body = buildTreeLines(
+			plan,
+			theme,
+			38,
+			undefined,
+			new Set(["planned"]),
+		);
 		expect(body.some((l) => l.includes("☐ reveal me"))).toBe(true);
 	});
 
-	it("annotates phases driven by another session with [peer]", () => {
+	it("renders a live-peer badge for a phase in the driver-badge map", () => {
 		const plan = makePlan([
 			makePhase("Peer phase", "active", [], { driverSessionId: "other" }),
 		]);
-		const body = buildTreeLines(plan, theme, 38, "me");
-		expect(body[0]).toContain("[peer]");
+		const body = buildTreeLines(
+			plan,
+			theme,
+			38,
+			new Map([["peer-phase", "peer-live"]]),
+		);
+		expect(body[0]).toContain("◆ peer·live");
 	});
 
-	it("does not annotate the local driver's own phase", () => {
+	it("renders a stale-peer badge from the driver-badge map", () => {
+		const plan = makePlan([
+			makePhase("Peer phase", "active", [], { driverSessionId: "other" }),
+		]);
+		const body = buildTreeLines(
+			plan,
+			theme,
+			38,
+			new Map([["peer-phase", "peer-stale"]]),
+		);
+		expect(body[0]).toContain("◆ peer·stale");
+	});
+
+	it("renders a self badge from the driver-badge map", () => {
 		const plan = makePlan([
 			makePhase("Mine", "active", [], { driverSessionId: "me" }),
 		]);
-		const body = buildTreeLines(plan, theme, 38, "me");
-		expect(body[0]).not.toContain("[peer]");
+		const body = buildTreeLines(plan, theme, 38, new Map([["mine", "self"]]));
+		expect(body[0]).toContain("◆ self");
+		expect(body[0]).not.toContain("peer");
+	});
+
+	it("renders no driver badge when the phase is absent from the map", () => {
+		const plan = makePlan([makePhase("Lonely", "active", [])]);
+		const body = buildTreeLines(plan, theme, 38, new Map());
+		expect(body[0]).not.toContain("◆");
 	});
 
 	it("shows an explicit placeholder for an active phase with no tasks", () => {
@@ -177,7 +209,7 @@ describe("buildTreeLines", () => {
 			makePhase("First", "planned"),
 			makePhase("Second", "planned"),
 		]);
-		const body = buildTreeLines(plan, theme, 38, null, undefined, 1);
+		const body = buildTreeLines(plan, theme, 38, undefined, undefined, 1);
 		expect(body[0]).not.toContain("▌");
 		expect(body[1]).toContain("▌");
 	});
@@ -329,6 +361,25 @@ describe("renderPlanPanel", () => {
 		expect(joined).toContain("↑↓ move · → expand · Esc back");
 	});
 
+	it("swaps in the attach hint when the cursor sits on a peer phase", () => {
+		const peerPlan = makePlan([
+			makePhase("Peer", "active", [], {
+				driverSessionId: "other",
+				sessionPath: "/tmp/other.jsonl",
+			}),
+		]);
+		const r = renderPlanPanel(peerPlan, {
+			theme,
+			width: 44,
+			focused: true,
+			scrollOffset: 0,
+			termHeight: 14,
+			selectedIndex: 0,
+			driverBadges: new Map([["peer", "peer-live"]]),
+		});
+		expect(r.lines.join("\n")).toContain("⏎ attach agent");
+	});
+
 	it("still produces a box for an empty plan (component short-circuits empties)", () => {
 		const r = renderPlanPanel(makePlan([]), {
 			theme,
@@ -347,10 +398,16 @@ describe("PlanPanelComponent navigation", () => {
 		down: "\x1b[B",
 		right: "\x1b[C",
 		left: "\x1b[D",
+		return: "\r",
 		escape: "\x1b",
 	};
 
-	function mount(plan: Plan) {
+	function mount(
+		plan: Plan,
+		opts: {
+			onAttachPhase?: (phaseId: string) => void;
+		} = {},
+	) {
 		let unfocused = 0;
 		const component = new PlanPanelComponent({
 			plan,
@@ -359,6 +416,7 @@ describe("PlanPanelComponent navigation", () => {
 			onRequestUnfocus: () => {
 				unfocused++;
 			},
+			onAttachPhase: opts.onAttachPhase,
 		});
 		// Prime the cached viewport metrics the way the host does on render.
 		component.setViewportHeight(40);
@@ -464,5 +522,65 @@ describe("PlanPanelComponent navigation", () => {
 		expect(bodyOf(component)).toContain("☐ hidden");
 		component.setPlan(makePlan(plan.phases)); // same slug "test-plan"
 		expect(bodyOf(component)).toContain("☐ hidden");
+	});
+
+	it("routes ⏎ to onAttachPhase for a peer-driven phase", () => {
+		const attached: string[] = [];
+		const { component } = mount(
+			makePlan([
+				makePhase("Peer", "active", [], {
+					driverSessionId: "other",
+					sessionPath: "/tmp/other.jsonl",
+				}),
+			]),
+			{ onAttachPhase: (id) => attached.push(id) },
+		);
+		component.setDriverBadges(new Map([["peer", "peer-live"]]));
+		component.setFocused(true);
+		component.handleInput(KEY.return);
+		expect(attached).toEqual(["peer"]);
+	});
+
+	it("falls back to expand on ⏎ for a non-attachable phase", () => {
+		const attached: string[] = [];
+		const { component } = mount(
+			makePlan([makePhase("Planned", "planned", [makeTask("hidden", false)])]),
+			{ onAttachPhase: (id) => attached.push(id) },
+		);
+		component.setFocused(true);
+		expect(bodyOf(component)).not.toContain("hidden");
+		component.handleInput(KEY.return);
+		expect(attached).toEqual([]);
+		expect(bodyOf(component)).toContain("☐ hidden");
+	});
+});
+
+describe("isPhaseAttachable", () => {
+	it("is true for a peer phase with a session path", () => {
+		const plan = makePlan([
+			makePhase("Peer", "active", [], { sessionPath: "/tmp/p.jsonl" }),
+		]);
+		expect(isPhaseAttachable(plan, 0, new Map([["peer", "peer-live"]]))).toBe(
+			true,
+		);
+		expect(isPhaseAttachable(plan, 0, new Map([["peer", "peer-stale"]]))).toBe(
+			true,
+		);
+	});
+
+	it("is false for self, missing session path, or undefined selection", () => {
+		const withPath = makePlan([
+			makePhase("Self", "active", [], { sessionPath: "/tmp/p.jsonl" }),
+		]);
+		expect(isPhaseAttachable(withPath, 0, new Map([["self", "self"]]))).toBe(
+			false,
+		);
+		const noPath = makePlan([makePhase("Peer", "active")]);
+		expect(isPhaseAttachable(noPath, 0, new Map([["peer", "peer-live"]]))).toBe(
+			false,
+		);
+		expect(
+			isPhaseAttachable(withPath, undefined, new Map([["self", "peer-live"]])),
+		).toBe(false);
 	});
 });
