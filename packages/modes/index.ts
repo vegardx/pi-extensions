@@ -183,6 +183,8 @@ import {
 	worktreeExists,
 	worktreePath,
 } from "./plan/worktree.js";
+import type { AgentRow } from "./sidebar/agents.js";
+import type { SidebarEnv } from "./sidebar/info.js";
 import { SidebarComponent } from "./sidebar/shell.js";
 
 const EXT_ID = "modes";
@@ -499,6 +501,9 @@ export default defineExtension(
 		let sidebar: SidebarComponent | null = null;
 		let sidebarHandle: OverlayHandle | null = null;
 		let sidebarEnabled = false;
+		// Live `/implement --fanout` fleet, captured so the sidebar Info box can
+		// list its workers. Set when the orchestrator starts, cleared when it ends.
+		let activeFleet: FleetManager | null = null;
 
 		// Persistent codebase-explore mailbox and web-research sub-agent.
 		// Created lazily on first tool call; disposed when leaving plan mode,
@@ -540,6 +545,8 @@ export default defineExtension(
 		function ensureDelegateAgents(ctx: ExtensionContext): DelegateAgents {
 			if (!delegateAgents) {
 				delegateAgents = new DelegateAgents(ctx);
+				// Mirror research activity into the sidebar Info box (live).
+				delegateAgents.setOnResearchChange(() => refreshSidebar(ctx));
 			}
 			return delegateAgents;
 		}
@@ -585,6 +592,8 @@ export default defineExtension(
 			state: { tasks: ExploreTask[]; notifications: ExploreNotification[] },
 		): void {
 			if (!ctx.hasUI) return;
+			// Mirror explore activity into the sidebar Info box (live).
+			refreshSidebar(ctx);
 			const running = state.tasks.filter((t) => t.status === "running").length;
 			const queued = state.tasks.filter((t) => t.status === "queued").length;
 			// Hide when no active work remains: empty mailbox, all tasks settled
@@ -1436,6 +1445,108 @@ export default defineExtension(
 			});
 		}
 
+		/** Short, home-relative form of the cwd for the Info box `repo` row. */
+		function shortCwd(cwd: string): string | null {
+			if (!cwd) return null;
+			const home = homedir();
+			return cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
+		}
+
+		/** Gather the Info box env facts from live ctx + git state. */
+		function buildSidebarEnv(ctx: ExtensionContext): SidebarEnv {
+			return {
+				model: formatModelLabel(ctx),
+				context: formatContextUsage(ctx),
+				repo: shortCwd(ctx.cwd ?? ""),
+				branch: currentBranch(ctx.cwd ?? ".") ?? modeState?.branch ?? null,
+			};
+		}
+
+		/**
+		 * Aggregate every live sub-agent into one flat list for the Info box:
+		 * codebase-explore tasks, web-research delegates, `--fanout` fleet workers,
+		 * and peer phase drivers. Terminal/idle entries are dropped so rows clear on
+		 * completion.
+		 */
+		function buildSidebarAgents(ctx: ExtensionContext): AgentRow[] {
+			const rows: AgentRow[] = [];
+
+			// Codebase-explore tasks (active only).
+			const explore = exploreMailbox?.getState();
+			if (explore) {
+				for (const t of explore.tasks) {
+					if (t.status !== "queued" && t.status !== "running") continue;
+					rows.push({
+						kind: "explore",
+						label: t.id,
+						status: t.status,
+						detail: t.lastToolSummary ?? t.question,
+					});
+				}
+			}
+
+			// Web-research delegates (blocking path tracked by activeResearch).
+			for (const topic of delegateAgents?.getActiveResearch() ?? []) {
+				rows.push({ kind: "research", label: topic, status: "running" });
+			}
+
+			// `--fanout` fleet workers + queued chains.
+			const snapshot = activeFleet?.getSnapshot();
+			if (snapshot) {
+				for (const w of snapshot.workers) {
+					const status: AgentRow["status"] =
+						w.status === "ended"
+							? "done"
+							: w.status === "error"
+								? "error"
+								: "running";
+					rows.push({
+						kind: "fleet",
+						label: w.chainId.slice(0, 8),
+						status,
+						detail: w.lastToolSummary ?? w.chainHeadId,
+					});
+				}
+				for (const chainId of snapshot.queued) {
+					rows.push({
+						kind: "fleet",
+						label: chainId.slice(0, 8),
+						status: "queued",
+					});
+				}
+			}
+
+			// Peer phase drivers (other live sessions claiming phases).
+			const slug = modeState?.currentPlanSlug ?? null;
+			const plan = slug ? loadPlan(slug) : null;
+			if (plan) {
+				const badges = computeDriverBadges(
+					plan,
+					ctx.sessionManager.getSessionId(),
+				);
+				for (const phase of plan.phases) {
+					const badge = badges.get(phase.id);
+					if (badge === "peer-live" || badge === "peer-stale") {
+						rows.push({
+							kind: "peer",
+							label: phase.title,
+							status: badge === "peer-live" ? "live" : "stale",
+							detail: "phase driver",
+						});
+					}
+				}
+			}
+
+			return rows;
+		}
+
+		/** Push fresh env + sub-agent data into the sidebar (no-op when unmounted). */
+		function refreshSidebar(ctx: ExtensionContext): void {
+			if (!sidebar || !ctx.hasUI) return;
+			sidebar.setEnv(buildSidebarEnv(ctx));
+			sidebar.setAgents(buildSidebarAgents(ctx));
+		}
+
 		/** Flip the per-session sidebar toggle and reconcile overlays. */
 		function toggleSidebar(ctx: ExtensionContext): void {
 			sidebarEnabled = !sidebarEnabled;
@@ -1461,6 +1572,7 @@ export default defineExtension(
 			if (sidebarEnabled) {
 				teardownPlanOverlay();
 				mountSidebar(ctx);
+				refreshSidebar(ctx);
 				return;
 			}
 			teardownSidebar();
@@ -2235,7 +2347,11 @@ export default defineExtension(
 				planSlug: plan.slug,
 				selfSessionId,
 			});
+			activeFleet = fleet;
+			refreshSidebar(ctx);
 			fleet.onEvent(({ chainId, notification }) => {
+				// Keep the sidebar Info box in step with worker lifecycle.
+				refreshSidebar(ctx);
 				switch (notification.kind) {
 					case "phase-started":
 						notify(
@@ -2294,6 +2410,8 @@ export default defineExtension(
 				const msg = err instanceof Error ? err.message : String(err);
 				notify(ctx, `fleet error: ${msg}`, "error");
 			} finally {
+				activeFleet = null;
+				refreshSidebar(ctx);
 				await fleet.dispose();
 			}
 		}
