@@ -261,7 +261,7 @@ describe("renderPlanPanel", () => {
 		expect(r.maxScroll).toBe(0);
 		const joined = r.lines.join("\n");
 		expect(joined).toContain("☑ task 0");
-		expect(joined).toContain("^⇧O scroll");
+		expect(joined).toContain("^⇧O to scroll");
 	});
 
 	it("windows and clamps scroll on a short terminal, focused title + indicator", () => {
