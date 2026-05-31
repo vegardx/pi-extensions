@@ -300,7 +300,7 @@ export function renderPlanPanel(
 		? "↑↓ scroll · Esc back"
 		: state.toggleMode === "focus"
 			? "^⇧O closes"
-			: "^⇧O scroll · again closes";
+			: "^⇧O to scroll";
 	const body = [...win.rows, footerLine(theme, win, hint, innerW)];
 	const title = state.focused ? "Plan · scroll" : "Plan";
 
