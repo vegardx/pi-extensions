@@ -35,14 +35,41 @@ describe("SidebarComponent", () => {
 		}
 	});
 
-	it("renders supplied body content and re-renders on setBox", () => {
+	it("renders env facts and re-renders on setEnv", () => {
 		const requestRender = vi.fn();
 		const c = new SidebarComponent({ theme, requestRender });
-		c.setBox("info", [" model: claude", " branch: main"]);
+		c.setEnv({
+			model: "Sonnet 4.5",
+			context: "12k/200k",
+			repo: "~/src/app",
+			branch: "feat/x",
+		});
 		expect(requestRender).toHaveBeenCalledTimes(1);
 		const joined = c.render(40).join("\n");
-		expect(joined).toContain("model: claude");
-		expect(joined).toContain("branch: main");
+		expect(joined).toContain("Sonnet 4.5");
+		expect(joined).toContain("feat/x");
+		expect(joined).toContain("~/src/app");
+	});
+
+	it("renders sub-agent rows under the env facts", () => {
+		const c = new SidebarComponent({ theme, requestRender: () => {} });
+		c.setEnv({ model: "m", context: null, repo: null, branch: "main" });
+		c.setAgents([
+			{ kind: "explore", label: "e1", status: "running", detail: "grep foo" },
+			{ kind: "fleet", label: "abc12345", status: "queued" },
+		]);
+		const joined = c.render(48).join("\n");
+		expect(joined).toContain("e1");
+		expect(joined).toContain("abc12345");
+	});
+
+	it("fills Plan/Notes bodies via setBody", () => {
+		const c = new SidebarComponent({ theme, requestRender: () => {} });
+		c.setBody("plan", [" phase 1"]);
+		c.setBody("notes", [" remember this"]);
+		const joined = c.render(40).join("\n");
+		expect(joined).toContain("phase 1");
+		expect(joined).toContain("remember this");
 	});
 
 	it("invalidate triggers a re-render", () => {

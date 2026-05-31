@@ -113,6 +113,8 @@ export class DelegateAgents {
 	>();
 	private readonly activeResearch = new Map<number, string>();
 	private nextResearchId = 0;
+	/** Optional host hook fired whenever the blocking-path research set changes. */
+	private activeResearchChangeHook: (() => void) | null = null;
 	/**
 	 * Non-blocking research mailbox (#159a). `research_ask` enqueues
 	 * a job here; `research_check` / `research_wait` drain it.
@@ -368,8 +370,23 @@ export class DelegateAgents {
 		}
 	}
 
+	/**
+	 * Register a callback fired whenever the active-research set changes (a run
+	 * starts or finishes). Lets the host mirror research rows into other surfaces
+	 * (e.g. the sidebar Info box) without polling.
+	 */
+	setOnResearchChange(cb: (() => void) | null): void {
+		this.activeResearchChangeHook = cb;
+	}
+
+	/** Topics of the currently-running research delegates (blocking path). */
+	getActiveResearch(): string[] {
+		return Array.from(this.activeResearch.values());
+	}
+
 	private updateResearchWidget(): void {
 		if (!this.ctx.hasUI) return;
+		this.activeResearchChangeHook?.();
 		if (this.activeResearch.size === 0) {
 			this.ctx.ui.setWidget("delegate-research", undefined);
 			return;
