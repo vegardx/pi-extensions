@@ -3,10 +3,11 @@
 Several extensions in this monorepo call an LLM on a side task:
 
 - `modes` derives a kebab-case branch slug from a free-form description.
-- the `modes` auto-review pass (in `pi-ext-review/auto-review`) runs
-  the `code-reviewer` and `code-simplifier` lanes twice each — once
-  against `primary.heavy`, once against `secondary.heavy` — and queues
-  only the findings both tiers independently flag.
+- the review pipeline (the `reviewer` delegate target in
+  `pi-ext-review`) resolves a model per agent — four lenses, an
+  indexer, and a curator — via `extensionConfig.review.models.<agent>`
+  → `review.defaultModel` → built-ins (`security`/`curator` on
+  `secondary.heavy`, the rest on `secondary.normal`).
 
 None of them hard-code a provider/model id. Each one declares a **tier**
 (`fast` / `normal` / `heavy`) and a **set** (`primary` / `secondary`),
@@ -53,9 +54,9 @@ Two top-level keys this monorepo's extensions read from pi's
 
 - **`backgroundModels.<set>.<tier>`** — maps each (set, tier) pair to a
   `provider/id` string. Most extensions read from `primary`. Consumers
-  that want a different model family for cross-checking (today:
-  the `modes` auto-review pass via `pi-ext-review/auto-review`) read
-  from `secondary`.
+  that want a cheaper or different model family for fan-out work
+  (today: the review pipeline's lenses and curator) read from
+  `secondary`.
 - **`primary` / `secondary` are peers, not fallbacks.** A user
   configures one or both. When a `secondary` consumer asks for a tier
   that isn't set under `secondary`, the resolver falls back to
@@ -97,7 +98,7 @@ candidate that resolves in the registry **and** has usable auth:
    session with a single `notify()`.
 
 All current consumers that hand the model spec off to a subagent RPC
-(the `/review` lanes) accept headers-only auth. The `modes` smart
+(the review lenses) accept headers-only auth. The `modes` smart
 slug resolver, by contrast, calls `completeSimple` directly and
 passes `requireApiKey: true` — a headers-only provider falls back
 to deterministic token-truncation for the slug. See the
@@ -108,12 +109,10 @@ to deterministic token-truncation for the slug. See the
 | Extension | Set | Tier | Why | Override knob |
 |---|---|---|---|---|
 | `modes` smart slug | `primary` | `fast` | One-shot model call to turn a free-form description into a kebab-case branch slug; falls back to deterministic token-truncation when no model resolves or auth is headers-only. | `$PI_MODES_SLUG_MODEL` (session), `extensionConfig.modes.model` |
-| `modes` auto-review (`pi-ext-review/auto-review`) | `primary` **and** `secondary` | `heavy` | Cross-model consensus pass. Each of two reviewer lanes (`code-reviewer`, `code-simplifier`) runs once per set; only findings both tiers flag are queued for the host agent. | `extensionConfig.modes.review.enable: false` to disable; both heavy tiers must resolve or the pass is skipped. |
+| review pipeline (`pi-ext-review`, `reviewer` delegate target) | `secondary` (default) | `normal` (lenses, indexer) / `heavy` (security lens, curator) | Lens fan-out + curator synthesis. Each agent resolves independently. | `extensionConfig.review.models.<agent>` = `{set, tier}`; `extensionConfig.review.defaultModel` for a repo-wide default. |
 
 Extensions that don't take a background model and use `ctx.model`
-directly: `commit`, `review` (the interactive `/review` command —
-only `auto-review` consumes background tiers), `gh` (skills-only),
-`startup`.
+directly: `commit`, `gh` (skills-only), `startup`.
 
 ## Common configurations
 
@@ -141,11 +140,10 @@ opus unless an extension declares `heavy`.
 ### Cross-checking with primary + secondary
 
 Configure two model families. Most extensions use `primary`; the
-`modes` auto-review pass uses both — each reviewer lane runs once
-against `primary.heavy` and once against `secondary.heavy`, and only
-findings both tiers flag are queued for the host agent. Set both for
-proper cross-model checking; if `secondary.heavy` isn't set the pass
-is skipped (the post-loop picker still fires).
+review pipeline defaults to `secondary` so heavy review fan-out runs
+on the cheaper stack. Point individual review agents at `primary` via
+`extensionConfig.review.models.<agent>` when you want frontier-model
+depth on a specific lens or the curator.
 
 ```jsonc
 {
@@ -250,7 +248,7 @@ can target it like any other:
 
 Local models cost nothing per call but tend to be slower and less
 capable. Good fit for `fast`-tier extensions with short outputs. The
-`modes` auto-review pass (`heavy`) is only viable on a local model
+review pipeline (`normal`/`heavy`) is only viable on a local model
 sharp enough to read diffs and produce structured JSON — expect to
 wire it up against a hosted model in practice.
 
@@ -275,9 +273,9 @@ tiers, just set `backgroundModels.primary.fast`:
 ```
 
 Covers `modes`' smart slug (`fast`-tier consumer).
-The `modes` auto-review pass (`heavy`-tier across both `primary` and
-`secondary`) stays skipped until you configure `primary.heavy` and
-`secondary.heavy` — it's strictly opt-in.
+The review pipeline aborts cleanly when no model resolves for the
+curator — configure `secondary.normal`/`secondary.heavy` (or point
+`review.defaultModel` at `primary`) to enable it.
 
 ## Provider and gateway notes
 
@@ -370,16 +368,14 @@ whatever comes back.
 
 ## Why two sets (primary / secondary)
 
-A second model family is useful for cross-checking. Run a reviewer
-lane on your primary stack, and run it again on the secondary stack —
-if both flag the same finding, high confidence; if only one does, the
-finding is dropped. That's exactly what the `modes` auto-review pass
-does between its auto-review pass and the post-loop picker.
+A second model family is useful for cross-checking: when two
+independent sources flag the same finding, the review curator marks it
+high confidence; single-source findings get verified or downgraded.
+Running review lenses on `secondary` while the main agent sits on
+`primary` gives that independence for free.
 
 Most users will configure only `primary`. The `secondary` set exists
 for users who want cross-model checking and have credentials for a
-second provider. The `modes` auto-review pass requires both heavy
-tiers to resolve; if one doesn't, the pass is skipped. Other `secondary`
-consumers — should any be added later — fall back to `primary` cleanly
-when `secondary` isn't configured, so the schema isn't a tax on
-users who don't care.
+second provider. `secondary` consumers (the review agents) fall back
+to `primary` cleanly when `secondary` isn't configured, so the schema
+isn't a tax on users who don't care.

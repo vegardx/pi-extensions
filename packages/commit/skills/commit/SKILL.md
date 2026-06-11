@@ -22,7 +22,7 @@ This skill can be invoked two ways:
 ## Workflow
 
 1. Preflight — verify repo, changes exist, current branch is safe
-2. Offer `/review` first
+2. Offer a review first
 3. Propose a commit plan
 4. Execute commits after confirmation
 5. Push (fork-aware routing, head-drift detection)
@@ -40,18 +40,19 @@ git branch --show-current                  # must be on a named branch
 If you're on the default branch (`main` / `master`), ask whether to
 continue — usually the user meant to branch first.
 
-## Step 2: Offer `/review` first
+## Step 2: Offer a review first
 
-`/review` runs a multi-agent review and surfaces findings before the
-commit message hardens around them. Offer it, but let the user skip.
+A multi-lens review surfaces findings before the commit message
+hardens around them. Offer it, but let the user skip.
 
-Standalone wording: "Run `/review` first, or commit now?"
+Standalone wording: "Run a review first, or commit now?"
 
 If running with the extension, the picker handles this; when the user
-picks Review, the extension dispatches `/review` for them via
-`pi.sendUserMessage` and prints a short re-invoke note. Standalone
-(this skill alone), suggest `/review` to the user and stop — you
-can't dispatch slash commands from skill context.
+picks Review, the extension executes the `reviewer` delegate target
+in-process and walks the curated findings. Standalone (this skill
+alone), run `delegate({to: "reviewer", message: "review the changes
+about to be committed", params: {scope: "working"}})` when the tool is
+available; otherwise skip the review step.
 
 ## Step 3: Propose a commit plan
 
@@ -228,13 +229,13 @@ branch (follow-up commits, fixes).
 - No changes in the working tree — nothing to commit.
 - Detached HEAD — resolve the branch situation first.
 - Mid-rebase or merge conflict — finish that first.
-- Your changes aren't ready for review — run tests, `/review`, etc.
+- Your changes aren't ready for review — run tests, a review pass, etc.
   before committing.
 
 ## Related
 
 - `/plan` — plans a change; `/park` writes `branch.<name>.tracking-issue`
   which this skill picks up.
-- `/review` — multi-agent code review. Recommended before committing.
+- `delegate({to: "reviewer"})` — multi-lens code review. Recommended before committing.
 - `/skill:gh` — multi-host routing, fork-aware pushes, head-drift
   detection. This skill dispatches through it.

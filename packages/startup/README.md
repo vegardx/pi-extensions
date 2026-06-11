@@ -53,7 +53,7 @@ instead:
   Shows `(none found)` when no context files exist on disk.
 - **Declared extensions** — every extension that called
   `declareExtension(...)` from its factory. For each:
-  - source path, registered commands (e.g. `/plan`, `/review`),
+  - source path, registered commands (e.g. `/plan`, `/commit`),
     and registered tool names;
   - declared config keys under `extensionConfig.<name>.<key>` with
     each key's *effective* value, the *source* layer it came from

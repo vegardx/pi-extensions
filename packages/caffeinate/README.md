@@ -2,7 +2,7 @@
 
 macOS keep-awake helper for the unattended runs that other extensions
 in this monorepo do — `modes` auto-verify + auto-review loops,
-`/review`'s seven-reviewer fan-out, etc.
+the review pipeline's lens fan-out, etc.
 
 ## What it does
 

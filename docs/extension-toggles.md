@@ -89,10 +89,14 @@ import { runFindingsTriage } from "pi-ext-review/triage";
 import type { Finding } from "pi-ext-review/findings";
 
 // ✓ allowed — gated on the user's actual config
-if (pi.getCommands().some((c) => c.name === "review")) {
-  const { runFindingsTriage } = await import("pi-ext-review/triage");
-  await runFindingsTriage(/* ... */);
+if (pi.getCommands().some((c) => c.name === "commit")) {
+  const { runCommit } = await import("pi-ext-commit/core");
+  await runCommit(/* ... */);
 }
+
+// ✓ allowed — capability probe via the shared delegate registry
+const reviewer = getDelegateTarget("reviewer"); // from _shared
+if (reviewer) await reviewer.execute(/* ... */);
 ```
 
 `scripts/check-cross-extension-imports.mjs` (run as part of `npm run check`) enforces this. Type-only imports stay allowed because they vanish at runtime and don't bring the sibling's code along.
@@ -104,7 +108,7 @@ Extensions can declare two kinds of dependencies in their `defineExtension({ ...
 - **`dependsOn: ["foo"]`** — strict. If `foo` is missing or disabled, the dependent extension refuses to load and emits an error notify. Reserve this for genuine hard requirements.
 - **`integratesWith: ["foo"]`** — soft. If `foo` is unavailable, this extension still loads; an info notify fires once at session start naming the missing integration.
 
-Today nothing in this repo declares `dependsOn`. The four real edges (`modes ↔ commit/review`, `commit ↔ review`, `derp → modes`) are all `integratesWith` — they degrade silently when the dep is absent.
+`review` declares `dependsOn: ["subagent"]` — without the delegate tool there is no way to invoke the pipeline. The remaining edges (`modes ↔ commit/review/subagent`, `commit ↔ review/subagent`, `derp → modes`) are `integratesWith` — they degrade silently when the dep is absent. Note that delegate-target registration happens at module load, so a target can appear in the registry even when its extension later fails the dep check; presence in the registry means "code is loaded", not "extension is enabled".
 
 ## Implementation pointers
 
