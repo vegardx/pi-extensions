@@ -2327,7 +2327,7 @@ export default defineExtension(
 					const review = await runPrePublishReview({
 						deliverable: completedPhase,
 						ctx,
-						getReviewer: () => getDelegateTarget("reviewer"),
+						getReviewer: () => getAvailableDelegateTarget("reviewer", ctx),
 						applyFix: async (prompt) => {
 							const idle = waitForNextAgentEnd();
 							pi.sendMessage(
