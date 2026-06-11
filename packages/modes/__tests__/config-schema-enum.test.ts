@@ -59,7 +59,9 @@ describe("modes configSchema enum knobs", () => {
 
 	it("advertises updated delegation and explore defaults", () => {
 		expect(knob("research.timeoutMs").default).toBe(120000);
-		expect(knob("delegate.maxConcurrent").default).toBe(10);
 		expect(knob("explore.parallelism").default).toBe(2);
+		// delegate.* knobs moved to the subagent extension with the tool.
+		const schema = getDeclaredExtension("modes")?.configSchema ?? [];
+		expect(schema.some((k) => k.key.startsWith("delegate."))).toBe(false);
 	});
 });
