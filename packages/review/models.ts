@@ -39,7 +39,7 @@ export function isLensId(raw: string): raw is LensId {
 }
 
 /** Agents covered by per-agent model configuration. */
-export type ReviewAgentId = LensId | "indexer" | "curator";
+export type ReviewAgentId = LensId | "indexer" | "curator" | "consult";
 
 export interface AgentModelSpec {
 	set: BackgroundSet;
@@ -63,6 +63,10 @@ export const BUILTIN_MODEL_DEFAULTS: Readonly<
 	simplification: { set: "secondary", tier: "normal" },
 	indexer: { set: "secondary", tier: "normal" },
 	curator: { set: "secondary", tier: "heavy" },
+	// Second-opinion surface for contested findings; the opposite set
+	// from the curator's default so the opinion comes from a different
+	// model family.
+	consult: { set: "primary", tier: "heavy" },
 } as const;
 
 const VALID_SETS: readonly BackgroundSet[] = ["primary", "secondary"];
@@ -117,4 +121,85 @@ export function resolveAllAgentModels(
 		out[id] = resolveAgentModelSpec(settings, id);
 	}
 	return out;
+}
+
+// ---- Per-lens multi-model / multi-pass specs ----------------------------
+
+/**
+ * Fan-out shape for one lens. `models` run in parallel within a pass;
+ * `passes` run sequentially, each later pass receiving a digest of the
+ * prior findings with a "find DIFFERENT issues" instruction.
+ *
+ * Built-in default is a single model, single pass for every lens —
+ * multi-model/multi-pass is opt-in via settings until the token cost
+ * has been measured on real diffs:
+ *
+ * ```json
+ * { "extensionConfig": { "review": { "models": {
+ *     "security": { "models": [
+ *         { "set": "secondary", "tier": "heavy" },
+ *         { "set": "primary", "tier": "heavy" }
+ *       ], "passes": 2 }
+ * } } } }
+ * ```
+ *
+ * A bare `{set, tier}` entry normalises to `{models: [spec], passes: 1}`.
+ */
+export interface LensSpec {
+	models: AgentModelSpec[];
+	passes: number;
+}
+
+function isAgentModelSpecLoose(raw: unknown): raw is AgentModelSpec {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+	const o = raw as Record<string, unknown>;
+	return (
+		(o.set === "primary" || o.set === "secondary") &&
+		(o.tier === "fast" || o.tier === "normal" || o.tier === "heavy")
+	);
+}
+
+/**
+ * Resolve a lens's full fan-out spec. `review.models.<lens>` may be a
+ * bare `{set, tier}` (single model, single pass) or a
+ * `{models: [...], passes}` object; anything invalid falls through to
+ * the single-model default from {@link resolveAgentModelSpec}.
+ */
+export function resolveLensSpec(
+	settings: RelevantSettings,
+	lens: LensId,
+): LensSpec {
+	const reviewCfg = settings.extensionConfig?.review;
+	if (reviewCfg && typeof reviewCfg === "object" && !Array.isArray(reviewCfg)) {
+		const models = (reviewCfg as Record<string, unknown>).models;
+		if (models && typeof models === "object" && !Array.isArray(models)) {
+			const raw = (models as Record<string, unknown>)[lens];
+			if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+				const o = raw as Record<string, unknown>;
+				if (Array.isArray(o.models)) {
+					const specs = o.models.filter(isAgentModelSpecLoose);
+					if (specs.length > 0) {
+						const passesRaw = o.passes;
+						const passes =
+							typeof passesRaw === "number" &&
+							Number.isFinite(passesRaw) &&
+							passesRaw >= 1
+								? Math.floor(passesRaw)
+								: 1;
+						return { models: specs, passes };
+					}
+				}
+			}
+		}
+	}
+	return { models: [resolveAgentModelSpec(settings, lens)], passes: 1 };
+}
+
+/** Read `review.consult.enabled` (default false). */
+export function consultEnabled(settings: RelevantSettings): boolean {
+	const reviewCfg = settings.extensionConfig?.review;
+	if (!reviewCfg || typeof reviewCfg !== "object") return false;
+	const consult = (reviewCfg as Record<string, unknown>).consult;
+	if (!consult || typeof consult !== "object") return false;
+	return (consult as Record<string, unknown>).enabled === true;
 }
