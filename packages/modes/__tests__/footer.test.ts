@@ -44,7 +44,7 @@ describe("composeFooterLine", () => {
 		const candidates: FooterRightCandidate[] = [
 			{
 				visible: `${usage} | ${label}`,
-				styled: muted(usage) + " | " + bold(label),
+				styled: `${muted(usage)} | ${bold(label)}`,
 			},
 			{ visible: label, styled: bold(label) },
 		];

@@ -136,7 +136,6 @@ import {
 	deliverables,
 	effectiveDependsOn,
 	effectiveWorkItemKind,
-	gatingTasks,
 	type ImplementBranchPlan,
 	isDeliverableReady,
 	isImplementableLeaf,
@@ -147,7 +146,6 @@ import {
 	planImplementBranch,
 	readyDeliverables,
 	repoNameFromPath,
-	shipsPR,
 	slugify,
 	type WorkItem as Task,
 	TERMINAL_STATUSES,
@@ -180,11 +178,7 @@ import {
 	decideFromChoice,
 	type TransitionDecision,
 } from "./plan/transition.js";
-import {
-	subtreeComplete,
-	topLevelLeaves,
-	unansweredQuestions,
-} from "./plan/tree.js";
+import { unansweredQuestions } from "./plan/tree.js";
 import { isWorker } from "./plan/worker-protocol.js";
 import {
 	appendSurfacedQuestions,

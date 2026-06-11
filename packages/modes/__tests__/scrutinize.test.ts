@@ -140,7 +140,7 @@ describe("scrutinizePlan", () => {
 		it("recovers findings from JSON wrapped in a markdown fence", async () => {
 			vi.mocked(runSubagent).mockResolvedValue({
 				tag: "scrutinize",
-				rawText: "```json\n" + JSON.stringify(VALID_FINDINGS) + "\n```",
+				rawText: `\`\`\`json\n${JSON.stringify(VALID_FINDINGS)}\n\`\`\``,
 			});
 
 			const result = await scrutinizePlan(makePlan(), MOCK_CTX);
@@ -275,7 +275,7 @@ describe("scrutinizePlan", () => {
 			const call = vi.mocked(runSubagent).mock.calls[0]![0];
 			// payload should contain the truncated version (500 chars + ellipsis)
 			// and not the full 600-char body
-			expect(call.task).toContain("x".repeat(500) + "…");
+			expect(call.task).toContain(`${"x".repeat(500)}…`);
 			expect(call.task).not.toContain("x".repeat(501));
 		});
 
