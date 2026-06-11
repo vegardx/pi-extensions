@@ -11,7 +11,7 @@
  */
 
 import type { RelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
-import type { RawFinding, ReviewerRole } from "./findings.js";
+import type { RawFinding } from "./findings.js";
 import {
 	BUILTIN_SCANNERS,
 	defaultProbe,
@@ -71,10 +71,15 @@ export type StaticToolName =
 	| "gitleaks"
 	| "semgrep";
 
-export type StaticToolLane = Extract<
-	ReviewerRole,
-	"code-reviewer" | "security-analyst" | "code-simplifier"
->;
+/**
+ * Scanner-internal lane labels. Historic role names kept as opaque
+ * registry keys; `run-reviewer.ts` maps them onto the lens that
+ * receives the findings (STATIC_LANE_TO_LENS).
+ */
+export type StaticToolLane =
+	| "code-reviewer"
+	| "security-analyst"
+	| "code-simplifier";
 
 export interface StaticToolConfig {
 	enabled: boolean;

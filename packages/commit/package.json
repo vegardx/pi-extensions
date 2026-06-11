@@ -4,8 +4,12 @@
   "version": "0.0.1",
   "type": "module",
   "pi": {
-    "extensions": ["./index.ts"],
-    "skills": ["./skills/"]
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills/"
+    ]
   },
   "exports": {
     ".": "./index.ts",
@@ -14,11 +18,21 @@
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*",
-    "@vegardx/pi-extensions-shared": "*"
+    "@vegardx/pi-extensions-shared": "*",
+    "pi-ext-review": "*"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-coding-agent": { "optional": true },
-    "@sinclair/typebox": { "optional": true },
-    "@vegardx/pi-extensions-shared": { "optional": true }
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@sinclair/typebox": {
+      "optional": true
+    },
+    "@vegardx/pi-extensions-shared": {
+      "optional": true
+    },
+    "pi-ext-review": {
+      "optional": true
+    }
   }
 }

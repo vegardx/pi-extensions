@@ -22,7 +22,7 @@ export default defineExtension(
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Drive a focused commit/PR loop: stage, summarise, push, open or edit the PR.",
-		integratesWith: ["review"],
+		integratesWith: ["review", "subagent"],
 	},
 	(pi: ExtensionAPI) => {
 		pi.registerCommand(EXT_ID, {

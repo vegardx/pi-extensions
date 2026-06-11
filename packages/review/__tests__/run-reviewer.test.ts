@@ -68,9 +68,7 @@ function curated(over?: Partial<OrchestratedFinding>): OrchestratedFinding {
 		description: "desc",
 		confidence: "high",
 		confirmedByTiers: [],
-		// Still `ReviewerRole`-typed until the lens rename lands in the
-		// next commit; the runtime accepts any string.
-		confirmedByRoles: ["code-reviewer"],
+		confirmedByRoles: ["code-review"],
 		staticToolSource: null,
 		...over,
 	};

@@ -21,11 +21,9 @@ import type {
 	Tier,
 } from "@vegardx/pi-extensions-shared/extension-settings.js";
 
-/**
- * The four review lenses. `generic` sweeps structure, scope, docs and
- * dependencies in one pass; the other three are deep lenses.
- */
-export type LensId = "generic" | "code-review" | "security" | "simplification";
+import type { LensId } from "./findings.js";
+
+export type { LensId };
 
 export const ALL_LENSES: readonly LensId[] = [
 	"generic",

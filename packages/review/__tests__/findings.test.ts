@@ -111,7 +111,7 @@ describe("dedupeFindings", () => {
 	it("merges identical findings from multiple reviewers", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "IMPORTANT",
@@ -123,7 +123,7 @@ describe("dedupeFindings", () => {
 				],
 			},
 			{
-				role: "architect",
+				role: "generic",
 				findings: [
 					{
 						severity: "IMPORTANT",
@@ -136,7 +136,7 @@ describe("dedupeFindings", () => {
 			},
 		]);
 		expect(findings).toHaveLength(1);
-		expect(findings[0]?.flaggedBy).toEqual(["code-reviewer", "architect"]);
+		expect(findings[0]?.flaggedBy).toEqual(["code-review", "generic"]);
 		expect(findings[0]?.consensus).toBe(true);
 		// Longer description wins.
 		expect(findings[0]?.description).toBe(
@@ -147,7 +147,7 @@ describe("dedupeFindings", () => {
 	it("treats title case-insensitively when deduping", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "NOTE",
@@ -159,7 +159,7 @@ describe("dedupeFindings", () => {
 				],
 			},
 			{
-				role: "architect",
+				role: "generic",
 				findings: [
 					{
 						severity: "NOTE",
@@ -177,7 +177,7 @@ describe("dedupeFindings", () => {
 	it("does not merge across different line numbers", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "NOTE",
@@ -202,7 +202,7 @@ describe("dedupeFindings", () => {
 	it("promotes severity to the highest seen", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "NOTE",
@@ -214,7 +214,7 @@ describe("dedupeFindings", () => {
 				],
 			},
 			{
-				role: "security-analyst",
+				role: "security",
 				findings: [
 					{
 						severity: "CRITICAL",
@@ -232,7 +232,7 @@ describe("dedupeFindings", () => {
 	it("sorts CRITICAL → IMPORTANT → NOTE, consensus first within a tier", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "NOTE",
@@ -258,7 +258,7 @@ describe("dedupeFindings", () => {
 				],
 			},
 			{
-				role: "security-analyst",
+				role: "security",
 				findings: [
 					{
 						severity: "CRITICAL",
@@ -282,7 +282,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 	it("records flaggedByTier and crossModelConsensus when tiers are provided", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "primary",
 				findings: [
 					{
@@ -295,7 +295,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 				],
 			},
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "secondary",
 				findings: [
 					{
@@ -316,7 +316,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 	it("sets crossModelConsensus=false when only one tier flags", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "primary",
 				findings: [
 					{
@@ -329,7 +329,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 				],
 			},
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "secondary",
 				findings: [],
 			},
@@ -345,7 +345,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 		// one bundle — still counts as cross-model consensus.
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "primary",
 				findings: [
 					{
@@ -358,7 +358,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 				],
 			},
 			{
-				role: "code-simplifier",
+				role: "simplification",
 				tier: "secondary",
 				findings: [
 					{
@@ -382,7 +382,7 @@ describe("dedupeFindings — tier-tagged bundles", () => {
 	it("leaves tier fields unset when no bundle carries a tier", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "NOTE",
@@ -404,7 +404,7 @@ describe("crossModelConsensus", () => {
 	it("returns only findings with crossModelConsensus === true", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "primary",
 				findings: [
 					{
@@ -425,7 +425,7 @@ describe("crossModelConsensus", () => {
 				],
 			},
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				tier: "secondary",
 				findings: [
 					{
@@ -453,7 +453,7 @@ describe("crossModelConsensus", () => {
 	it("returns [] when no bundle was tier-tagged (consensus undefined)", () => {
 		const findings = dedupeFindings([
 			{
-				role: "code-reviewer",
+				role: "code-review",
 				findings: [
 					{
 						severity: "NOTE",
@@ -465,7 +465,7 @@ describe("crossModelConsensus", () => {
 				],
 			},
 			{
-				role: "architect",
+				role: "generic",
 				findings: [
 					{
 						severity: "NOTE",
@@ -498,7 +498,7 @@ describe("countBySeverity", () => {
 				file: "a",
 				title: "t",
 				description: "",
-				flaggedBy: ["code-reviewer"],
+				flaggedBy: ["code-review"],
 				consensus: false,
 			},
 			{
@@ -506,7 +506,7 @@ describe("countBySeverity", () => {
 				file: "b",
 				title: "t",
 				description: "",
-				flaggedBy: ["code-reviewer"],
+				flaggedBy: ["code-review"],
 				consensus: false,
 			},
 			{
@@ -514,7 +514,7 @@ describe("countBySeverity", () => {
 				file: "c",
 				title: "t",
 				description: "",
-				flaggedBy: ["code-reviewer"],
+				flaggedBy: ["code-review"],
 				consensus: false,
 			},
 		]);
@@ -532,7 +532,7 @@ describe("recommendationFor", () => {
 			line: 42,
 			title: "t",
 			description: "d",
-			flaggedBy: ["code-reviewer" as const],
+			flaggedBy: ["code-review" as const],
 			consensus: false,
 			...overrides,
 		};
@@ -553,7 +553,7 @@ describe("recommendationFor", () => {
 	it("recommends Accept on a consensus finding with a concrete fix", () => {
 		const rec = recommendationFor(
 			finding({
-				flaggedBy: ["code-reviewer", "security-analyst"],
+				flaggedBy: ["code-review", "security"],
 				consensus: true,
 				suggestedAction: "add a null check",
 			}),
@@ -566,7 +566,7 @@ describe("recommendationFor", () => {
 		const rec = recommendationFor(
 			finding({
 				severity: "CRITICAL",
-				flaggedBy: ["code-reviewer", "security-analyst", "architect"],
+				flaggedBy: ["code-review", "security", "generic"],
 				consensus: true,
 				suggestedAction: "parameterize the query",
 			}),
@@ -623,7 +623,7 @@ describe("recommendationFor", () => {
 		const rec = recommendationFor(
 			finding({
 				severity: "NOTE",
-				flaggedBy: ["code-reviewer", "code-simplifier"],
+				flaggedBy: ["code-review", "simplification"],
 				consensus: true,
 				suggestedAction: "inline the single-use helper",
 			}),
