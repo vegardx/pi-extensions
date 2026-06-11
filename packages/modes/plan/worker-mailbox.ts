@@ -39,6 +39,8 @@ import {
 	chainHead,
 	type Deliverable,
 	deliverables,
+	effectiveWorkItemKind,
+	isWorkItem,
 	type Plan,
 } from "./schema.js";
 import { loadPlan } from "./storage.js";
@@ -153,6 +155,11 @@ export function defaultWorkerDeps(): WorkerMailboxDeps {
 					...process.env,
 					[WORKER_ENV_FLAG]: "1",
 					[WORKER_CHAIN_ENV]: opts.chainId,
+					// Workers review their own diff pre-publish: re-enable the
+					// review pipeline and the delegate host inside the child
+					// (PI_SUBAGENT isolation would otherwise strip both).
+					PI_EXT_REVIEW: "on",
+					PI_EXT_SUBAGENT: "on",
 				} as Record<string, string>,
 				extraArgs: [],
 			});
@@ -202,6 +209,23 @@ function snapshotStatuses(plan: Plan): StatusSnapshot {
 }
 
 /**
+ * Question work-item ids per deliverable. Diffed across agent_end
+ * cycles to derive `findings-surfaced` events (the worker's
+ * pre-publish review appends question items to its deliverable).
+ */
+type QuestionSnapshot = Record<string, string[]>;
+
+function snapshotQuestionIds(plan: Plan): QuestionSnapshot {
+	const out: QuestionSnapshot = {};
+	for (const p of deliverables(plan)) {
+		out[p.id] = p.children
+			.filter((n) => isWorkItem(n) && effectiveWorkItemKind(n) === "question")
+			.map((n) => n.id);
+	}
+	return out;
+}
+
+/**
  * Derive lifecycle events from a before/after status diff plus the
  * worker's chain head. Returns events in causal order.
  */
@@ -210,8 +234,24 @@ export function diffWorkerEvents(
 	after: Plan,
 	chainId: string,
 	chainHeadId: string,
+	beforeQuestions?: QuestionSnapshot,
 ): WorkerNotification[] {
 	const events: WorkerNotification[] = [];
+	if (beforeQuestions) {
+		for (const phase of deliverables(after)) {
+			const prev = new Set(beforeQuestions[phase.id] ?? []);
+			const fresh = (snapshotQuestionIds(after)[phase.id] ?? []).filter(
+				(id) => !prev.has(id),
+			);
+			if (fresh.length > 0) {
+				events.push({
+					kind: "findings-surfaced",
+					phaseId: phase.id,
+					questionIds: fresh,
+				});
+			}
+		}
+	}
 	for (const phase of deliverables(after)) {
 		const prev = before[phase.id];
 		const curr = phase.status;
@@ -264,6 +304,7 @@ export class WorkerMailbox {
 
 	private state: WorkerState;
 	private lastSnapshot: StatusSnapshot = {};
+	private lastQuestionSnapshot: QuestionSnapshot = {};
 	private listeners = new Set<(event: WorkerNotification) => void>();
 	private endHandlers = new Set<() => void>();
 	private disposed = false;
@@ -322,6 +363,7 @@ export class WorkerMailbox {
 			const initialPlan = this.deps.readPlan(this.opts.planSlug);
 			if (initialPlan) {
 				this.lastSnapshot = snapshotStatuses(initialPlan);
+				this.lastQuestionSnapshot = snapshotQuestionIds(initialPlan);
 			}
 			const { agent, dispose } = await this.deps.spawnAgent(
 				this.ctx,
@@ -403,8 +445,10 @@ export class WorkerMailbox {
 						plan,
 						this.opts.chainId,
 						this.opts.chainHeadId,
+						this.lastQuestionSnapshot,
 					);
 					this.lastSnapshot = snapshotStatuses(plan);
+					this.lastQuestionSnapshot = snapshotQuestionIds(plan);
 					for (const evt of events) {
 						this.state.lastEvent = evt;
 						if (evt.kind === "chain-complete") sawChainComplete = true;
