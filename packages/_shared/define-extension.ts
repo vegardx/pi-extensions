@@ -187,7 +187,11 @@ interface EnabledResolution {
 // alone defaults to enabled — settings still win (you can still set
 // `extensionConfig.startup.enabled = false` to silence it), and the env
 // override still works for bisecting (`PI_EXT_STARTUP=false`).
-const DEFAULT_ON_EXTENSIONS = new Set(["startup"]);
+// `subagent` hosts the generic `delegate` tool that other extensions
+// feed targets into; it registers nothing visible on its own and is
+// inert without providers, so default-on is safe and saves every
+// provider's user one settings edit.
+const DEFAULT_ON_EXTENSIONS = new Set(["startup", "subagent"]);
 
 function resolveEnabled(name: string): EnabledResolution {
 	const env = envOverride ?? process.env;

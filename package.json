@@ -21,6 +21,7 @@
       "packages/prompt-suggestion/index.ts",
       "packages/review/index.ts",
       "packages/startup/index.ts",
+      "packages/subagent/index.ts",
       "packages/triage/index.ts",
       "packages/webfetch/index.ts",
       "packages/wrap-up/index.ts"
