@@ -92,7 +92,10 @@ export class DelegateJobs {
 							: err instanceof Error
 								? err.message
 								: String(err);
-					const text = `[delegate ${job.to} error] ${detail}`;
+					const text = capDelegatedAnswer(
+						`[delegate ${job.to} error] ${detail}`,
+						job.capChars,
+					);
 					opts.surface({ jobId: job.id, to: job.to, ok: false, text });
 					return {
 						text,

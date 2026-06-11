@@ -215,7 +215,13 @@ export function buildDelegateTool(
 				if (err instanceof SemaphoreAbortedError) {
 					return {
 						content: [
-							{ type: "text", text: `[delegate ${to} error] ${err.message}` },
+							{
+								type: "text",
+								text: capDelegatedAnswer(
+									`[delegate ${to} error] ${err.message}`,
+									capChars,
+								),
+							},
 						],
 						details: { to, error: "aborted-while-queued" },
 					};
@@ -243,7 +249,15 @@ export function buildDelegateTool(
 				// still guards: a throw becomes a structured error result.
 				const detail = err instanceof Error ? err.message : String(err);
 				return {
-					content: [{ type: "text", text: `[delegate ${to} error] ${detail}` }],
+					content: [
+						{
+							type: "text",
+							text: capDelegatedAnswer(
+								`[delegate ${to} error] ${detail}`,
+								capChars,
+							),
+						},
+					],
 					details: { to, error: detail },
 				};
 			} finally {
