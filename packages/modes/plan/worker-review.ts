@@ -25,7 +25,12 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { DelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
 import type { OrchestratedFinding } from "pi-ext-review/findings";
 import type { Deliverable, Plan, WorkItem } from "./schema.js";
-import { deliverables, workItemId } from "./schema.js";
+import {
+	deliverables,
+	effectiveWorkItemKind,
+	isWorkItem,
+	workItemId,
+} from "./schema.js";
 import { withPlanLock } from "./storage.js";
 
 /** Local copy of the finding fingerprint (value imports are forbidden). */
@@ -223,5 +228,71 @@ export async function appendSurfacedQuestions(
 		}
 		plan.updatedAt = now;
 		return ids;
+	});
+}
+
+// ---- Decision routing ----------------------------------------------------
+
+export interface AcceptQuestionResult {
+	ok: boolean;
+	error?: string;
+	/** Id of the follow-up task appended for the accepted decision. */
+	taskId?: string;
+	/** Deliverable the question (and new task) live on. */
+	deliverableId?: string;
+}
+
+/**
+ * Accept a surfaced question: record the `answer` (+`decidedAt`),
+ * mark the question done, and append a `task` work-item whose body
+ * carries the decision plus the original finding context — the unit
+ * a follow-up worker picks up on the deliverable's existing branch.
+ */
+export async function acceptQuestionDecision(
+	slug: string,
+	questionId: string,
+	answer: string,
+): Promise<AcceptQuestionResult> {
+	return withPlanLock<AcceptQuestionResult>(slug, (plan: Plan) => {
+		for (const d of deliverables(plan)) {
+			const q = d.children.find(
+				(n): n is WorkItem =>
+					isWorkItem(n) &&
+					n.id === questionId &&
+					effectiveWorkItemKind(n) === "question",
+			);
+			if (!q) continue;
+			const now = new Date().toISOString();
+			q.answer = answer;
+			q.decidedAt = now;
+			q.done = true;
+			q.updatedAt = now;
+			const taskId = workItemId(`apply ${questionId}`);
+			if (!d.children.some((n) => isWorkItem(n) && n.id === taskId)) {
+				const task: WorkItem = {
+					type: "work-item",
+					id: taskId,
+					title: `Apply decision: ${q.title.replace(/^\[review\] /, "")}`,
+					body: [`Decision: ${answer}`, "", "Original finding:", q.body].join(
+						"\n",
+					),
+					done: false,
+					kind: "task",
+					createdAt: now,
+					updatedAt: now,
+				};
+				d.children.push(task);
+			}
+			d.updatedAt = now;
+			plan.updatedAt = now;
+			return { ok: true, taskId, deliverableId: d.id };
+		}
+		return {
+			result: {
+				ok: false,
+				error: `question \`${questionId}\` not found on any deliverable`,
+			},
+			save: false as const,
+		};
 	});
 }
