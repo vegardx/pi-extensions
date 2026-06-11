@@ -14,6 +14,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
 import { registerDelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
+import { getDeclaredExtension } from "@vegardx/pi-extensions-shared/extension-metadata.js";
 import {
 	type ReviewScope,
 	type RunReviewerResult,
@@ -100,6 +101,17 @@ export default defineExtension(
 				"multi-lens code review of the current diff (scanners + indexer + " +
 				"lens fan-out + curator); returns a curated findings summary",
 			paramsSchema: REVIEWER_PARAMS,
+			// Hard dep gate. `registerDelegateTarget` is a free function, not a
+			// `pi.register*` call, so defineExtension's deferred proxy can't hold
+			// it back when `subagent` is missing/disabled — the target lands in
+			// the registry regardless. `isAvailable` is the runtime gate the
+			// registry expects: availability-aware callers (the delegate tool's
+			// fan-out, getAvailableDelegateTarget) skip it once the dep check has
+			// flipped review's load state.
+			isAvailable: () => {
+				const dep = getDeclaredExtension("subagent");
+				return !!dep && dep.loadState === "loaded" && dep.enabled !== false;
+			},
 			execute: async ({ params, ctx, signal, timeoutMs }) => {
 				const p = (params ?? {}) as ReviewerParams;
 				const result: RunReviewerResult = await runReviewer(

@@ -16,7 +16,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
-import { getDelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
+import { getAvailableDelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
 import type { OrchestratedFinding } from "pi-ext-review/findings";
 import { createPr, editPr, findOpenPr, type PrMetadata, viewPr } from "./gh.js";
 import {
@@ -624,7 +624,7 @@ export async function runCommit(
 	// own walk collects accept/explain decisions, the fix prompt is
 	// queued, and we await idle before continuing — the old
 	// review→commit chain, inverted into commit.
-	const reviewerTarget = getDelegateTarget("reviewer");
+	const reviewerTarget = getAvailableDelegateTarget("reviewer", ctx);
 	if (opts.skipReviewOffer || nonInteractive) {
 		if (!nonInteractive) notify(ctx, "skipping review (just ran)", "info");
 	} else if (reviewerTarget) {
