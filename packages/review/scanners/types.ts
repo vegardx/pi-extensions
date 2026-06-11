@@ -9,7 +9,7 @@
  * config into.
  */
 
-import type { RawFinding, ReviewerRole } from "../findings.js";
+import type { RawFinding } from "../findings.js";
 
 export type LanguageId =
 	| "typescript"
@@ -19,11 +19,14 @@ export type LanguageId =
 	| "rust"
 	| "any";
 
-/** Reviewer lane the scanner's findings feed into. */
-export type ScannerLane = Extract<
-	ReviewerRole,
-	"code-reviewer" | "security-analyst" | "code-simplifier"
->;
+/**
+ * Lane the scanner's findings feed into. Historic role names kept as
+ * opaque registry keys; `run-reviewer.ts` maps them onto lenses.
+ */
+export type ScannerLane =
+	| "code-reviewer"
+	| "security-analyst"
+	| "code-simplifier";
 
 /** Result of spawning a tool binary. */
 export interface SpawnResult {

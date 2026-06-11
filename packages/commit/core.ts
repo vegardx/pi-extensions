@@ -16,6 +16,8 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { getDelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
+import type { OrchestratedFinding } from "pi-ext-review/findings";
 import { createPr, editPr, findOpenPr, type PrMetadata, viewPr } from "./gh.js";
 import {
 	runCommand as _runCommand,
@@ -45,6 +47,7 @@ import {
 	parseTitleAndBody,
 	summarisePlan,
 } from "./helpers.js";
+import { buildReviewFixPrompt, walkReviewFindings } from "./review-walk.js";
 
 export const EXT_ID = "commit";
 
@@ -611,52 +614,82 @@ export async function runCommit(
 		}
 	}
 
-	// ---- Step 2: offer /review first ----------------------------
+	// ---- Step 2: offer a review first ----------------------------
+	//
+	// The review pipeline is reached via the shared delegate registry
+	// (`getDelegateTarget("reviewer")`), not a command probe + dynamic
+	// import. The offer only appears when the target is registered;
+	// otherwise we proceed straight to the commit plan. When the user
+	// accepts, the curated findings come back in `details`, commit's
+	// own walk collects accept/explain decisions, the fix prompt is
+	// queued, and we await idle before continuing — the old
+	// review→commit chain, inverted into commit.
+	const reviewerTarget = getDelegateTarget("reviewer");
 	if (opts.skipReviewOffer || nonInteractive) {
-		if (!nonInteractive) notify(ctx, "skipping /review (just ran)", "info");
-	} else {
-		const reviewChoice = await ctx.ui.select("Run /review before committing?", [
-			"Run /review first (Recommended)",
-			"Skip — commit now",
-		]);
+		if (!nonInteractive) notify(ctx, "skipping review (just ran)", "info");
+	} else if (reviewerTarget) {
+		const reviewChoice = await ctx.ui.select(
+			"Run a review before committing?",
+			["Run review first (Recommended)", "Skip — commit now"],
+		);
 		if (!reviewChoice) {
 			notify(ctx, "aborted", "info");
 			return { ran: false, abortReason: "user-cancelled" };
 		}
 		if (reviewChoice.startsWith("Run")) {
-			// Run /review in-process by dynamic-importing its core module.
-			// We don't dispatch a slash command — `pi.sendUserMessage("/cmd")`
-			// is hard-coded to skip slash expansion in pi-coding-agent
-			// ≤ 0.73.0 (see badlogic/pi-mono#2549/#2994/#3673), so a dispatch
-			// would deliver `/review` as literal user text and the registered
-			// handler would never run. Gate only on the extension command —
-			// the standalone /skill:review path is a different UX (manual
-			// invocation) and dispatching to it from here would be surprising.
-			const hasReview = pi.getCommands().some((c) => c.name === "review");
-			if (!hasReview) {
-				notify(
+			notify(ctx, "running review before committing…", "info");
+			try {
+				const result = await reviewerTarget.execute({
+					message: "Review the changes about to be committed.",
+					params: { scope: "working" },
 					ctx,
-					`/review extension not installed (install vegardx/pi-extensions to enable it). Skipping review; continuing to commit${
-						guidance ? ` ${guidance}` : ""
-					}`,
-					"warning",
+					signal: ctx.signal,
+				});
+				pi.sendMessage(
+					{ customType: EXT_ID, content: result.text, display: true },
+					{ triggerTurn: false },
 				);
-			} else {
-				notify(ctx, "running /review before committing…", "info");
-				try {
-					const mod = await import("pi-ext-review/core");
-					await mod.runReview({ ctx, pi, arg: "" });
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					notify(ctx, `review failed: ${msg}; continuing to commit`, "warning");
+				const details = result.details as
+					| {
+							autoApplied?: OrchestratedFinding[];
+							surfaced?: OrchestratedFinding[];
+					  }
+					| undefined;
+				const actionable: OrchestratedFinding[] = [
+					...(details?.autoApplied ?? []),
+					...(details?.surfaced ?? []),
+				];
+				if (actionable.length > 0) {
+					const { accepted, explainRequests } = await walkReviewFindings(
+						ctx,
+						pi,
+						actionable,
+						EXT_ID,
+					);
+					if (accepted.length > 0 || explainRequests.length > 0) {
+						const confirm = await ctx.ui.confirm(
+							"Apply accepted fixes?",
+							`${accepted.length} accepted, ${explainRequests.length} to explain. ` +
+								"Hand these to the agent before the commit plan?",
+						);
+						if (confirm) {
+							pi.sendMessage(
+								agentMsg(buildReviewFixPrompt(accepted, explainRequests)),
+								{ deliverAs: "followUp", triggerTurn: true },
+							);
+							notify(
+								ctx,
+								`handed ${accepted.length} fix(es) and ${explainRequests.length} explain request(s) to the agent…`,
+								"info",
+							);
+							await idle();
+						}
+					}
 				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				notify(ctx, `review failed: ${msg}; continuing to commit`, "warning");
 			}
-			// Fall through into the commit-plan step. Note: `runReview` may
-			// have queued a fix-prompt to the agent and (when the post-review
-			// /commit offer landed) registered its own follow-up listener.
-			// Continuing here is still fine: we'll send our own commit-plan
-			// prompt below, await idle until the agent finishes whichever
-			// turn fires first, and proceed.
 		}
 	}
 

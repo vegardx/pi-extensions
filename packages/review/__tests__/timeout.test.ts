@@ -3,7 +3,7 @@ import {
 	MAX_REVIEW_TIMEOUT_MS,
 	PER_10K_CHARS_MS,
 	reviewTimeoutMs,
-} from "../reviewer-client.js";
+} from "../lens-client.js";
 
 describe("reviewTimeoutMs", () => {
 	it("uses the base 120s budget when diff is empty / zero", () => {

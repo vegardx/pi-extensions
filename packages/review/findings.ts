@@ -6,15 +6,14 @@ import { candidateJsonPayloads } from "@vegardx/pi-extensions-shared/json-extrac
 
 export type Severity = "CRITICAL" | "IMPORTANT" | "NOTE";
 
-export type ReviewerRole =
-	| "architect"
-	| "code-reviewer"
-	| "scope-analyst"
-	| "security-analyst"
-	| "code-simplifier"
-	| "doc-reviewer"
-	| "dependency-checker"
-	| "implementation-checker";
+/**
+ * The four review lenses. `generic` sweeps structure, scope, docs and
+ * dependencies in one pass; the other three are deep lenses. Defined
+ * here (the pure findings module) so finding types don't reach into
+ * settings-aware modules; `models.ts` re-exports it alongside the
+ * model-resolution table.
+ */
+export type LensId = "generic" | "code-review" | "security" | "simplification";
 
 /**
  * Shape each reviewer emits (as JSON). Kept permissive: `line` is optional
@@ -32,7 +31,7 @@ export interface RawFinding {
 
 /** Finding after dedupe — notes which reviewer(s) raised it. */
 export interface Finding extends RawFinding {
-	flaggedBy: ReviewerRole[];
+	flaggedBy: LensId[];
 	/** True if at least two reviewers raised the same issue. */
 	consensus: boolean;
 	/**
@@ -87,7 +86,7 @@ export interface OrchestratedFinding extends RawFinding {
 	/** Model tiers that contributed to this finding. */
 	confirmedByTiers: BackgroundTier[];
 	/** Reviewer roles that contributed to this finding. */
-	confirmedByRoles: ReviewerRole[];
+	confirmedByRoles: LensId[];
 	/** Non-null when the finding originated from a static analysis tool. */
 	staticToolSource: string | null;
 	/** Set when confidence is low or investigation found something notable. */
@@ -128,9 +127,7 @@ function normalizeOrchestratedFinding(
 	const confirmedByTiers = _asStringArray(obj.confirmedByTiers).filter(
 		(t): t is BackgroundTier => t === "primary" || t === "secondary",
 	);
-	const confirmedByRoles = _asStringArray(
-		obj.confirmedByRoles,
-	) as ReviewerRole[];
+	const confirmedByRoles = _asStringArray(obj.confirmedByRoles) as LensId[];
 	const staticToolSource =
 		typeof obj.staticToolSource === "string" && obj.staticToolSource
 			? obj.staticToolSource
@@ -238,7 +235,7 @@ const SEVERITY_RANK: Record<Severity, number> = {
  * merged finding.
  */
 export interface FindingsBundle {
-	role: ReviewerRole;
+	role: LensId;
 	findings: readonly RawFinding[];
 	tier?: BackgroundTier;
 }

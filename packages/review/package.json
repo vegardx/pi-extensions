@@ -4,18 +4,19 @@
   "version": "0.0.1",
   "type": "module",
   "pi": {
-    "extensions": ["./index.ts"],
-    "skills": ["./skills/"]
+    "extensions": [
+      "./index.ts"
+    ],
+    "skills": [
+      "./skills/"
+    ]
   },
   "exports": {
     ".": "./index.ts",
-    "./core": "./core.ts",
-    "./auto-review": "./auto-review.ts",
-    "./persistent-reviewer": "./persistent-reviewer.ts",
-    "./orchestrator": "./orchestrator.ts",
+    "./run-reviewer": "./run-reviewer.ts",
+    "./models": "./models.ts",
     "./static-checker": "./static-checker.ts",
-    "./findings": "./findings.ts",
-    "./reviewer-client": "./reviewer-client.ts"
+    "./findings": "./findings.ts"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
@@ -23,8 +24,14 @@
     "@vegardx/pi-extensions-shared": "*"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-coding-agent": { "optional": true },
-    "@sinclair/typebox": { "optional": true },
-    "@vegardx/pi-extensions-shared": { "optional": true }
+    "@mariozechner/pi-coding-agent": {
+      "optional": true
+    },
+    "@sinclair/typebox": {
+      "optional": true
+    },
+    "@vegardx/pi-extensions-shared": {
+      "optional": true
+    }
   }
 }
