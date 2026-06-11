@@ -3225,7 +3225,7 @@ export default defineExtension(
 						notify(
 							ctx,
 							`phase \`${targetPhaseId}\` is not ready: ${reason}. ` +
-								`Edit dependsOn (phase update) to unblock, or wait for the predecessor to ship.`,
+								`Edit dependsOn (deliverable update) to unblock, or wait for the predecessor to ship.`,
 							"warning",
 						);
 						return;
@@ -3325,7 +3325,7 @@ export default defineExtension(
 				notify(
 					ctx,
 					`plan has planned phases but none are ready: \`${classified.phase.id}\` ${reason}. ` +
-						"Edit dependsOn (phase update) to unblock, or wait for the predecessor to ship.",
+						"Edit dependsOn (deliverable update) to unblock, or wait for the predecessor to ship.",
 					"warning",
 				);
 				modeState.stage = "planning";
@@ -5076,20 +5076,22 @@ export default defineExtension(
 							"These are remote operations that don't mutate local state — the",
 							"'no writes' contract refers to local filesystem and git mutations.",
 							"",
-							"Use the plan tools to build a structured plan with phases and tasks:",
-							"  phase(add, title, goal?, position?)         → add a phase",
-							"  phase(update, id, title?, goal?, status?)    → update a phase",
-							"  phase(remove, id) | phase(reorder, id, position) | phase(list)",
-							"  task(add, phaseId, title, body?)             → add a task",
-							"  task(toggle, phaseId, taskId)                → mark a task done",
-							"  task(update | remove | move)                 → edit / move tasks",
+							"Use the plan tools to build a structured plan with deliverables and tasks:",
+							"  deliverable(add, title, body?, parentId?, dependsOn?, lifecycle?)",
+							"  deliverable(update, id, …) | deliverable(remove | reorder | list)",
+							"  task(add, phaseId, title, body?, kind?)      → add a work item",
+							"  task(toggle, phaseId, taskId)                → mark an item done",
+							"  task(update | remove | move)                 → edit / move items",
 							"  plan()                                       → show the current plan",
 							"",
-							"A phase ships as one PR / one issue. Tasks are concrete work items inside",
-							"a phase — keep titles short and put detail (acceptance criteria, files,",
+							"A leaf deliverable ships as one PR / one issue. Nesting is",
+							"decomposition: pass parentId to group children under a deliverable —",
+							"children run in parallel unless sequenced with dependsOn (the",
+							"stacked-PR edge). Never mix gating tasks and child deliverables on",
+							"one node. Keep titles short; put detail (acceptance criteria, files,",
 							"tests) in the body.",
 							"",
-							"When you have a clear plan: build it with phase + task, present",
+							"When you have a clear plan: build it with deliverable + task, present",
 							"a summary to the user, then stop. The user will choose to implement,",
 							"park as GitHub issues, or keep discussing.",
 							"",
@@ -5123,10 +5125,10 @@ export default defineExtension(
 							"[HACK MODE — full tool access, no plan structure]",
 							"",
 							"The user is exploring or making a quick change. There is no",
-							"plan/phase to follow and no compaction will fire automatically —",
+							"plan/deliverable to follow and no compaction will fire automatically —",
 							"context length is the user's responsibility.",
 							"",
-							"Do NOT invoke `phase`, `task`, or `plan` unless",
+							"Do NOT invoke `deliverable`, `task`, or `plan` unless",
 							"the user explicitly asks. Just do the work.",
 						].join("\n"),
 						details: { modeMarker: "hack" as const },

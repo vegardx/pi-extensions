@@ -86,7 +86,7 @@ export const STEERING_CLASSIFIER = [
 	"(consult plan if you need the current phase/task state):",
 	"  1. refines an active task \u2192 task(update, ...) and continue",
 	"  2. new task in the active phase \u2192 task(add, ...) and continue",
-	"  3. new phase \u2192 phase(add, ...) and continue current phase",
+	"  3. new deliverable \u2192 deliverable(add, ...) and continue current work",
 	"  4. immediate course correction \u2192 act on it now",
 	"In one sentence say what you are doing and why (not which option), then proceed.",
 ].join("\n");
