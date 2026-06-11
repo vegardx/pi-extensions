@@ -15,6 +15,7 @@ import { deliverables, ownWorkItems } from "../plan/schema.js";
 import { _setPlansRootForTests, loadPlan, savePlan } from "../plan/storage.js";
 import { diffWorkerEvents } from "../plan/worker-mailbox.js";
 import {
+	acceptQuestionDecision,
 	appendSurfacedQuestions,
 	buildWorkerFixPrompt,
 	runPrePublishReview,
@@ -219,6 +220,41 @@ describe("appendSurfacedQuestions", () => {
 	it("unknown deliverable is a no-op", async () => {
 		const ids = await appendSurfacedQuestions("wr-plan", "nope", [finding()]);
 		expect(ids).toEqual([]);
+	});
+
+	it("acceptQuestionDecision records the answer and appends an apply task", async () => {
+		const [qid] = await appendSurfacedQuestions("wr-plan", "d1", [finding()]);
+		const result = await acceptQuestionDecision(
+			"wr-plan",
+			qid as string,
+			"guard the null at the call site",
+		);
+		expect(result.ok).toBe(true);
+		expect(result.deliverableId).toBe("d1");
+		const plan = loadPlan("wr-plan") as Plan;
+		const d = deliverables(plan)[0];
+		const items = d ? ownWorkItems(d) : [];
+		const q = items.find((i) => i.id === qid);
+		expect(q?.answer).toBe("guard the null at the call site");
+		expect(q?.decidedAt).toBeDefined();
+		expect(q?.done).toBe(true);
+		const task = items.find((i) => i.id === result.taskId);
+		expect(task?.kind).toBe("task");
+		expect(task?.body).toContain("Decision: guard the null");
+		expect(task?.body).toContain("Original finding:");
+		// Idempotent: accepting again doesn't duplicate the task.
+		await acceptQuestionDecision("wr-plan", qid as string, "same");
+		const again = loadPlan("wr-plan") as Plan;
+		const d2 = deliverables(again)[0];
+		expect(
+			(d2 ? ownWorkItems(d2) : []).filter((i) => i.id === result.taskId),
+		).toHaveLength(1);
+	});
+
+	it("acceptQuestionDecision errors cleanly on unknown question", async () => {
+		const result = await acceptQuestionDecision("wr-plan", "ghost", "x");
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("not found");
 	});
 });
 
