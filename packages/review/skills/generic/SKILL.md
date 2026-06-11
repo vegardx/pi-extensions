@@ -1,6 +1,6 @@
 ---
 name: generic
-description: Single-lens review of structure (coupling, boundaries, layering), scope discipline, documentation drift, and dependency hygiene in a diff or across the codebase. Use for a focused single-lens pass without the full multi-lens pipeline. For the full pipeline (scanners, indexer, all lenses, curator), use delegate({to: "reviewer"}).
+description: 'Single-lens review of structure (coupling, boundaries, layering), scope discipline, documentation drift, and dependency hygiene in a diff or across the codebase. Use for a focused single-lens pass without the full multi-lens pipeline. For the full pipeline (scanners, indexer, all lenses, curator), use delegate({to: "reviewer"}).'
 disable-model-invocation: true
 ---
 
