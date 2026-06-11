@@ -247,11 +247,13 @@ describe("installCrashHandler", () => {
 		dispose = installCrashHandler(deps());
 		emit("uncaughtExceptionMonitor", new Error("crash"), "uncaughtException");
 		expect(writes).toHaveLength(1);
-		const report = JSON.parse(writes[0]!.payload) as CrashReport;
+		const write = writes[0];
+		if (!write) throw new Error("expected a crash write");
+		const report = JSON.parse(write.payload) as CrashReport;
 		expect(report.origin).toBe("uncaughtException");
 		expect(report.error.message).toBe("crash");
 		expect(report.session.id).toBe("sid");
-		expect(writes[0]!.path).toContain("crash-reports");
+		expect(write.path).toContain("crash-reports");
 	});
 
 	it("fires on unhandledRejection (note: this changes process semantics)", () => {
@@ -265,7 +267,9 @@ describe("installCrashHandler", () => {
 		// crash context is more valuable than a silent termination).
 		emit("unhandledRejection", new Error("rejected"), Promise.resolve());
 		expect(writes).toHaveLength(1);
-		const report = JSON.parse(writes[0]!.payload) as CrashReport;
+		const write = writes[0];
+		if (!write) throw new Error("expected a crash write");
+		const report = JSON.parse(write.payload) as CrashReport;
 		expect(report.origin).toBe("unhandledRejection");
 		expect(report.error.message).toBe("rejected");
 	});
@@ -276,7 +280,9 @@ describe("installCrashHandler", () => {
 			emit("uncaughtExceptionMonitor", new Error("crash"), "uncaughtException");
 		}).not.toThrow();
 		expect(writes).toHaveLength(1);
-		const report = JSON.parse(writes[0]!.payload) as CrashReport;
+		const write = writes[0];
+		if (!write) throw new Error("expected a crash write");
+		const report = JSON.parse(write.payload) as CrashReport;
 		expect(report.session.id).toBeNull();
 		expect(report.recentEntries).toEqual([]);
 	});
@@ -316,7 +322,9 @@ describe("installCrashHandler", () => {
 		const dir = crashReportDir(tmp);
 		const files = readdirSync(dir);
 		expect(files).toHaveLength(1);
-		const content = readFileSync(join(dir, files[0]!), "utf8");
+		const file = files[0];
+		if (!file) throw new Error("expected a crash report file");
+		const content = readFileSync(join(dir, file), "utf8");
 		const report = JSON.parse(content) as CrashReport;
 		expect(report.error.message).toBe("real-disk");
 	});

@@ -292,7 +292,7 @@ describe("renderLines — context files section", () => {
 			},
 		];
 		const lines = renderLines(emptySummary({ contextFiles: files }));
-		const bgIdx = lines.findIndex((l) => l === "Background models:");
+		const bgIdx = lines.indexOf("Background models:");
 		const cfIdx = lines.findIndex((l) => l.startsWith("Context files"));
 		expect(bgIdx).toBeGreaterThanOrEqual(0);
 		expect(cfIdx).toBeGreaterThan(bgIdx);
