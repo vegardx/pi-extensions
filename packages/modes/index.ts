@@ -187,6 +187,10 @@ import {
 } from "./plan/tree.js";
 import { isWorker } from "./plan/worker-protocol.js";
 import {
+	appendSurfacedQuestions,
+	runPrePublishReview,
+} from "./plan/worker-review.js";
+import {
 	createWorktree,
 	effectiveWorktreePath,
 	removeWorktree,
@@ -2290,12 +2294,77 @@ export default defineExtension(
 		 *     (replaced by the new session); the next `agent_end` cycle
 		 *     will re-enter this helper from the new session.
 		 */
+		// One-shot agent_end waiters for the pre-publish review's applyFix
+		// step (the fix prompt triggers a turn; we resume when it ends).
+		const agentEndWaiters: Array<() => void> = [];
+		pi.on("agent_end", () => {
+			queueMicrotask(() => {
+				const list = agentEndWaiters.splice(0, agentEndWaiters.length);
+				for (const resolve of list) resolve();
+			});
+		});
+		function waitForNextAgentEnd(): Promise<void> {
+			return new Promise<void>((resolve) => {
+				agentEndWaiters.push(resolve);
+			});
+		}
+
 		async function runAutoPhaseLoop(
 			ctx: ExtensionContext,
 			_plan: Plan,
 			completedPhase: PlanPhase | null,
 		): Promise<void> {
 			const phaseLabel = completedPhase?.id ?? "(unknown)";
+
+			// ---- Pre-publish review (soft-gated) ---------------------------
+			// Review the deliverable's own diff before commit/ship:
+			// high-confidence fixes get applied + re-committed by the agent
+			// (≤2 rounds), the rest become question work-items on the plan.
+			// The PR publishes regardless — reviewer absence never blocks.
+			if (completedPhase && modeState?.currentPlanSlug) {
+				const slugForReview = modeState.currentPlanSlug;
+				try {
+					const review = await runPrePublishReview({
+						deliverable: completedPhase,
+						ctx,
+						getReviewer: () => getDelegateTarget("reviewer"),
+						applyFix: async (prompt) => {
+							const idle = waitForNextAgentEnd();
+							pi.sendMessage(
+								{
+									customType: `${EXT_ID}-prepublish-fix`,
+									content: prompt,
+									display: false,
+								},
+								{ deliverAs: "followUp", triggerTurn: true },
+							);
+							await idle;
+						},
+						notify: (msg, level) => notify(ctx, msg, level),
+					});
+					if (review.surfaced.length > 0) {
+						const ids = await appendSurfacedQuestions(
+							slugForReview,
+							completedPhase.id,
+							review.surfaced,
+						);
+						if (ids.length > 0) {
+							notify(
+								ctx,
+								`pre-publish review surfaced ${ids.length} question(s) on \`${completedPhase.id}\` — publishing anyway; decide via task(update, …, answer).`,
+								"info",
+							);
+						}
+					}
+				} catch (err) {
+					notify(
+						ctx,
+						`pre-publish review errored (${err instanceof Error ? err.message : String(err)}) — continuing to commit`,
+						"warning",
+					);
+				}
+			}
+
 			notify(ctx, `auto: committing Phase \`${phaseLabel}\`…`, "info");
 			const commitMod = await import("pi-ext-commit/core");
 			const commitResult = await commitMod.runCommit({
@@ -2471,6 +2540,13 @@ export default defineExtension(
 						);
 						break;
 					}
+					case "findings-surfaced":
+						notify(
+							ctx,
+							`fleet[${chainId.slice(0, 8)}] surfaced ${notification.questionIds.length} review question(s) on \`${notification.phaseId}\` — answer via task(update, …, answer)`,
+							"warning",
+						);
+						break;
 					case "phase-blocked":
 						// Reserved for future worker-side emission. Today's
 						// `diffWorkerEvents` derives only started/shipped/complete
@@ -4425,6 +4501,27 @@ export default defineExtension(
 				notify(
 					ctx,
 					`since last session:\n  ${transitioned.join("\n  ")}\n  Run /worktree prune to clean up.`,
+					"info",
+				);
+			}
+
+			// Surface unanswered review/plan questions on return — workers
+			// publish without blocking, so decisions queue here until the
+			// user (or the orchestrator) answers them.
+			const pending = unansweredQuestions(plan);
+			if (pending.length > 0) {
+				const rows = pending
+					.slice(0, 5)
+					.map(
+						({ item, parent }) =>
+							`  - ${item.title}${parent ? ` (on \`${parent.id}\`)` : ""}`,
+					)
+					.join("\n");
+				const more =
+					pending.length > 5 ? `\n  … and ${pending.length - 5} more` : "";
+				notify(
+					ctx,
+					`${pending.length} unanswered question(s) on the plan:\n${rows}${more}\n  Answer via task(update, <deliverable>, <id>, answer: "…").`,
 					"info",
 				);
 			}

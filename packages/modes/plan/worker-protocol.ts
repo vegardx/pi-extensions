@@ -38,6 +38,13 @@ export type WorkerNotification =
 	| { kind: "phase-shipped"; phaseId: string; prNumber?: number }
 	| { kind: "phase-blocked"; phaseId: string; reason: string }
 	| { kind: "phase-error"; phaseId: string; error: string }
+	| {
+			/** New question work-items landed on a deliverable (pre-publish
+			 *  review surfaced findings). Derived from question-id set diffs. */
+			kind: "findings-surfaced";
+			phaseId: string;
+			questionIds: string[];
+	  }
 	| { kind: "chain-complete"; chainId: string };
 
 /** Marker `kind` value used on the wire (in the notify tool call). */
