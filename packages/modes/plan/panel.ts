@@ -23,8 +23,14 @@ import {
 } from "@mariozechner/pi-tui";
 import type { BoxFooter } from "../sidebar/box.js";
 import { boxify } from "../sidebar/box.js";
-import type { Plan } from "./schema.js";
-import { WORKTREE_STATUSES } from "./schema.js";
+import type { Deliverable, Plan } from "./schema.js";
+import {
+	childDeliverables,
+	isDeliverable,
+	ownWorkItems,
+	WORKTREE_STATUSES,
+} from "./schema.js";
+import { subtreeComplete } from "./tree.js";
 
 // Re-exported for back-compat: the box renderer now lives in sidebar/box.ts so
 // the plan panel and the overlay sidebar share one implementation.
@@ -56,36 +62,69 @@ export interface PlanSummary {
 }
 
 /**
+ * THE shared flatten for every panel surface. Selection indices,
+ * header offsets, and tree rows all derive from this one preorder
+ * list — a second flatten with different ordering would silently
+ * desync the cursor from what's painted.
+ */
+export function flattenForest(
+	plan: Pick<Plan, "nodes">,
+): Array<{ deliverable: Deliverable; depth: number }> {
+	const out: Array<{ deliverable: Deliverable; depth: number }> = [];
+	const visit = (nodes: readonly Plan["nodes"][number][], depth: number) => {
+		for (const node of nodes) {
+			if (isDeliverable(node)) {
+				out.push({ deliverable: node, depth });
+				visit(node.children, depth + 1);
+			}
+		}
+	};
+	visit(plan.nodes, 0);
+	return out;
+}
+
+/**
  * Derive the compact-summary numbers from a plan. `activeIndex` is 1-based
- * across all phases; abandoned phases still occupy a slot so the index lines
- * up with what the user sees in the tree.
+ * across the flattened forest; abandoned deliverables still occupy a slot so
+ * the index lines up with what the user sees in the tree.
  */
 export function summarisePlan(plan: Plan): PlanSummary {
 	let done = 0;
 	let activeIndex: number | null = null;
 	let activeTitle: string | null = null;
-	plan.phases.forEach((phase, i) => {
-		if (DONE_STATUSES.has(phase.status)) done++;
-		if (activeIndex === null && WORKTREE_STATUSES.includes(phase.status)) {
+	const flat = flattenForest(plan);
+	flat.forEach(({ deliverable }, i) => {
+		if (DONE_STATUSES.has(deliverable.status)) done++;
+		if (
+			activeIndex === null &&
+			WORKTREE_STATUSES.includes(deliverable.status)
+		) {
 			activeIndex = i + 1;
-			activeTitle = phase.title;
+			activeTitle = deliverable.title;
 		}
 	});
 	return {
 		donePhases: done,
-		totalPhases: plan.phases.length,
+		totalPhases: flat.length,
 		activeIndex,
 		activeTitle,
 	};
 }
 
 /**
- * Per-phase task tally `[done/total]`, counting every task on the phase
- * (deliverable or not) so it matches what the expanded checklist displays.
+ * Per-deliverable tally `[done/total]`. Leaves count their own work
+ * items (any kind, matching the expanded checklist); groupings count
+ * completed child subtrees instead.
  */
-function phaseTally(phase: Plan["phases"][number]): string {
-	const done = phase.tasks.filter((t) => t.done).length;
-	return `[${done}/${phase.tasks.length}]`;
+function phaseTally(d: Deliverable): string {
+	const children = childDeliverables(d);
+	if (children.length > 0) {
+		const done = children.filter(subtreeComplete).length;
+		return `[${done}/${children.length}]`;
+	}
+	const items = ownWorkItems(d);
+	const done = items.filter((t) => t.done).length;
+	return `[${done}/${items.length}]`;
 }
 
 /**
@@ -95,7 +134,7 @@ function phaseTally(phase: Plan["phases"][number]): string {
  * sync.
  */
 function isPhaseExpanded(
-	phase: Plan["phases"][number],
+	phase: Deliverable,
 	expandedPhaseIds?: ReadonlySet<string>,
 ): boolean {
 	return (
@@ -115,11 +154,17 @@ export function phaseHeaderOffsets(
 ): number[] {
 	const offsets: number[] = [];
 	let line = 0;
-	for (const phase of plan.phases) {
+	for (const { deliverable } of flattenForest(plan)) {
 		offsets.push(line);
-		line += 1; // the phase header row
-		if (isPhaseExpanded(phase, expandedPhaseIds)) {
-			line += phase.tasks.length === 0 ? 1 : phase.tasks.length;
+		line += 1; // the header row
+		if (isPhaseExpanded(deliverable, expandedPhaseIds)) {
+			const items = ownWorkItems(deliverable);
+			const isGroupingRow = childDeliverables(deliverable).length > 0;
+			// Groupings expand into their child rows (already counted as
+			// their own flattened headers), so only leaves add item rows.
+			if (!isGroupingRow) {
+				line += items.length === 0 ? 1 : items.length;
+			}
 		}
 	}
 	return offsets;
@@ -177,15 +222,20 @@ export function buildTreeLines(
 	selectedIndex?: number,
 ): string[] {
 	const lines: string[] = [];
-	plan.phases.forEach((phase, idx) => {
+	flattenForest(plan).forEach(({ deliverable: phase, depth }, idx) => {
 		const glyph = STATUS_GLYPH[phase.status] ?? "○";
 		const badge = renderDriverBadge(theme, driverBadges?.get(phase.id));
 		const badgeW = badge ? visibleWidth(badge.plain) : 0;
 		const tally = phaseTally(phase);
 		const selected = selectedIndex === idx;
 		const cursor = selected ? theme.fg("accent", "▌") : " ";
-		const prefix = `${cursor}${glyph} `;
-		const prefixW = 1 + visibleWidth(glyph) + 1;
+		const indent = "  ".repeat(depth);
+		// Stack indicator: this deliverable's branch stacks on a dependsOn
+		// parent (the dependency edge, not the tree edge).
+		const stacked = (phase.dependsOn?.length ?? 0) > 0 ? "⤷" : "";
+		const prefix = `${cursor}${indent}${glyph} ${stacked}${stacked ? " " : ""}`;
+		const prefixW =
+			1 + indent.length + visibleWidth(glyph) + 1 + (stacked ? 2 : 0);
 		// Reserve a 1-col gutter on the right so the tally isn't glued to the border.
 		const titleMax = Math.max(
 			1,
@@ -204,16 +254,23 @@ export function buildTreeLines(
 		);
 
 		if (!isPhaseExpanded(phase, expandedPhaseIds)) return;
+		// Groupings expand into their child rows (next flattened headers).
+		if (childDeliverables(phase).length > 0) return;
 
-		if (phase.tasks.length === 0) {
+		const items = ownWorkItems(phase);
+		const itemIndent = `   ${indent}`;
+		if (items.length === 0) {
 			lines.push(
-				`   ${theme.fg("muted", truncateToWidth("(no tasks)", innerWidth - 4))}`,
+				`${itemIndent}${theme.fg("muted", truncateToWidth("(no tasks)", Math.max(1, innerWidth - itemIndent.length - 1)))}`,
 			);
 		} else {
-			for (const task of phase.tasks) {
+			for (const task of items) {
 				const box = task.done ? "☑" : "☐";
-				const label = truncateToWidth(task.title, Math.max(1, innerWidth - 5));
-				lines.push(`   ${box} ${label}`);
+				const label = truncateToWidth(
+					task.title,
+					Math.max(1, innerWidth - itemIndent.length - 2),
+				);
+				lines.push(`${itemIndent}${box} ${label}`);
 			}
 		}
 	});
@@ -296,7 +353,7 @@ export function isPhaseAttachable(
 	driverBadges: ReadonlyMap<string, PhaseDriverBadge> | undefined,
 ): boolean {
 	if (selectedIndex === undefined) return false;
-	const phase = plan.phases[selectedIndex];
+	const phase = flattenForest(plan)[selectedIndex]?.deliverable;
 	if (!phase?.sessionPath) return false;
 	const badge = driverBadges?.get(phase.id);
 	return badge === "peer-live" || badge === "peer-stale";
@@ -423,7 +480,7 @@ export class PlanPanelComponent implements Component {
 	/** Passive by default; the focus shortcut routes input here. */
 	focused = false;
 	scrollOffset = 0;
-	/** Cursor over `plan.phases` while focused. */
+	/** Cursor over the flattened deliverable forest while focused. */
 	selectedIndex = 0;
 	/** Phases the user explicitly expanded (beyond the auto-expanded active one). */
 	private readonly expandedPhaseIds = new Set<string>();
@@ -457,7 +514,8 @@ export class PlanPanelComponent implements Component {
 			this.selectedIndex = 0;
 		}
 		this.plan = plan;
-		const max = Math.max(0, (plan?.phases.length ?? 1) - 1);
+		const count = plan ? flattenForest(plan).length : 1;
+		const max = Math.max(0, count - 1);
 		if (this.selectedIndex > max) this.selectedIndex = max;
 		this.requestRender();
 	}
@@ -486,14 +544,14 @@ export class PlanPanelComponent implements Component {
 	/** Move the cursor onto the active phase (or the first phase) on focus. */
 	private selectActivePhase(): void {
 		if (!this.plan) return;
-		const idx = this.plan.phases.findIndex((p) =>
-			WORKTREE_STATUSES.includes(p.status),
+		const idx = flattenForest(this.plan).findIndex(({ deliverable }) =>
+			WORKTREE_STATUSES.includes(deliverable.status),
 		);
 		this.selectedIndex = idx === -1 ? 0 : idx;
 	}
 
 	render(width: number): string[] {
-		if (!this.plan || this.plan.phases.length === 0) return [];
+		if (!this.plan || flattenForest(this.plan).length === 0) return [];
 		const result = renderPlanPanel(this.plan, {
 			theme: this.theme,
 			width,
@@ -520,7 +578,7 @@ export class PlanPanelComponent implements Component {
 		contentWidth: number,
 		maxBodyRows: number,
 	): { rows: string[]; footer: BoxFooter } {
-		if (!this.plan || this.plan.phases.length === 0) {
+		if (!this.plan || flattenForest(this.plan).length === 0) {
 			return { rows: [], footer: {} };
 		}
 		const body = planPanelBody(this.plan, {
@@ -580,7 +638,7 @@ export class PlanPanelComponent implements Component {
 
 	private moveSelection(delta: number): void {
 		if (!this.plan) return;
-		const last = this.plan.phases.length - 1;
+		const last = flattenForest(this.plan).length - 1;
 		const next = Math.min(Math.max(0, this.selectedIndex + delta), last);
 		if (next === this.selectedIndex) return;
 		this.selectedIndex = next;
@@ -589,7 +647,8 @@ export class PlanPanelComponent implements Component {
 	}
 
 	private selectedPhaseId(): string | null {
-		return this.plan?.phases[this.selectedIndex]?.id ?? null;
+		if (!this.plan) return null;
+		return flattenForest(this.plan)[this.selectedIndex]?.deliverable.id ?? null;
 	}
 
 	private toggleSelectedExpand(): void {

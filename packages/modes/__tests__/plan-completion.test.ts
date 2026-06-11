@@ -5,30 +5,31 @@ import {
 	NEW_PLAN_STALE_MESSAGE,
 	newPlanSideEffect,
 } from "../plan/completion.js";
-import type { Phase, Plan } from "../plan/schema.js";
+import type { Deliverable as Phase, Plan } from "../plan/schema.js";
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = "2024-01-01T00:00:00.000Z";
 	return {
+		type: "deliverable" as const,
 		id: "p-x",
 		title: "T",
-		goal: "G",
+		body: "G",
 		status: "planned",
 		branch: "feat/p-x",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
 	};
 }
 
-function makePlan(phases: Phase[]): Plan {
+function makePlan(nodes: Phase[]): Plan {
 	const now = "2024-01-01T00:00:00.000Z";
 	return {
 		slug: "test",
 		title: "Test Plan",
 		repo: { path: "/tmp" },
-		phases,
+		nodes,
 		createdAt: now,
 		updatedAt: now,
 	};

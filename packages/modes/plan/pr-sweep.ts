@@ -15,7 +15,7 @@
 
 import type { ShellResult } from "../git.js";
 import { runCommand as defaultRunCommand } from "../git.js";
-import type { Plan } from "./schema.js";
+import { deliverables, type Plan } from "./schema.js";
 
 export type PrState = "merged" | "open" | "closed" | "unknown";
 
@@ -202,7 +202,7 @@ export type RunShell = (
 
 export interface SweepInput {
 	cwd: string;
-	plan: Pick<Plan, "phases">;
+	plan: Pick<Plan, "nodes">;
 	run?: RunShell;
 }
 
@@ -218,7 +218,7 @@ export interface SweepInput {
 export async function runEndOfPlanPrSweep(
 	input: SweepInput,
 ): Promise<PrSweepResult[] | null> {
-	const phasesWithPr = input.plan.phases.filter(
+	const phasesWithPr = deliverables(input.plan).filter(
 		(p): p is typeof p & { prNumber: number } =>
 			typeof p.prNumber === "number" && p.prNumber > 0,
 	);

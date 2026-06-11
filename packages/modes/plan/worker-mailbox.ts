@@ -35,7 +35,12 @@ import {
 	type PersistentAgent,
 	SubagentPool,
 } from "@vegardx/pi-extensions-shared/subagent-pool.js";
-import { chainHead, type Phase, type Plan } from "./schema.js";
+import {
+	chainHead,
+	type Deliverable,
+	deliverables,
+	type Plan,
+} from "./schema.js";
 import { loadPlan } from "./storage.js";
 import {
 	WORKER_CHAIN_ENV,
@@ -188,11 +193,11 @@ function summariseToolCall(
  * Snapshot of phase status keyed by phase id. Used to diff plan state
  * across `agent_end` cycles to derive lifecycle events.
  */
-type StatusSnapshot = Record<string, Phase["status"]>;
+type StatusSnapshot = Record<string, Deliverable["status"]>;
 
 function snapshotStatuses(plan: Plan): StatusSnapshot {
 	const out: StatusSnapshot = {};
-	for (const p of plan.phases) out[p.id] = p.status;
+	for (const p of deliverables(plan)) out[p.id] = p.status;
 	return out;
 }
 
@@ -207,7 +212,7 @@ export function diffWorkerEvents(
 	chainHeadId: string,
 ): WorkerNotification[] {
 	const events: WorkerNotification[] = [];
-	for (const phase of after.phases) {
+	for (const phase of deliverables(after)) {
 		const prev = before[phase.id];
 		const curr = phase.status;
 		if (prev === curr) continue;
@@ -240,7 +245,7 @@ export function diffWorkerEvents(
 	// phase remains non-shipped (chainHead returns null). Without the
 	// status check we'd false-positive on a head that's still active
 	// but happens to have no descendants.
-	const head = after.phases.find((p) => p.id === chainHeadId);
+	const head = deliverables(after).find((p) => p.id === chainHeadId);
 	if (head && head.status === "shipped" && chainHead(after, head) === null) {
 		events.push({ kind: "chain-complete", chainId });
 	}

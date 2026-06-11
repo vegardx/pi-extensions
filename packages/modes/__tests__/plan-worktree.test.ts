@@ -1,4 +1,4 @@
-import type { Phase, Plan } from "../plan/schema.js";
+import type { Deliverable as Phase, Plan } from "../plan/schema.js";
 import { worktreePath } from "../plan/worktree.js";
 
 const now = new Date().toISOString();
@@ -8,19 +8,20 @@ function makePlan(repoPath: string): Plan {
 		slug: "feat-work",
 		title: "feat work",
 		repo: { path: repoPath },
-		phases: [],
+		nodes: [],
 		createdAt: now,
 		updatedAt: now,
 	};
 }
 
 const phase: Phase = {
+	type: "deliverable" as const,
 	id: "p-add-validation",
 	title: "Add validation",
-	goal: "g",
+	body: "g",
 	status: "active",
 	branch: "feat/p-add-validation",
-	tasks: [],
+	children: [],
 	createdAt: now,
 	updatedAt: now,
 };

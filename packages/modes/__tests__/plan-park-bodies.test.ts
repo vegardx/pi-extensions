@@ -1,9 +1,13 @@
 import {
 	quoteUntrusted,
+	renderDeliverableIssueBody,
 	renderParentIssueBody,
-	renderPhaseIssueBody,
 } from "../plan/park-bodies.js";
-import type { Phase, Plan, Task } from "../plan/schema.js";
+import type {
+	Deliverable as Phase,
+	Plan,
+	WorkItem as Task,
+} from "../plan/schema.js";
 
 const now = new Date().toISOString();
 
@@ -12,7 +16,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "p",
 		title: "Test plan",
 		repo: { path: "/tmp/repo" },
-		phases: [],
+		nodes: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -21,13 +25,14 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	return {
+		type: "deliverable" as const,
 		id: "p-foo",
 		title: "Foo",
-		goal: "Make it work",
+		body: "Make it work",
 		status: "active",
 		branch: "feat/p-foo",
 		worktreePath: "/tmp/repo",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -36,11 +41,12 @@ function makePhase(overrides: Partial<Phase> = {}): Phase {
 
 function makeTask(overrides: Partial<Task> = {}): Task {
 	return {
+		type: "work-item" as const,
 		id: "t",
 		title: "Task",
 		body: "",
 		done: false,
-		kind: "deliverable",
+		kind: "task",
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -67,7 +73,7 @@ describe("renderParentIssueBody", () => {
 	it("renders phase list with shipped checkbox for shipped phases", () => {
 		const body = renderParentIssueBody(
 			makePlan({
-				phases: [
+				nodes: [
 					makePhase({ id: "a", title: "Phase A", status: "shipped" }),
 					makePhase({ id: "b", title: "Phase B", status: "planned" }),
 				],
@@ -79,17 +85,17 @@ describe("renderParentIssueBody", () => {
 
 	it("omits the plan-level follow-ups section when followUps is empty or missing", () => {
 		const body = renderParentIssueBody(makePlan());
-		expect(body).not.toContain("## Plan-level follow-ups");
+		expect(body).not.toContain("## Plan-level loose items");
 	});
 
 	it("renders plan-level follow-ups section with kind labels and checkboxes", () => {
 		const body = renderParentIssueBody(
 			makePlan({
-				followUps: [
+				nodes: [
 					makeTask({
 						id: "f-1",
 						title: "Doc the new schema field",
-						kind: "followUp",
+						kind: "followup",
 					}),
 					makeTask({
 						id: "q-1",
@@ -98,6 +104,7 @@ describe("renderParentIssueBody", () => {
 						kind: "question",
 					}),
 					makeTask({
+						type: "work-item" as const,
 						id: "m-1",
 						title: "Smoke-test on legacy plan",
 						kind: "manual",
@@ -106,8 +113,8 @@ describe("renderParentIssueBody", () => {
 				],
 			}),
 		);
-		expect(body).toContain("## Plan-level follow-ups");
-		expect(body).toContain("**Doc the new schema field** _(followUp)_");
+		expect(body).toContain("## Plan-level loose items");
+		expect(body).toContain("**Doc the new schema field** _(followup)_");
 		expect(body).toContain("- [ ] **Doc the new schema field**");
 		// Questions render without a checkbox.
 		expect(body).toContain("**Should we drop legacy v1?** _(question)_");
@@ -119,16 +126,16 @@ describe("renderParentIssueBody", () => {
 	});
 });
 
-describe("renderPhaseIssueBody", () => {
+describe("renderDeliverableIssueBody", () => {
 	it("splits tasks into deliverables, follow-ups, questions, and manuals", () => {
-		const body = renderPhaseIssueBody(
+		const body = renderDeliverableIssueBody(
 			makePhase({
-				tasks: [
+				children: [
 					makeTask({ id: "d-1", title: "Core change", done: true }),
 					makeTask({
 						id: "f-1",
 						title: "Index by branch",
-						kind: "followUp",
+						kind: "followup",
 					}),
 					makeTask({
 						id: "q-1",
@@ -144,8 +151,9 @@ describe("renderPhaseIssueBody", () => {
 				],
 			}),
 			42,
+			new Map(),
 		);
-		expect(body).toContain("## What this phase ships");
+		expect(body).toContain("## What this deliverable ships");
 		expect(body).toContain("- [x] **Core change**");
 		expect(body).toContain("## Reviewer follow-ups");
 		expect(body).toContain("- [ ] Index by branch");
@@ -162,27 +170,32 @@ describe("renderPhaseIssueBody", () => {
 	});
 
 	it("omits sections that have no tasks", () => {
-		const body = renderPhaseIssueBody(
+		const body = renderDeliverableIssueBody(
 			makePhase({
-				tasks: [makeTask({ id: "d", title: "only" })],
+				children: [makeTask({ id: "d", title: "only" })],
 			}),
 			1,
+			new Map(),
 		);
-		expect(body).toContain("## What this phase ships");
+		expect(body).toContain("## What this deliverable ships");
 		expect(body).not.toContain("## Reviewer follow-ups");
 		expect(body).not.toContain("## Open questions");
 		expect(body).not.toContain("## Manual verification");
 	});
 
 	it("falls back when goal is empty", () => {
-		const body = renderPhaseIssueBody(makePhase({ goal: "" }), 1);
+		const body = renderDeliverableIssueBody(
+			makePhase({ body: "" }),
+			1,
+			new Map(),
+		);
 		expect(body).toContain("(no goal set)");
 	});
 
 	it("indents task bodies under their bullets so they render as part of the list item", () => {
-		const body = renderPhaseIssueBody(
+		const body = renderDeliverableIssueBody(
 			makePhase({
-				tasks: [
+				children: [
 					makeTask({
 						id: "d-1",
 						title: "Has body",
@@ -191,6 +204,7 @@ describe("renderPhaseIssueBody", () => {
 				],
 			}),
 			1,
+			new Map(),
 		);
 		// Each line of the quoted body is indented by two spaces.
 		expect(body).toMatch(
@@ -199,17 +213,18 @@ describe("renderPhaseIssueBody", () => {
 	});
 
 	it("renders pre-phase as a manual checklist with the pre framing", () => {
-		const body = renderPhaseIssueBody(
+		const body = renderDeliverableIssueBody(
 			makePhase({
 				id: "pre",
 				title: "Preflight",
-				kind: "pre",
+				lifecycle: "pre",
 				branch: "",
-				tasks: [makeTask({ id: "t1", title: "rename secret" })],
+				children: [makeTask({ id: "t1", title: "rename secret" })],
 			}),
 			99,
+			new Map(),
 		);
-		expect(body).toContain("This is a **pre-phase**");
+		expect(body).toContain("This is a **pre checklist**");
 		expect(body).toContain("Preflight checklist");
 		expect(body).not.toContain("What this phase ships");
 		expect(body).toContain("[ ] **rename secret**");
@@ -217,30 +232,36 @@ describe("renderPhaseIssueBody", () => {
 	});
 
 	it("renders post-phase as a Handover checklist", () => {
-		const body = renderPhaseIssueBody(
+		const body = renderDeliverableIssueBody(
 			makePhase({
 				id: "post",
 				title: "Handover",
-				kind: "post",
+				lifecycle: "post",
 				branch: "",
-				tasks: [makeTask({ id: "t1", title: "deploy", done: true })],
+				children: [makeTask({ id: "t1", title: "deploy", done: true })],
 			}),
 			99,
+			new Map(),
 		);
-		expect(body).toContain("post-phase");
+		expect(body).toContain("post checklist");
 		expect(body).toContain("Handover checklist");
 		expect(body).toContain("[x] **deploy**");
 	});
 
 	it("parent issue tags pre/post phases with their kind", () => {
 		const plan = makePlan({
-			phases: [
-				makePhase({ id: "pre", title: "Preflight", kind: "pre", branch: "" }),
+			nodes: [
+				makePhase({
+					id: "pre",
+					title: "Preflight",
+					lifecycle: "pre",
+					branch: "",
+				}),
 				makePhase({ id: "r", title: "Regular" }),
 				makePhase({
 					id: "post",
 					title: "Handover",
-					kind: "post",
+					lifecycle: "post",
 					branch: "",
 				}),
 			],

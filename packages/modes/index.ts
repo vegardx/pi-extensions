@@ -110,8 +110,10 @@ import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import type { PhaseDriverBadge } from "./plan/panel.js";
 import { PlanPanelComponent } from "./plan/panel.js";
 import {
+	renderDeliverableIssueBody,
 	renderParentIssueBody,
-	renderPhaseIssueBody,
+	requiresTrackingIssue,
+	topologicalDeliverables,
 } from "./plan/park-bodies.js";
 import {
 	classifyImplementContext,
@@ -128,22 +130,26 @@ import {
 	summarisePrSweep,
 } from "./plan/pr-sweep.js";
 import {
-	abandonNonTerminalPhases,
+	abandonNonTerminalDeliverables,
 	blockedReason,
 	chainHead,
+	deliverables,
 	effectiveDependsOn,
-	effectivePhaseKind,
-	effectiveTaskKind,
+	effectiveWorkItemKind,
+	gatingTasks,
 	type ImplementBranchPlan,
-	isPhaseReady,
-	matchPhaseId,
+	isDeliverableReady,
+	isImplementableLeaf,
+	matchDeliverableId,
+	ownWorkItems,
 	type Plan,
-	type Phase as PlanPhase,
+	type Deliverable as PlanPhase,
 	planImplementBranch,
-	readyPhases,
+	readyDeliverables,
 	repoNameFromPath,
+	shipsPR,
 	slugify,
-	type Task,
+	type WorkItem as Task,
 	TERMINAL_STATUSES,
 	WORKTREE_STATUSES,
 } from "./plan/schema.js";
@@ -160,6 +166,7 @@ import {
 	shouldInjectSteeringClassifier,
 } from "./plan/steering.js";
 import {
+	CURRENT_SCHEMA_VERSION,
 	deletePlan,
 	loadPlan,
 	planExists,
@@ -173,6 +180,11 @@ import {
 	decideFromChoice,
 	type TransitionDecision,
 } from "./plan/transition.js";
+import {
+	subtreeComplete,
+	topLevelLeaves,
+	unansweredQuestions,
+} from "./plan/tree.js";
 import { isWorker } from "./plan/worker-protocol.js";
 import {
 	createWorktree,
@@ -212,7 +224,7 @@ export const PLAN_ONLY_TOOLS = [
  * a live pi host.
  */
 export function computeActiveTools(mode: Mode, priorTools: string[]): string[] {
-	const planTools = ["phase", "task", "plan"];
+	const planTools = ["deliverable", "task", "plan"];
 	if (mode === "plan") {
 		return [...PLAN_ONLY_TOOLS, ...planTools];
 	}
@@ -761,8 +773,8 @@ export default defineExtension(
 			task: { id: string; title: string; body: string; done: boolean };
 		}> {
 			if (!plan) return [];
-			return plan.phases.flatMap((phase) =>
-				phase.tasks.map((task) => ({ phase, task })),
+			return deliverables(plan).flatMap((phase) =>
+				ownWorkItems(phase).map((task) => ({ phase, task })),
 			);
 		}
 
@@ -775,7 +787,8 @@ export default defineExtension(
 		function activePhase(plan: Plan | null): PlanPhase | null {
 			if (!plan) return null;
 			return (
-				plan.phases.find((p) => WORKTREE_STATUSES.includes(p.status)) ?? null
+				deliverables(plan).find((p) => WORKTREE_STATUSES.includes(p.status)) ??
+				null
 			);
 		}
 
@@ -791,7 +804,7 @@ export default defineExtension(
 		}> {
 			const phase = activePhase(plan);
 			if (!phase) return [];
-			return phase.tasks.map((task) => ({ phase, task }));
+			return ownWorkItems(phase).map((task) => ({ phase, task }));
 		}
 
 		/**
@@ -920,7 +933,7 @@ export default defineExtension(
 			updateWidget(ctx);
 			notify(
 				ctx,
-				`resumed plan ${slug} (${plan.phases.length} phases)`,
+				`resumed plan ${slug} (${deliverables(plan).length} phases)`,
 				"info",
 			);
 		}
@@ -954,7 +967,7 @@ export default defineExtension(
 				return;
 			}
 
-			const dirtyPhases = plan.phases.filter((phase) => {
+			const dirtyPhases = deliverables(plan).filter((phase) => {
 				if (!worktreeExists(plan, phase)) return false;
 				return !workingTreeClean(phase.worktreePath ?? plan.repo.path);
 			});
@@ -1015,7 +1028,7 @@ export default defineExtension(
 				return;
 			}
 
-			const nonTerminal = plan.phases.filter(
+			const nonTerminal = deliverables(plan).filter(
 				(p) => !TERMINAL_STATUSES.includes(p.status),
 			);
 			if (nonTerminal.length === 0) {
@@ -1038,7 +1051,7 @@ export default defineExtension(
 			}
 
 			const now = new Date().toISOString();
-			const { plan: archivedPlan, archived } = abandonNonTerminalPhases(
+			const { plan: archivedPlan, archived } = abandonNonTerminalDeliverables(
 				plan,
 				now,
 			);
@@ -1106,9 +1119,8 @@ export default defineExtension(
 				slug,
 				title: `Plan for ${repoName}`,
 				repo: { path: ctx.cwd },
-				schemaVersion: 2,
-				phases: [],
-				followUps: [],
+				schemaVersion: CURRENT_SCHEMA_VERSION,
+				nodes: [],
 				createdBy: {
 					sessionId,
 					...(sessionName ? { sessionName } : {}),
@@ -1145,7 +1157,7 @@ export default defineExtension(
 				detectDefaultBranch(plan.repo.path) ??
 				"main";
 			let mutated = false;
-			for (const phase of plan.phases) {
+			for (const phase of deliverables(plan)) {
 				const shouldExist = WORKTREE_STATUSES.includes(phase.status);
 				const exists = worktreeExists(plan, phase);
 
@@ -1295,7 +1307,7 @@ export default defineExtension(
 			selfSessionId: string,
 		): Map<string, PhaseDriverBadge> {
 			const badges = new Map<string, PhaseDriverBadge>();
-			for (const phase of plan.phases) {
+			for (const phase of deliverables(plan)) {
 				const decision = evaluateClaim(phase, selfSessionId);
 				if (decision.kind === "self") badges.set(phase.id, "self");
 				else if (decision.kind === "occupied")
@@ -1316,7 +1328,8 @@ export default defineExtension(
 		): Promise<void> {
 			const slug = modeState?.currentPlanSlug ?? null;
 			const plan = slug ? loadPlan(slug) : null;
-			const phase = plan?.phases.find((p) => p.id === phaseId) ?? null;
+			const phase =
+				(plan ? deliverables(plan) : []).find((p) => p.id === phaseId) ?? null;
 			if (!phase?.sessionPath) {
 				notify(ctx, "phase has no session to attach to", "info");
 				return;
@@ -1384,7 +1397,7 @@ export default defineExtension(
 		async function openPlanView(ctx: ExtensionContext): Promise<void> {
 			if (!ctx.hasUI) return;
 			const plan = currentPlan();
-			if (!plan || plan.phases.length === 0) {
+			if (!plan || deliverables(plan).length === 0) {
 				notify(ctx, "no active plan", "info");
 				return;
 			}
@@ -1561,7 +1574,7 @@ export default defineExtension(
 					plan,
 					ctx.sessionManager.getSessionId(),
 				);
-				for (const phase of plan.phases) {
+				for (const phase of deliverables(plan)) {
 					const badge = badges.get(phase.id);
 					if (badge === "peer-live" || badge === "peer-stale") {
 						rows.push({
@@ -1659,7 +1672,7 @@ export default defineExtension(
 
 			const slug = modeState?.currentPlanSlug ?? null;
 			const plan = slug ? loadPlan(slug) : null;
-			const hasPlan = !!plan && plan.phases.length > 0;
+			const hasPlan = !!plan && deliverables(plan).length > 0;
 			const surface: PlanSurface =
 				modeState && hasPlan
 					? decidePlanSurface(readPlanPanelSetting(ctx))
@@ -2334,7 +2347,7 @@ export default defineExtension(
 			// the auto-loop here with a clear reason instead of walking the
 			// chain — the successor depends on this phase and isn't shippable
 			// yet, and plowing on would surface a misleading "not ready".
-			const shippedNow = refreshed.phases.find(
+			const shippedNow = deliverables(refreshed).find(
 				(p) => p.id === completedPhase.id,
 			);
 			if (shippedNow && shippedNow.status === "active") {
@@ -2348,7 +2361,7 @@ export default defineExtension(
 			const next = chainHead(refreshed, completedPhase);
 			const selfSessionId = ctx.sessionManager.getSessionId();
 			if (next) {
-				if (!isPhaseReady(refreshed, next)) {
+				if (!isDeliverableReady(refreshed, next)) {
 					// Chain head exists but isn't ready — parent is
 					// abandoned/missing or the user reshuffled dependsOn. End
 					// the auto loop quietly with a reason; do not force-activate.
@@ -2377,7 +2390,7 @@ export default defineExtension(
 			// Chain exhausted. Try to adopt another chain whose head is ready
 			// and not actively driven by a peer. Stale claims (TTL-expired) and
 			// own-claims are eligible — only live peer claims block adoption.
-			const candidates = readyPhases(refreshed).filter((p) => {
+			const candidates = readyDeliverables(refreshed).filter((p) => {
 				const d = evaluateClaim(p, selfSessionId);
 				return d.kind !== "occupied";
 			});
@@ -3183,7 +3196,7 @@ export default defineExtension(
 					);
 					return;
 				}
-				const target = plan.phases.find((p) => p.id === targetPhaseId);
+				const target = deliverables(plan).find((p) => p.id === targetPhaseId);
 				if (!target) {
 					notify(
 						ctx,
@@ -3218,16 +3231,21 @@ export default defineExtension(
 						return;
 					}
 				}
-				// Pre/post phases are manual checklists — they have no branch
-				// and `/ship` rejects them. `/implement <phaseId>` would happily
-				// flow into the branch-checkout path with `phase.branch === ""`,
-				// producing `git checkout -B ""` failures. Refuse explicitly with
-				// the same warning shape as the pre/post `/ship` guard.
-				const targetKind = effectivePhaseKind(target);
-				if (targetKind !== "regular") {
+				// Lifecycle checklists and groupings are not implementable —
+				// no branch to check out. Refuse explicitly with the same
+				// warning shape as the /ship guard.
+				if (target.lifecycle) {
 					notify(
 						ctx,
-						`phase \`${target.id}\` is a ${targetKind}-phase (manual checklist) — there's no branch to implement. Tick its tasks with \`plan_task toggle\` instead.`,
+						`deliverable \`${target.id}\` is a ${target.lifecycle} checklist (manual) — there's no branch to implement. Tick its items with \`task toggle\` instead.`,
+						"warning",
+					);
+					return;
+				}
+				if (!isImplementableLeaf(target)) {
+					notify(
+						ctx,
+						`deliverable \`${target.id}\` is a grouping — implement its children instead.`,
 						"warning",
 					);
 					return;
@@ -3258,7 +3276,7 @@ export default defineExtension(
 				// Pre-phase has un-ticked tasks; refuse to start any regular work
 				// until the user completes the manual preflight checklist.
 				const pre = classified.phase;
-				const pending = pre.tasks.filter((t) => !t.done);
+				const pending = ownWorkItems(pre).filter((t) => !t.done);
 				const headline = pending
 					.slice(0, 3)
 					.map((t) => `  - [!] ${t.title}`)
@@ -3280,7 +3298,7 @@ export default defineExtension(
 				// All regular phases terminal; surface the post-handover
 				// checklist instead of falsely reporting "all done".
 				const post = classified.phase;
-				const pending = post.tasks.filter((t) => !t.done);
+				const pending = ownWorkItems(post).filter((t) => !t.done);
 				const headline = pending
 					.slice(0, 5)
 					.map((t) => `  - [!] ${t.title}`)
@@ -3316,7 +3334,7 @@ export default defineExtension(
 			}
 			if (classified.kind === "use-phase" && plan) {
 				phase = classified.phase;
-				branch = phase.branch;
+				branch = phase.branch ?? null;
 
 				// Driver-claim adoption guard. Refuse to adopt a phase already
 				// being driven by another live session unless the user passed
@@ -3379,6 +3397,9 @@ export default defineExtension(
 					notify(ctx, branchPlan.reason, "error");
 					return;
 				}
+				// planImplementBranch resolved the branch (deriving the default
+				// `feat/<id>` when the deliverable carried none).
+				branch = branchPlan.branch;
 
 				// Atomic (re-)claim. The `evaluateClaim` guard above runs before
 				// the git work; a peer session can claim the phase in that window.
@@ -3403,7 +3424,9 @@ export default defineExtension(
 					const out = await withPlanLock<ClaimResult>(
 						claimPlan.slug,
 						(fresh) => {
-							const fp = fresh.phases.find((p) => p.id === claimPhaseRef.id);
+							const fp = deliverables(fresh).find(
+								(p) => p.id === claimPhaseRef.id,
+							);
 							if (!fp) {
 								return {
 									result: { ok: false, reason: "missing" } as const,
@@ -3479,9 +3502,13 @@ export default defineExtension(
 					}
 					// `-B` here is intentional: silently overwrites a leftover
 					// branch from a previous failed run on a still-`planned` phase.
-					const checkout = runCommand("git", ["checkout", "-B", branch], {
-						cwd: ctx.cwd,
-					});
+					const checkout = runCommand(
+						"git",
+						["checkout", "-B", branchPlan.branch],
+						{
+							cwd: ctx.cwd,
+						},
+					);
 					if (!checkout.ok) {
 						notify(
 							ctx,
@@ -3563,7 +3590,7 @@ export default defineExtension(
 			// All post-replacement work (setMode, persist, sendMessage)
 			// happens inside `withSession` because the previous ctx is stale
 			// after session replacement.
-			if (plan && phase) {
+			if (plan && phase && branch) {
 				const planRef = plan;
 				const phaseRef = phase;
 				const branchRef = branch;
@@ -3736,8 +3763,8 @@ export default defineExtension(
 			// still resolve `foo` (and vice versa).
 			const arg = args?.trim();
 			const phase = arg
-				? plan.phases.find((p) => matchPhaseId(p.id, arg))
-				: plan.phases.find((p) => p.status === "active");
+				? deliverables(plan).find((p) => matchDeliverableId(p.id, arg))
+				: deliverables(plan).find((p) => p.status === "active");
 			if (!phase) {
 				notify(
 					ctx,
@@ -3748,14 +3775,14 @@ export default defineExtension(
 				);
 				return;
 			}
-			// Pre/post phases are manual checklists — there's no branch and no
-			// PR to open. /ship is a no-op; user just toggles their tasks.
-			const phaseKind = effectivePhaseKind(phase);
-			if (phaseKind !== "regular") {
+			// Lifecycle checklists and groupings never /ship — there's no
+			// branch and no PR to open.
+			if (!isImplementableLeaf(phase)) {
 				notify(
 					ctx,
-					`phase \`${phase.id}\` is a ${phaseKind}-phase (manual checklist) — ` +
-						"there's no branch to ship. Tick its tasks with `plan_task toggle` instead.",
+					phase.lifecycle
+						? `deliverable \`${phase.id}\` is a ${phase.lifecycle} checklist (manual) — there's no branch to ship. Tick its items with \`task toggle\` instead.`
+						: `deliverable \`${phase.id}\` is a grouping — it completes when its children ship; nothing to /ship directly.`,
 					"warning",
 				);
 				return;
@@ -4077,7 +4104,7 @@ export default defineExtension(
 			plan: Plan,
 			phaseId: string,
 		): Promise<void> {
-			const phase = plan.phases.find((p) => p.id === phaseId);
+			const phase = deliverables(plan).find((p) => p.id === phaseId);
 			if (!phase) {
 				notify(ctx, `phase ${phaseId} not found in plan`, "error");
 				return;
@@ -4103,9 +4130,9 @@ export default defineExtension(
 				"info",
 			);
 			if (modeState) {
-				modeState.branch = phase.branch;
+				modeState.branch = phase.branch ?? null;
 				modeState.stage = "executing";
-				pi.setSessionName(phase.branch);
+				if (phase.branch) pi.setSessionName(phase.branch);
 				setMode("ask", ctx);
 				persist();
 			}
@@ -4247,7 +4274,10 @@ export default defineExtension(
 				notify(ctx, `plan ${slug} not found on disk`, "error");
 				return;
 			}
-			const before = plan.phases.map((p) => ({ id: p.id, status: p.status }));
+			const before = deliverables(plan).map((p) => ({
+				id: p.id,
+				status: p.status,
+			}));
 			const { checked, failed } = syncPlanFromRemote(plan, ctx);
 			plan.lastSyncedAt = new Date().toISOString();
 			plan.updatedAt = plan.lastSyncedAt;
@@ -4255,7 +4285,7 @@ export default defineExtension(
 			if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 			updateWidget(ctx);
 
-			const changes = plan.phases
+			const changes = deliverables(plan)
 				.map((p) => {
 					const prev = before.find((b) => b.id === p.id);
 					return prev && prev.status !== p.status
@@ -4303,7 +4333,7 @@ export default defineExtension(
 			const action = sub[0] || "list";
 
 			if (action === "list") {
-				const lines = plan.phases.map((p) => {
+				const lines = deliverables(plan).map((p) => {
 					const path = worktreePath(plan, p);
 					const status = worktreeExists(plan, p) ? "exists" : "absent";
 					return `  ${p.id} [${p.status}] — ${status}: ${path}`;
@@ -4314,7 +4344,7 @@ export default defineExtension(
 
 			if (action === "prune") {
 				// Orphan = worktree exists but the phase no longer needs one.
-				const orphans = plan.phases.filter(
+				const orphans = deliverables(plan).filter(
 					(p) =>
 						worktreeExists(plan, p) && !WORKTREE_STATUSES.includes(p.status),
 				);
@@ -4362,7 +4392,10 @@ export default defineExtension(
 			if (!slug) return;
 			const plan = loadPlan(slug);
 			if (!plan) return;
-			const before = plan.phases.map((p) => ({ id: p.id, status: p.status }));
+			const before = deliverables(plan).map((p) => ({
+				id: p.id,
+				status: p.status,
+			}));
 			syncPlanFromRemote(plan, ctx);
 			plan.lastSyncedAt = new Date().toISOString();
 			plan.updatedAt = plan.lastSyncedAt;
@@ -4370,7 +4403,7 @@ export default defineExtension(
 			if (reconcileWorktrees(plan, ctx)) savePlan(plan);
 			updateWidget(ctx);
 
-			const transitioned = plan.phases
+			const transitioned = deliverables(plan)
 				.map((p) => {
 					const prev = before.find((b) => b.id === p.id);
 					if (
@@ -4406,7 +4439,7 @@ export default defineExtension(
 			let checked = 0;
 			let failed = 0;
 			const now = () => new Date().toISOString();
-			for (const phase of plan.phases) {
+			for (const phase of deliverables(plan)) {
 				if (TERMINAL_STATUSES.includes(phase.status)) continue;
 
 				// Recovery path (#150): an `active` phase with a branch but no
@@ -4486,7 +4519,7 @@ export default defineExtension(
 				notify(ctx, `plan ${slug} not found on disk`, "error");
 				return;
 			}
-			if (plan.phases.length === 0) {
+			if (deliverables(plan).length === 0) {
 				notify(
 					ctx,
 					"plan has no phases — add at least one with phase before parking",
@@ -4498,10 +4531,10 @@ export default defineExtension(
 			// Secret scan over plan title + every phase/task body.
 			const scanText = [
 				plan.title,
-				...plan.phases.flatMap((p) => [
+				...deliverables(plan).flatMap((p) => [
 					p.title,
-					p.goal,
-					...p.tasks.flatMap((t) => [t.title, t.body]),
+					p.body,
+					...ownWorkItems(p).flatMap((t) => [t.title, t.body]),
 				]),
 			].join("\n");
 			const secretCheck = scanForSecrets(scanText);
@@ -4523,7 +4556,7 @@ export default defineExtension(
 			if (ctx.hasUI) {
 				assignCopilot = await ctx.ui.confirm(
 					"Assign Copilot to each phase issue?",
-					`Will assign @copilot to each of the ${plan.phases.length} phase issues. Each phase becomes a parallel coding-agent session — ${plan.phases.length} premium requests, ${plan.phases.length} PRs.\n\nOnly works on github.com (not GHES).`,
+					`Will assign @copilot to each of the ${deliverables(plan).length} phase issues. Each phase becomes a parallel coding-agent session — ${deliverables(plan).length} premium requests, ${deliverables(plan).length} PRs.\n\nOnly works on github.com (not GHES).`,
 				);
 				if (assignCopilot) {
 					const confirmed = await ctx.ui.confirm(
@@ -4556,55 +4589,73 @@ export default defineExtension(
 
 			const tmpDir = mkdtempSync(join(tmpdir(), "modes-park-"));
 			try {
-				// Step 1: create the parent (plan) tracking issue.
-				const parentBodyFile = join(tmpDir, "parent.md");
-				const parentBody = renderParentIssueBody(plan);
-				writeFileSync(parentBodyFile, parentBody, "utf8");
-				const parentArgs = [
-					"issue",
-					"create",
-					"--title",
-					plan.title,
-					"--body-file",
-					parentBodyFile,
-					"--label",
-					"plan",
-				];
-				if (projectName) parentArgs.push("--project", projectName);
+				// Step 1: the tracking (parent) issue. Required whenever the
+				// plan has top-level loose work-items (they have nowhere else
+				// to live); otherwise the user may skip it and rely on the
+				// self-contained deliverable issues alone.
+				let parentNumber: number | null = null;
+				let parentUrl = "";
+				let wantParent = true;
+				if (!requiresTrackingIssue(plan) && ctx.hasUI) {
+					wantParent = await ctx.ui.confirm(
+						"Create a tracking issue?",
+						"The plan has no loose plan-level items, so the deliverable " +
+							"issues are self-contained. Create an umbrella tracking " +
+							"issue anyway?",
+					);
+				}
+				if (wantParent) {
+					const parentBodyFile = join(tmpDir, "parent.md");
+					const parentBody = renderParentIssueBody(plan);
+					writeFileSync(parentBodyFile, parentBody, "utf8");
+					const parentArgs = [
+						"issue",
+						"create",
+						"--title",
+						plan.title,
+						"--body-file",
+						parentBodyFile,
+						"--label",
+						"plan",
+					];
+					if (projectName) parentArgs.push("--project", projectName);
 
-				const parentResult = await runCommandAsync("gh", parentArgs, {
-					cwd: ctx.cwd,
-					signal: ctx.signal,
-				});
-				if (!parentResult.ok) {
-					notify(
-						ctx,
-						`gh issue create (parent) failed: ${parentResult.stderr.trim()}`,
-						"error",
-					);
-					return;
+					const parentResult = await runCommandAsync("gh", parentArgs, {
+						cwd: ctx.cwd,
+						signal: ctx.signal,
+					});
+					if (!parentResult.ok) {
+						notify(
+							ctx,
+							`gh issue create (parent) failed: ${parentResult.stderr.trim()}`,
+							"error",
+						);
+						return;
+					}
+					const parentMatch = parentResult.stdout.match(/\/issues\/(\d+)/);
+					if (!parentMatch) {
+						notify(
+							ctx,
+							`gh issue create (parent) returned unexpected output: ${parentResult.stdout.trim()}`,
+							"error",
+						);
+						return;
+					}
+					parentNumber = Number.parseInt(parentMatch[1], 10);
+					if (!Number.isFinite(parentNumber)) {
+						notify(
+							ctx,
+							`gh issue create (parent) returned invalid number: ${parentMatch[1]}`,
+							"error",
+						);
+						return;
+					}
+					plan.parentIssueNumber = parentNumber;
+					parentUrl = parentResult.stdout.match(/https?:\/\/\S+/)?.[0] ?? "";
 				}
-				const parentMatch = parentResult.stdout.match(/\/issues\/(\d+)/);
-				if (!parentMatch) {
-					notify(
-						ctx,
-						`gh issue create (parent) returned unexpected output: ${parentResult.stdout.trim()}`,
-						"error",
-					);
-					return;
-				}
-				const parentNumber = Number.parseInt(parentMatch[1], 10);
-				if (!Number.isFinite(parentNumber)) {
-					notify(
-						ctx,
-						`gh issue create (parent) returned invalid number: ${parentMatch[1]}`,
-						"error",
-					);
-					return;
-				}
-				plan.parentIssueNumber = parentNumber;
 
-				// Step 2: create one issue per phase, link to parent.
+				// Step 2: one self-contained issue per deliverable, in
+				// topological order so dependency references resolve to #N.
 				await createPhaseIssues(
 					ctx,
 					plan,
@@ -4617,11 +4668,11 @@ export default defineExtension(
 				plan.updatedAt = new Date().toISOString();
 				savePlan(plan);
 
-				const parentUrl =
-					parentResult.stdout.match(/https?:\/\/\S+/)?.[0] ?? "";
 				notify(
 					ctx,
-					`parked plan as #${parentNumber}${parentUrl ? ` (${parentUrl})` : ""} with ${plan.phases.length} phase issues`,
+					parentNumber !== null
+						? `parked plan as #${parentNumber}${parentUrl ? ` (${parentUrl})` : ""} with ${deliverables(plan).length} deliverable issues`
+						: `parked plan as ${deliverables(plan).length} deliverable issues (no tracking issue)`,
 					"info",
 				);
 				modeState.stage = "idle";
@@ -4655,18 +4706,23 @@ export default defineExtension(
 		async function createPhaseIssues(
 			ctx: ExtensionContext,
 			plan: Plan,
-			parentNumber: number,
+			parentNumber: number | null,
 			tmpDir: string,
 			projectName: string | undefined,
 			assignCopilot: boolean,
 		): Promise<void> {
 			const errors: string[] = [];
 
-			for (const phase of plan.phases) {
-				const bodyFile = join(tmpDir, `phase-${phase.id}.md`);
+			// Topological creation: dependencies first, so each body can
+			// reference `Depends on #N` with the real issue number. Issues
+			// are self-contained — no sub_issues API calls. Partial
+			// failures degrade to backticked `dep-id` references.
+			const issueNumbers = new Map<string, number>();
+			for (const phase of topologicalDeliverables(plan)) {
+				const bodyFile = join(tmpDir, `deliverable-${phase.id}.md`);
 				writeFileSync(
 					bodyFile,
-					renderPhaseIssueBody(phase, parentNumber),
+					renderDeliverableIssueBody(phase, parentNumber, issueNumbers),
 					"utf8",
 				);
 				const args = [
@@ -4677,7 +4733,7 @@ export default defineExtension(
 					"--body-file",
 					bodyFile,
 					"--label",
-					"phase",
+					"deliverable",
 				];
 				if (projectName) args.push("--project", projectName);
 				if (assignCopilot) args.push("--assignee", "@copilot");
@@ -4688,65 +4744,34 @@ export default defineExtension(
 				});
 				if (!result.ok) {
 					errors.push(
-						`phase ${phase.id} (${phase.title}): ${result.stderr.trim() || "unknown error"}`,
+						`deliverable ${phase.id} (${phase.title}): ${result.stderr.trim() || "unknown error"}`,
 					);
 					continue;
 				}
 				const urlMatch = result.stdout.match(/\/issues\/(\d+)/);
 				if (!urlMatch) {
 					errors.push(
-						`phase ${phase.id}: could not parse issue number from "${result.stdout.trim()}"`,
+						`deliverable ${phase.id}: could not parse issue number from "${result.stdout.trim()}"`,
 					);
 					continue;
 				}
 				const num = Number.parseInt(urlMatch[1], 10);
 				if (!Number.isFinite(num)) {
-					errors.push(`phase ${phase.id}: invalid issue number ${urlMatch[1]}`);
+					errors.push(
+						`deliverable ${phase.id}: invalid issue number ${urlMatch[1]}`,
+					);
 					continue;
 				}
 				phase.issueNumber = num;
-
-				// Look up internal id (sub_issues API requires REST id, not number).
-				const restView = await runCommandAsync(
-					"gh",
-					["api", `/repos/{owner}/{repo}/issues/${num}`, "--jq", ".id"],
-					{ cwd: ctx.cwd, signal: ctx.signal },
-				);
-				if (!restView.ok) {
-					errors.push(
-						`phase ${phase.id}: REST id lookup for #${num} failed: ${restView.stderr.trim()}`,
-					);
-					continue;
-				}
-				const id = Number.parseInt(restView.stdout.trim(), 10);
-				if (!Number.isFinite(id)) {
-					errors.push(
-						`phase ${phase.id}: invalid REST id "${restView.stdout.trim()}"`,
-					);
-					continue;
-				}
-
-				const link = await runCommandAsync(
-					"gh",
-					[
-						"api",
-						"--method",
-						"POST",
-						`/repos/{owner}/{repo}/issues/${parentNumber}/sub_issues`,
-						"-F",
-						`sub_issue_id=${id}`,
-					],
-					{ cwd: ctx.cwd, signal: ctx.signal },
-				);
-				if (!link.ok) {
-					errors.push(
-						`link phase ${phase.id} (#${num}) to parent #${parentNumber}: ${link.stderr.trim() || "unknown error"}`,
-					);
-				}
+				issueNumbers.set(phase.id, num);
 			}
 
 			if (errors.length > 0) {
-				notify(ctx, `phase issue errors:\n  ${errors.join("\n  ")}`, "warning");
+				notify(
+					ctx,
+					`deliverable issue errors:\n  ${errors.join("\n  ")}`,
+					"warning",
+				);
 			}
 		}
 
@@ -4995,7 +5020,7 @@ export default defineExtension(
 			// own compaction-side state, and a savePlan failure must not block
 			// the compaction from completing.
 			if (result.usage) {
-				const phase = plan.phases.find((p) => p.id === pending.phaseId);
+				const phase = deliverables(plan).find((p) => p.id === pending.phaseId);
 				if (phase) {
 					const tokens = phase.tokens ?? {
 						phase: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -5133,10 +5158,10 @@ export default defineExtension(
 				// preamble still surfaces them so the agent is aware they exist
 				// (e.g. open questions to consider while implementing).
 				const remainingDeliverables = remaining.filter(
-					({ task }) => effectiveTaskKind(task) === "deliverable",
+					({ task }) => effectiveWorkItemKind(task) === "task",
 				);
 				const remainingNotes = remaining.filter(
-					({ task }) => effectiveTaskKind(task) !== "deliverable",
+					({ task }) => effectiveWorkItemKind(task) !== "task",
 				);
 				const includeClassifier = pendingSteeringClassifier;
 				pendingSteeringClassifier = false;
@@ -5158,7 +5183,7 @@ export default defineExtension(
 				if (phase && plan) {
 					const parentId = effectiveDependsOn(plan, phase)[0];
 					if (parentId) {
-						const parent = plan.phases.find((p) => p.id === parentId);
+						const parent = deliverables(plan).find((p) => p.id === parentId);
 						if (parent) {
 							let parentInfo = `Predecessor \`${parent.id}\`: status=\`${parent.status}\``;
 							if (parent.branch) parentInfo += `, branch=\`${parent.branch}\``;
@@ -5183,7 +5208,7 @@ export default defineExtension(
 						"(NOT for you to tick — these surface in the PR body for the",
 						"reviewer; treat as context, not as work):",
 						...remainingNotes.map(({ task }) => {
-							const kind = effectiveTaskKind(task);
+							const kind = effectiveWorkItemKind(task);
 							return `  [${kind}] ${task.title}`;
 						}),
 						"",
@@ -5430,10 +5455,10 @@ export default defineExtension(
 			// They surface in /ship's PR body and /park's issue body instead.
 			const allTasks = activeTasks(plan);
 			const deliverables = allTasks.filter(
-				({ task }) => effectiveTaskKind(task) === "deliverable",
+				({ task }) => effectiveWorkItemKind(task) === "task",
 			);
 			const notes = allTasks.filter(
-				({ task }) => effectiveTaskKind(task) !== "deliverable",
+				({ task }) => effectiveWorkItemKind(task) !== "task",
 			);
 			// Gate-diagnostic helper: emits a named warning for unusual stalls
 			// (e.g. executing with zero tasks/deliverables) so the user can
@@ -5463,7 +5488,7 @@ export default defineExtension(
 						activePhase(plan) === null
 					) {
 						const selfSessionId = ctx.sessionManager.getSessionId();
-						const candidates = readyPhases(plan).filter((p) => {
+						const candidates = readyDeliverables(plan).filter((p) => {
 							const d = evaluateClaim(p, selfSessionId);
 							return d.kind !== "occupied";
 						});
@@ -5509,7 +5534,7 @@ export default defineExtension(
 				notes.length > 0
 					? `\n\n_Notes for the human reviewer (not gating completion):_\n${notes
 							.map(({ task }) => {
-								const kind = effectiveTaskKind(task);
+								const kind = effectiveWorkItemKind(task);
 								return `- ${KIND_MARKER[kind] ?? "-"} ${task.title} _(${kind})_`;
 							})
 							.join("\n")}`
@@ -5643,7 +5668,9 @@ export default defineExtension(
 			if (compactionInFlight) return;
 
 			const plan = currentPlan();
-			const activePhase = plan?.phases.find((p) => p.status === "active");
+			const activePhase = (plan ? deliverables(plan) : []).find(
+				(p) => p.status === "active",
+			);
 			const usage = ctx.getContextUsage();
 
 			// Estimate live summary token cost so the trigger can isolate the
@@ -5754,7 +5781,9 @@ export default defineExtension(
 			opts: { canStartNewSession: boolean },
 		): Promise<TransitionDecision> {
 			const plan = currentPlan();
-			const activePhase = plan?.phases.find((p) => p.status === "active");
+			const activePhase = (plan ? deliverables(plan) : []).find(
+				(p) => p.status === "active",
+			);
 			const activePhaseId = activePhase?.id ?? null;
 			const built = buildTransitionOptions({
 				hasUI: ctx.hasUI,
@@ -5863,7 +5892,7 @@ export default defineExtension(
 					if (shouldOfferShiftTabPicker(plan, ctx.hasUI)) {
 						runDetached("picker", ctx, () => runPicker(ctx));
 					} else {
-						const hadPhases = (plan?.phases.length ?? 0) > 0;
+						const hadPhases = (plan ? deliverables(plan).length : 0) > 0;
 						setMode("ask", ctx);
 						notify(
 							ctx,
@@ -6149,7 +6178,7 @@ export default defineExtension(
 					if (
 						plan &&
 						firstToken &&
-						plan.phases.some((p) => p.id === firstToken)
+						deliverables(plan).some((p) => p.id === firstToken)
 					) {
 						targetPhaseId = firstToken;
 						stripped = stripped.slice(firstToken.length).trim();

@@ -20,7 +20,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claimPhase, evaluateClaim } from "../plan/driver-claim.js";
-import type { Phase, Plan } from "../plan/schema.js";
+import type { Deliverable as Phase, Plan } from "../plan/schema.js";
+import { deliverables } from "../plan/schema.js";
 import {
 	_setPlansRootForTests,
 	loadPlan,
@@ -45,7 +46,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "race-plan",
 		title: "Race Plan",
 		repo: { path: "/tmp/repo-race" },
-		phases: [],
+		nodes: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -55,12 +56,13 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
 	return {
+		type: "deliverable" as const,
 		id: "p-1",
 		title: "P",
-		goal: "g",
+		body: "g",
 		status: "planned",
 		branch: "feat/p-1",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -82,7 +84,7 @@ async function lockedClaim(
 	takeover = false,
 ): Promise<ClaimOutcome> {
 	return withPlanLock<ClaimOutcome>(slug, (fresh) => {
-		const fp = fresh.phases.find((p) => p.id === phaseId);
+		const fp = deliverables(fresh).find((p) => p.id === phaseId);
 		if (!fp) return { result: { ok: false, reason: "occupied" }, save: false };
 		const d = evaluateClaim(fp, selfSessionId);
 		if (d.kind === "occupied" && !takeover) {
@@ -103,7 +105,7 @@ describe("driver-claim race", () => {
 		// `occupied`, not `stale`.
 		writeFileSync(fileA, "");
 		writeFileSync(fileB, "");
-		savePlan(makePlan({ phases: [makePhase()] }));
+		savePlan(makePlan({ nodes: [makePhase()] }));
 
 		const [a, b] = await Promise.all([
 			lockedClaim("race-plan", "p-1", "session-a", fileA),
@@ -118,7 +120,9 @@ describe("driver-claim race", () => {
 
 		// The persisted plan records exactly one driver — the winner.
 		const persisted = loadPlan("race-plan");
-		const driver = persisted?.phases[0]?.driverSessionId;
+		const driver = persisted
+			? deliverables(persisted)[0]?.driverSessionId
+			: undefined;
 		expect(driver).toBeDefined();
 		expect(["session-a", "session-b"]).toContain(driver);
 		if (a.ok) {
@@ -131,14 +135,17 @@ describe("driver-claim race", () => {
 	it("re-claim by the same session is idempotent (self)", async () => {
 		const fileA = join(tmp, "session-a.jsonl");
 		writeFileSync(fileA, "");
-		savePlan(makePlan({ phases: [makePhase()] }));
+		savePlan(makePlan({ nodes: [makePhase()] }));
 
 		const first = await lockedClaim("race-plan", "p-1", "session-a", fileA);
 		const second = await lockedClaim("race-plan", "p-1", "session-a", fileA);
 
 		expect(first.ok).toBe(true);
 		expect(second.ok).toBe(true);
-		expect(loadPlan("race-plan")?.phases[0]?.driverSessionId).toBe("session-a");
+		const reloaded = loadPlan("race-plan");
+		expect((reloaded ? deliverables(reloaded) : [])[0]?.driverSessionId).toBe(
+			"session-a",
+		);
 	});
 
 	it("takeover overrides a live peer's claim", async () => {
@@ -146,7 +153,7 @@ describe("driver-claim race", () => {
 		const fileB = join(tmp, "session-b.jsonl");
 		writeFileSync(fileA, "");
 		writeFileSync(fileB, "");
-		savePlan(makePlan({ phases: [makePhase()] }));
+		savePlan(makePlan({ nodes: [makePhase()] }));
 
 		const held = await lockedClaim("race-plan", "p-1", "session-a", fileA);
 		expect(held.ok).toBe(true);
@@ -164,6 +171,11 @@ describe("driver-claim race", () => {
 			true,
 		);
 		expect(taken.ok).toBe(true);
-		expect(loadPlan("race-plan")?.phases[0]?.driverSessionId).toBe("session-b");
+		expect(
+			(() => {
+				const lp = loadPlan("race-plan");
+				return lp ? deliverables(lp)[0] : undefined;
+			})()?.driverSessionId,
+		).toBe("session-b");
 	});
 });

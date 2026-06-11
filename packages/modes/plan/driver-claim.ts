@@ -19,7 +19,7 @@
  */
 
 import { existsSync, statSync } from "node:fs";
-import type { Phase } from "./schema.js";
+import type { Deliverable } from "./schema.js";
 
 /**
  * Time after a session file's mtime stops updating before its
@@ -57,7 +57,7 @@ export type ClaimDecision =
  *   must refuse without an explicit takeover override.
  */
 export function evaluateClaim(
-	phase: Phase,
+	phase: Deliverable,
 	selfSessionId: string | undefined,
 	now = Date.now(),
 ): ClaimDecision {
@@ -102,7 +102,7 @@ export function evaluateClaim(
 
 /** Mutates `phase` in place to record `selfSessionId` as the driver. */
 export function claimPhase(
-	phase: Phase,
+	phase: Deliverable,
 	selfSessionId: string,
 	sessionFile: string | undefined,
 	now: string,
@@ -122,7 +122,7 @@ export function claimPhase(
  * when the session voluntarily releases the claim (e.g. on an
  * explicit takeover by another session).
  */
-export function releasePhase(phase: Phase): void {
+export function releasePhase(phase: Deliverable): void {
 	delete phase.driverSessionId;
 	delete phase.driverSessionFile;
 	delete phase.driverClaimedAt;

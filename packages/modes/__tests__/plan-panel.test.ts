@@ -11,12 +11,13 @@ import {
 	windowLines,
 } from "../plan/panel.js";
 import type {
-	Phase,
-	PhaseStatus,
+	Deliverable as Phase,
+	DeliverableStatus as PhaseStatus,
 	Plan,
-	Task,
-	TaskKind,
+	WorkItem as Task,
+	WorkItemKind as TaskKind,
 } from "../plan/schema.js";
+import { deliverables } from "../plan/schema.js";
 
 // Minimal theme that strips styling so assertions read on plain text.
 const theme = {
@@ -28,13 +29,10 @@ const stripBox = (lines: string[]) =>
 	lines.slice(1, -1).map((l) => l.replace(/[│╭╮╰╯]/g, "").trimEnd());
 
 let taskSeq = 0;
-function makeTask(
-	title: string,
-	done: boolean,
-	kind: TaskKind = "deliverable",
-): Task {
+function makeTask(title: string, done: boolean, kind: TaskKind = "task"): Task {
 	taskSeq++;
 	return {
+		type: "work-item" as const,
 		id: `t${taskSeq}`,
 		title,
 		body: "",
@@ -52,12 +50,13 @@ function makePhase(
 	extra: Partial<Phase> = {},
 ): Phase {
 	return {
+		type: "deliverable" as const,
 		id: title.toLowerCase().replace(/\s+/g, "-"),
 		title,
-		goal: "",
+		body: "",
 		status,
 		branch: `feat/${title.toLowerCase().replace(/\s+/g, "-")}`,
-		tasks,
+		children: tasks,
 		dependsOn: [],
 		createdAt: "2026-01-01T00:00:00Z",
 		updatedAt: "2026-01-01T00:00:00Z",
@@ -65,14 +64,13 @@ function makePhase(
 	};
 }
 
-function makePlan(phases: Phase[], title = "Test plan"): Plan {
+function makePlan(nodes: Phase[], title = "Test plan"): Plan {
 	return {
 		slug: "test-plan",
 		title,
 		repo: { path: "/tmp/test" },
 		schemaVersion: 3,
-		phases,
-		followUps: [],
+		nodes,
 		seenIn: [],
 		createdAt: "2026-01-01T00:00:00Z",
 		updatedAt: "2026-01-01T00:00:00Z",
@@ -626,7 +624,7 @@ describe("PlanPanelComponent navigation", () => {
 		component.setFocused(true);
 		component.handleInput(KEY.right);
 		expect(bodyOf(component)).toContain("☐ hidden");
-		component.setPlan(makePlan(plan.phases)); // same slug "test-plan"
+		component.setPlan(makePlan(deliverables(plan))); // same slug "test-plan"
 		expect(bodyOf(component)).toContain("☐ hidden");
 	});
 

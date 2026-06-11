@@ -14,7 +14,7 @@ import {
 	releasePhase,
 	STALE_DRIVER_TTL_MS,
 } from "../plan/driver-claim.js";
-import type { Phase } from "../plan/schema.js";
+import type { Deliverable as Phase } from "../plan/schema.js";
 
 let tmp: string;
 
@@ -29,12 +29,13 @@ afterEach(() => {
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
 	return {
+		type: "deliverable" as const,
 		id: "p-1",
 		title: "P",
-		goal: "g",
+		body: "g",
 		status: "planned",
 		branch: "feat/p-1",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,

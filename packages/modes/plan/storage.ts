@@ -28,8 +28,16 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import { lock as lockAsync, lockSync } from "proper-lockfile";
-import type { Phase, Plan, Task } from "./schema.js";
-import { TERMINAL_STATUSES } from "./schema.js";
+import type {
+	Deliverable,
+	DeliverableStatus,
+	DeliverableTokens,
+	Plan,
+	PlanNode,
+	WorkItem,
+	WorkItemKind,
+} from "./schema.js";
+import { deliverables, TERMINAL_STATUSES } from "./schema.js";
 
 // Plans live under the resolved agent dir (honours PI_CODING_AGENT_DIR /
 // XDG), not a hardcoded ~/.pi. The previous hardcode ignored the env
@@ -117,83 +125,81 @@ export function loadPlan(slug: string): Plan | null {
 	}
 }
 
-/**
- * Lazy on-load migration to the current schema version. Pure: takes
- * a parsed plan, returns a normalised plan. Idempotent — running
- * twice produces the same shape.
- *
- * v1 → v2 changes:
- *   - Phase.dependsOn back-filled from array order (nearest non-
- *     abandoned predecessor, or [] for the first phase).
- *   - Task.kind defaulted to "deliverable" on every existing task.
- *   - Plan.followUps initialised to [].
- *   - schemaVersion stamped to 2.
- *
- * The migrated plan is returned in-memory; the next savePlan persists
- * the new shape. Callers don't need to know the version — they always
- * see v2-shaped plans.
- */
-export function migratePlan(input: Plan): Plan {
-	if ((input.schemaVersion ?? 1) >= CURRENT_SCHEMA_VERSION) {
-		// Already current. Still normalise tasks/followUps in case the
-		// on-disk file was hand-edited and dropped a field.
-		return normaliseV2(input);
-	}
-	const phases: Phase[] = input.phases.map((phase, idx) => {
-		const dependsOn =
-			phase.dependsOn ?? deriveLegacyDependsOn(input.phases, idx);
-		return {
-			...phase,
-			dependsOn,
-			tasks: phase.tasks.map(normaliseTask),
-		};
-	});
+// ---- Legacy (v1/v2) on-disk shapes, used only by migration ---------------
+
+type LegacyTaskKind = "deliverable" | "followUp" | "question" | "manual";
+
+interface LegacyTask {
+	id: string;
+	title: string;
+	body: string;
+	done: boolean;
+	kind?: LegacyTaskKind;
+	createdAt: string;
+	updatedAt: string;
+}
+
+interface LegacyPhase {
+	id: string;
+	title: string;
+	goal: string;
+	status: DeliverableStatus;
+	branch: string;
+	kind?: "pre" | "regular" | "post";
+	dependsOn?: string[];
+	worktreePath?: string;
+	sessionPath?: string;
+	driverSessionId?: string;
+	driverSessionFile?: string;
+	driverClaimedAt?: string;
+	issueNumber?: number;
+	tasks: LegacyTask[];
+	prNumber?: number;
+	summary?: string;
+	tokens?: DeliverableTokens;
+	createdAt: string;
+	updatedAt: string;
+}
+
+/** v1/v2 plan as parsed straight off disk. */
+interface LegacyPlan extends Omit<Plan, "nodes"> {
+	phases?: LegacyPhase[];
+	followUps?: LegacyTask[];
+	nodes?: PlanNode[];
+}
+
+const LEGACY_KIND_REMAP: Record<LegacyTaskKind, WorkItemKind> = {
+	deliverable: "task",
+	followUp: "followup",
+	question: "question",
+	manual: "manual",
+};
+
+function migrateLegacyTask(task: LegacyTask): WorkItem {
+	const { kind, ...rest } = task;
 	return {
-		...input,
-		schemaVersion: CURRENT_SCHEMA_VERSION,
-		phases,
-		followUps: (input.followUps ?? []).map(normaliseTask),
+		type: "work-item",
+		...rest,
+		kind: LEGACY_KIND_REMAP[kind ?? "deliverable"],
 	};
 }
 
-function normaliseV2(plan: Plan): Plan {
-	let mutated = false;
-	const phases = plan.phases.map((phase) => {
-		let phaseMutated = false;
-		let tasks = phase.tasks;
-		let dependsOn = phase.dependsOn;
-		if (phase.tasks.some((t) => t.kind === undefined)) {
-			tasks = phase.tasks.map(normaliseTask);
-			phaseMutated = true;
-		}
-		if (dependsOn === undefined) {
-			dependsOn = [];
-			phaseMutated = true;
-		}
-		if (phaseMutated) {
-			mutated = true;
-			return { ...phase, tasks, dependsOn };
-		}
-		return phase;
-	});
-	const followUps = plan.followUps ?? [];
-	const followUpsNormalised = followUps.map(normaliseTask);
-	if (
-		plan.followUps === undefined ||
-		followUps.some((t) => t.kind === undefined)
-	) {
-		mutated = true;
-	}
-	if (!mutated) return plan;
-	return { ...plan, phases, followUps: followUpsNormalised };
+function migrateLegacyPhase(phase: LegacyPhase): Deliverable {
+	const { goal, kind, tasks, branch, ...rest } = phase;
+	const lifecycle = kind === "pre" || kind === "post" ? kind : undefined;
+	return {
+		type: "deliverable",
+		...rest,
+		body: goal,
+		// Pre/post phases carried `branch: ""` — drop it; regular phases
+		// keep theirs.
+		...(branch ? { branch } : {}),
+		...(lifecycle ? { lifecycle } : {}),
+		children: tasks.map(migrateLegacyTask),
+	};
 }
 
-function normaliseTask(task: Task): Task {
-	if (task.kind !== undefined) return task;
-	return { ...task, kind: "deliverable" };
-}
-
-function deriveLegacyDependsOn(phases: Phase[], idx: number): string[] {
+function deriveLegacyDependsOn(phases: LegacyPhase[], idx: number): string[] {
 	for (let i = idx - 1; i >= 0; i--) {
 		const prev = phases[i];
 		if (prev && prev.status !== "abandoned") return [prev.id];
@@ -201,7 +207,129 @@ function deriveLegacyDependsOn(phases: Phase[], idx: number): string[] {
 	return [];
 }
 
-const CURRENT_SCHEMA_VERSION = 2;
+/**
+ * v2 → v3: phases become top-level deliverable nodes (goal→body,
+ * kind→lifecycle, tasks→children, empty branch dropped), plan-level
+ * followUps become top-level loose work-items, and legacy task kinds
+ * remap (`deliverable`→`task`, `followUp`→`followup`).
+ */
+function migrateV2toV3(input: LegacyPlan): Plan {
+	const { phases, followUps, ...rest } = input;
+	const nodes: PlanNode[] = [
+		...(phases ?? []).map(migrateLegacyPhase),
+		...(followUps ?? []).map(migrateLegacyTask),
+	];
+	return { ...rest, schemaVersion: CURRENT_SCHEMA_VERSION, nodes };
+}
+
+/**
+ * Lazy on-load migration to the current schema version. Pure: takes
+ * a parsed plan (any version), returns a normalised v3 plan.
+ * Idempotent — running twice produces the same shape.
+ *
+ * Chain: v1 → v2 (back-fill dependsOn from array order, default task
+ * kinds, init followUps) → v3 (node forest, see {@link migrateV2toV3}).
+ *
+ * The migrated plan is returned in-memory; the next savePlan persists
+ * the new shape. Callers always see v3-shaped plans.
+ */
+export function migratePlan(input: Plan): Plan {
+	const legacy = input as unknown as LegacyPlan;
+	const version = legacy.schemaVersion ?? 1;
+	if (version >= CURRENT_SCHEMA_VERSION) {
+		return normaliseV3(input);
+	}
+	// Defensive: a plan that already carries `nodes` (and no legacy
+	// `phases`) IS v3-shaped regardless of its version stamp — running
+	// the legacy migration would wipe the forest. Covers in-memory
+	// fixtures and hand-edited files that dropped the stamp.
+	if (Array.isArray(legacy.nodes) && legacy.phases === undefined) {
+		return normaliseV3({
+			...input,
+			schemaVersion: CURRENT_SCHEMA_VERSION,
+		});
+	}
+	let v2: LegacyPlan = legacy;
+	if (version < 2) {
+		const phases = (legacy.phases ?? []).map((phase, idx) => ({
+			...phase,
+			dependsOn:
+				phase.dependsOn ?? deriveLegacyDependsOn(legacy.phases ?? [], idx),
+		}));
+		v2 = {
+			...legacy,
+			schemaVersion: 2,
+			phases,
+			followUps: legacy.followUps ?? [],
+		};
+	}
+	return migrateV2toV3(v2);
+}
+
+/**
+ * Normalise a v3+ plan in case the on-disk file was hand-edited:
+ * ensure `nodes` exists and every node carries its `type`
+ * discriminant (inferred from the presence of `status`).
+ */
+function normaliseV3(plan: Plan): Plan {
+	const raw = plan as Plan & { nodes?: PlanNode[] };
+	if (!Array.isArray(raw.nodes)) {
+		return { ...plan, nodes: [] };
+	}
+	let mutated = false;
+	const fix = (nodes: PlanNode[]): PlanNode[] =>
+		nodes.map((node) => {
+			const anyNode = node as unknown as Record<string, unknown>;
+			let next = node;
+			if (next.type !== "deliverable" && next.type !== "work-item") {
+				mutated = true;
+				next = {
+					...anyNode,
+					type: anyNode.status !== undefined ? "deliverable" : "work-item",
+				} as PlanNode;
+			}
+			if (next.type === "deliverable") {
+				const children = Array.isArray(next.children) ? next.children : [];
+				const fixed = fix(children);
+				if (fixed !== next.children || !Array.isArray(next.children)) {
+					mutated = true;
+					next = { ...next, children: fixed };
+				}
+			}
+			return next;
+		});
+	const nodes = fix(raw.nodes);
+	if (!mutated) return plan;
+	return { ...plan, nodes };
+}
+
+export const CURRENT_SCHEMA_VERSION = 3;
+
+/**
+ * Thrown by the write path (`savePlan` / `withPlanLock`) when the
+ * on-disk plan was written by a NEWER schema than this code
+ * understands. Loading is allowed (read-only inspection is fine);
+ * writing would silently downgrade/corrupt fields the newer code
+ * relies on. Mixed-version fleets must not span a schema upgrade.
+ */
+export class SchemaTooNewError extends Error {
+	constructor(
+		public readonly slug: string,
+		public readonly fileVersion: number,
+	) {
+		super(
+			`plan ${slug} has schemaVersion ${fileVersion}, newer than this code (${CURRENT_SCHEMA_VERSION}) — update the extension before writing`,
+		);
+		this.name = "SchemaTooNewError";
+	}
+}
+
+function assertWritableVersion(plan: Plan): void {
+	const version = plan.schemaVersion ?? 1;
+	if (version > CURRENT_SCHEMA_VERSION) {
+		throw new SchemaTooNewError(plan.slug, version);
+	}
+}
 
 /**
  * Lockfile retry config used by both sync and async lock helpers.
@@ -379,6 +507,9 @@ export async function withPlanLock<T>(
 		const plan = loadPlan(slug);
 		if (!plan) throw new PlanNotFoundError(slug);
 		loadedOk = true;
+		// Refuse to mutate a plan written by newer code — the save below
+		// would silently strip fields this version doesn't know about.
+		assertWritableVersion(plan);
 		const out = await mutator(plan);
 		if (
 			out &&
@@ -442,6 +573,7 @@ export function assertPlanUnchanged(
  * deadlocks waiting on the lock that mutator already owns.
  */
 export function savePlan(plan: Plan): void {
+	assertWritableVersion(plan);
 	ensurePlansRoot();
 	const dir = planDir(plan.slug);
 	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -547,13 +679,16 @@ export function rebuildIndex(): void {
 		const path = planFile(name);
 		if (!existsSync(path)) continue;
 		try {
-			const plan = JSON.parse(readFileSync(path, "utf8")) as Plan;
+			// Migrate before inspecting — index rebuilds must understand
+			// v1/v2 files that haven't been re-saved as v3 yet.
+			const plan = migratePlan(JSON.parse(readFileSync(path, "utf8")) as Plan);
 			// A plan is "active" (reusable for /plan in this repo) if it has
-			// no phases yet OR at least one phase is still working. Otherwise
-			// every phase is shipped/abandoned and the plan is done.
+			// no deliverables yet OR at least one is still working. Otherwise
+			// everything is shipped/abandoned and the plan is done.
+			const flat = deliverables(plan);
 			const active =
-				plan.phases.length === 0 ||
-				plan.phases.some((ph) => !TERMINAL_STATUSES.includes(ph.status));
+				flat.length === 0 ||
+				flat.some((d) => !TERMINAL_STATUSES.includes(d.status));
 			entries.push({
 				slug: plan.slug,
 				title: plan.title,
