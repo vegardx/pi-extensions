@@ -9,7 +9,7 @@ import {
 	type BaseNotification,
 	type Dispatcher,
 	type MailboxState,
-} from "../plan/async-job-mailbox.js";
+} from "../async-job-mailbox.js";
 
 interface TestJob extends BaseJob {
 	question: string;
@@ -236,6 +236,44 @@ describe("AsyncJobMailbox", () => {
 			const out = await mb.wait("nope", 100);
 			expect(out.status).toBe("error");
 			expect(out.error).toContain("unknown");
+		});
+
+		it("resolves every concurrent waiter on the same job", async () => {
+			let resolveDispatch: ((v: { text: string }) => void) | null = null;
+			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {
+				handle.setRunning();
+				return new Promise<{ text: string }>((res) => {
+					resolveDispatch = res;
+				});
+			};
+			const mb = makeMailbox({ dispatch });
+			const { id } = enqueueTestJob(mb, "q");
+			const waits = [
+				mb.wait(id, 5_000),
+				mb.wait(id, 5_000),
+				mb.wait(id, 5_000),
+			];
+			await new Promise((r) => setImmediate(r));
+			resolveDispatch!({ text: "answer" });
+			const results = await Promise.all(waits);
+			for (const r of results) {
+				expect(r.status).toBe("done");
+				expect(r.text).toBe("answer");
+			}
+		});
+
+		it("resolves immediately when the job is already terminal", async () => {
+			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {
+				handle.setRunning();
+				return { text: "done already" };
+			};
+			const mb = makeMailbox({ dispatch });
+			const { id } = enqueueTestJob(mb, "q");
+			await new Promise((r) => setImmediate(r));
+			await new Promise((r) => setImmediate(r));
+			const out = await mb.wait(id, 5_000);
+			expect(out.status).toBe("done");
+			expect(out.text).toBe("done already");
 		});
 	});
 

@@ -9,4 +9,4 @@ export {
 	type DispatchHandle,
 	type MailboxState as JobQueueState,
 	type TaskStatus,
-} from "./async-job-mailbox.js";
+} from "@vegardx/pi-extensions-shared/async-job-mailbox.js";

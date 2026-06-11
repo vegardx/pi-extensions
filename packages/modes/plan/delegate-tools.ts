@@ -14,8 +14,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
-import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 import {
 	AsyncJobMailbox,
 	type BaseJob,
@@ -23,7 +21,9 @@ import {
 	type CheckOptions,
 	type CheckResult,
 	type MailboxState,
-} from "./async-job-mailbox.js";
+} from "@vegardx/pi-extensions-shared/async-job-mailbox.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 
 const PROMPTS_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),
