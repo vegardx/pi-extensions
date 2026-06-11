@@ -135,10 +135,11 @@ function normalizeOrchestratedFinding(
 		typeof obj.staticToolSource === "string" && obj.staticToolSource
 			? obj.staticToolSource
 			: null;
+	// The curator prompt emits `curatorNote`; the older orchestrator
+	// prompt emitted `orchestratorNote`. Accept both.
+	const noteRaw = obj.curatorNote ?? obj.orchestratorNote;
 	const orchestratorNote =
-		typeof obj.orchestratorNote === "string" && obj.orchestratorNote
-			? obj.orchestratorNote
-			: undefined;
+		typeof noteRaw === "string" && noteRaw ? noteRaw : undefined;
 	return {
 		...base,
 		confidence,
