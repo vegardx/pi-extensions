@@ -27,13 +27,17 @@
  *     slug changes — both invalidate any prior snapshot.
  */
 
-import type { Phase, PhaseStatus, Plan } from "./schema.js";
+import type {
+	Deliverable as Phase,
+	DeliverableStatus as PhaseStatus,
+	Plan,
+} from "./schema.js";
 import {
 	blockedReason,
-	effectivePhaseKind,
-	pendingPostPhase,
-	pendingPrePhase,
-	readyPhases,
+	deliverables,
+	ownWorkItems,
+	pendingLifecycle,
+	readyDeliverables,
 } from "./schema.js";
 
 /**
@@ -58,10 +62,10 @@ const ACTIONABLE_STATUSES: readonly PhaseStatus[] = [
 export function snapshotPlanStructure(plan: Plan | null): string {
 	if (!plan) return "null";
 	return JSON.stringify({
-		phases: plan.phases.map((p) => ({
+		nodes: deliverables(plan).map((p) => ({
 			id: p.id,
 			status: p.status,
-			taskIds: p.tasks.map((t) => t.id),
+			taskIds: ownWorkItems(p).map((t) => t.id),
 		})),
 	});
 }
@@ -92,12 +96,11 @@ export function shouldFirePicker(input: PickerGateInput): boolean {
 	if (input.mode !== "plan") return false;
 	if (input.stage !== "planning") return false;
 	if (!input.hasUI) return false;
-	const actionable =
-		input.plan?.phases.some(
-			(p) =>
-				effectivePhaseKind(p) === "regular" &&
-				ACTIONABLE_STATUSES.includes(p.status),
-		) ?? false;
+	const actionable = input.plan
+		? deliverables(input.plan).some(
+				(p) => !p.lifecycle && ACTIONABLE_STATUSES.includes(p.status),
+			)
+		: false;
 	if (!actionable) return false;
 	if (input.snapshot === null) return false;
 	return input.snapshot !== snapshotPlanStructure(input.plan);
@@ -116,12 +119,9 @@ export function shouldOfferShiftTabPicker(
 	hasUI: boolean,
 ): boolean {
 	if (!hasUI) return false;
-	return (
-		plan?.phases.some(
-			(p) =>
-				effectivePhaseKind(p) === "regular" &&
-				ACTIONABLE_STATUSES.includes(p.status),
-		) ?? false
+	if (!plan) return false;
+	return deliverables(plan).some(
+		(p) => !p.lifecycle && ACTIONABLE_STATUSES.includes(p.status),
 	);
 }
 
@@ -153,10 +153,9 @@ export function buildPickerCopy(
 	plan: Plan | null,
 	currentBranch: string | null,
 ): PickerCopy {
-	const inFlight = plan?.phases.find(
+	const inFlight = (plan ? deliverables(plan) : []).find(
 		(p) =>
-			effectivePhaseKind(p) === "regular" &&
-			(p.status === "active" || p.status === "needs-attention"),
+			!p.lifecycle && (p.status === "active" || p.status === "needs-attention"),
 	);
 	if (inFlight) {
 		return {
@@ -166,7 +165,7 @@ export function buildPickerCopy(
 			implementAskLabel: `Resume (ask) — continue on \`${inFlight.branch}\`, pause at commit/ship`,
 		};
 	}
-	const planned = plan ? readyPhases(plan)[0] : undefined;
+	const planned = plan ? readyDeliverables(plan)[0] : undefined;
 	if (planned) {
 		return {
 			kind: "fresh",
@@ -180,8 +179,8 @@ export function buildPickerCopy(
 	// No ready phases but a planned one exists — it's blocked on deps
 	// (parent abandoned, missing, or not yet started). Surface the
 	// reason so the user knows why the picker isn't offering Implement.
-	const blocked = plan?.phases.find(
-		(p) => effectivePhaseKind(p) === "regular" && p.status === "planned",
+	const blocked = (plan ? deliverables(plan) : []).find(
+		(p) => !p.lifecycle && p.status === "planned",
 	);
 	if (blocked && plan) {
 		const reason = blockedReason(plan, blocked) ?? "blocked";
@@ -308,26 +307,25 @@ export function classifyImplementContext(plan: Plan | null): ImplementContext {
 	// regular phase doesn't override the preflight requirement, since
 	// the user may have hand-edited a phase to active without finishing
 	// the manual prereqs.
-	const pendingPre = pendingPrePhase(plan);
+	const pendingPre = pendingLifecycle(plan, "pre");
 	if (pendingPre) return { kind: "blocked-on-pre", phase: pendingPre };
-	const inFlight = plan.phases.find(
+	const inFlight = deliverables(plan).find(
 		(p) =>
-			effectivePhaseKind(p) === "regular" &&
-			(p.status === "active" || p.status === "needs-attention"),
+			!p.lifecycle && (p.status === "active" || p.status === "needs-attention"),
 	);
 	if (inFlight) return { kind: "use-phase", phase: inFlight };
-	const ready = readyPhases(plan)[0];
+	const ready = readyDeliverables(plan)[0];
 	if (ready) return { kind: "use-phase", phase: ready };
 	// No ready/in-flight regular phase. If there's a post-phase with
 	// remaining handover items and every regular phase is terminal,
 	// surface that explicitly so the auto-mode driver can pop the
 	// handover dialog instead of falsely reporting "all done".
-	const pendingPost = pendingPostPhase(plan);
+	const pendingPost = pendingLifecycle(plan, "post");
 	if (
 		pendingPost &&
-		plan.phases.every(
+		deliverables(plan).every(
 			(p) =>
-				effectivePhaseKind(p) !== "regular" ||
+				p.lifecycle !== undefined ||
 				p.status === "shipped" ||
 				p.status === "abandoned",
 		)
@@ -338,8 +336,8 @@ export function classifyImplementContext(plan: Plan | null): ImplementContext {
 	// abandoned / unknown parent. Surface a different refusal so the
 	// caller can explain *what* is blocking, rather than the generic
 	// "all shipped/abandoned" message.
-	const blocked = plan.phases.find(
-		(p) => effectivePhaseKind(p) === "regular" && p.status === "planned",
+	const blocked = deliverables(plan).find(
+		(p) => !p.lifecycle && p.status === "planned",
 	);
 	if (blocked) return { kind: "blocked-on-deps", phase: blocked };
 	return { kind: "refuse-no-actionable" };

@@ -1,28 +1,29 @@
-import type { Phase, Plan } from "../plan/schema.js";
+import type { Deliverable as Phase, Plan } from "../plan/schema.js";
 import { renderPlanSeed } from "../plan/seed.js";
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = "2024-01-01T00:00:00.000Z";
 	return {
+		type: "deliverable" as const,
 		id: "p-x",
 		title: "Title",
-		goal: "Goal",
+		body: "Goal",
 		status: "planned",
 		branch: "feat/p-x",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
 	};
 }
 
-function makePlan(phases: Phase[]): Plan {
+function makePlan(nodes: Phase[]): Plan {
 	const now = "2024-01-01T00:00:00.000Z";
 	return {
 		slug: "test-plan",
 		title: "Test Plan",
 		repo: { path: "/tmp/repo" },
-		phases,
+		nodes,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -31,19 +32,20 @@ function makePlan(phases: Phase[]): Plan {
 describe("renderPlanSeed", () => {
 	it("renders a minimal plan with one active phase and no tasks", () => {
 		const phase = makePhase({
+			type: "deliverable" as const,
 			id: "p-1",
 			title: "First",
-			goal: "do the thing",
+			body: "do the thing",
 			status: "active",
 		});
 		const plan = makePlan([phase]);
 		expect(renderPlanSeed(plan, phase)).toBe(
 			[
 				"## Plan: Test Plan (slug: test-plan)",
-				"- Phase `p-1` [active] — First: do the thing     ← THIS PHASE",
+				"- Deliverable `p-1` [active] — First: do the thing     ← THIS PHASE",
 				"",
-				"You are working on Phase `p-1`. Only execute its deliverables. When",
-				"all deliverables are done, run `/ship` — do NOT start the next phase.",
+				"You are working on deliverable `p-1`. Only execute its tasks. When",
+				"all tasks are done, run `/ship` — do NOT start the next deliverable.",
 				"Notes are reviewer-facing and surface in the PR body; do not tick them.",
 				"",
 				"Route commit/push/PR work through `/commit` and `/ship` so plan state stays in sync.",
@@ -57,10 +59,11 @@ describe("renderPlanSeed", () => {
 		const phase = makePhase({
 			id: "p-1",
 			title: "T",
-			goal: "G",
+			body: "G",
 			status: "active",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t-a",
 					title: "first task",
 					body: "body",
@@ -69,6 +72,7 @@ describe("renderPlanSeed", () => {
 					updatedAt: "x",
 				},
 				{
+					type: "work-item" as const,
 					id: "t-b",
 					title: "second task",
 					body: "body",
@@ -80,9 +84,7 @@ describe("renderPlanSeed", () => {
 		});
 		const plan = makePlan([phase]);
 		const out = renderPlanSeed(plan, phase);
-		expect(out).toContain(
-			"  Deliverables (your work; tick each as you finish):",
-		);
+		expect(out).toContain("  Tasks (your work; tick each as you finish):");
 		expect(out).toContain("    - [ ] first task");
 		expect(out).toContain("    - [x] second task");
 		expect(out).not.toContain("  Notes (informational");
@@ -92,17 +94,19 @@ describe("renderPlanSeed", () => {
 		const phase = makePhase({
 			id: "p-1",
 			status: "active",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "d",
 					title: "core change",
 					body: "",
 					done: false,
-					kind: "deliverable",
+					kind: "task",
 					createdAt: "x",
 					updatedAt: "x",
 				},
 				{
+					type: "work-item" as const,
 					id: "q",
 					title: "Drop legacy v1?",
 					body: "",
@@ -112,6 +116,7 @@ describe("renderPlanSeed", () => {
 					updatedAt: "x",
 				},
 				{
+					type: "work-item" as const,
 					id: "m",
 					title: "Smoke test",
 					body: "",
@@ -121,11 +126,12 @@ describe("renderPlanSeed", () => {
 					updatedAt: "x",
 				},
 				{
+					type: "work-item" as const,
 					id: "f",
 					title: "Index by branch",
 					body: "",
 					done: false,
-					kind: "followUp",
+					kind: "followup",
 					createdAt: "x",
 					updatedAt: "x",
 				},
@@ -133,37 +139,40 @@ describe("renderPlanSeed", () => {
 		});
 		const plan = makePlan([phase]);
 		const out = renderPlanSeed(plan, phase);
-		expect(out).toContain(
-			"  Deliverables (your work; tick each as you finish):",
-		);
+		expect(out).toContain("  Tasks (your work; tick each as you finish):");
 		expect(out).toContain("    - [ ] core change");
 		expect(out).toContain("  Notes (informational; not for you to tick):");
 		expect(out).toContain("    - [?] Drop legacy v1? (question)");
 		expect(out).toContain("    - [!] Smoke test (manual)");
-		expect(out).toContain("    - [~] Index by branch (followUp)");
+		expect(out).toContain("    - [~] Index by branch (followup)");
 		// Notes section uses kind markers, not done checkboxes.
 		expect(out).not.toContain("    - [ ] Drop legacy v1?");
 	});
 
 	it("renders plan-level follow-ups in their own block when present", () => {
 		const phase = makePhase({ id: "p-1", status: "active" });
+		const base = makePlan([phase]);
 		const plan: Plan = {
-			...makePlan([phase]),
-			followUps: [
+			...base,
+			nodes: [
+				...base.nodes,
 				{
+					type: "work-item" as const,
 					id: "pf",
 					title: "Cross-cutting note",
 					body: "",
 					done: false,
-					kind: "followUp",
+					kind: "followup",
 					createdAt: "x",
 					updatedAt: "x",
 				},
 			],
 		};
 		const out = renderPlanSeed(plan, phase);
-		expect(out).toContain("Plan-level follow-ups (not gating any phase):");
-		expect(out).toContain("  - [~] Cross-cutting note (followUp)");
+		expect(out).toContain(
+			"Plan-level loose items (not gating any deliverable):",
+		);
+		expect(out).toContain("  - [~] Cross-cutting note (followup)");
 	});
 
 	it("omits the plan-level follow-ups block when followUps is empty", () => {
@@ -175,23 +184,25 @@ describe("renderPlanSeed", () => {
 
 	it("includes shipped phases' Summary blocks when present", () => {
 		const shipped = makePhase({
+			type: "deliverable" as const,
 			id: "p-1",
 			title: "Done one",
-			goal: "shipped goal",
+			body: "shipped goal",
 			status: "shipped",
 			prNumber: 42,
 			summary: "## What shipped\nfoo\n## Don't repeat\nbar baz",
 		});
 		const active = makePhase({
+			type: "deliverable" as const,
 			id: "p-2",
 			title: "Now",
-			goal: "current goal",
+			body: "current goal",
 			status: "active",
 		});
 		const plan = makePlan([shipped, active]);
 		const out = renderPlanSeed(plan, active);
 		expect(out).toContain(
-			"- Phase `p-1` [shipped] PR #42 — Done one: shipped goal",
+			"- Deliverable `p-1` [shipped] PR #42 — Done one: shipped goal",
 		);
 		expect(out).toContain("  Summary:");
 		expect(out).toContain("    ## What shipped");
@@ -201,17 +212,19 @@ describe("renderPlanSeed", () => {
 
 	it("omits the Summary block for shipped phases without a summary", () => {
 		const shipped = makePhase({
+			type: "deliverable" as const,
 			id: "p-1",
 			title: "Done",
-			goal: "g",
+			body: "g",
 			status: "shipped",
 			prNumber: 1,
 			// no summary
 		});
 		const active = makePhase({
+			type: "deliverable" as const,
 			id: "p-2",
 			title: "Now",
-			goal: "g",
+			body: "g",
 			status: "active",
 		});
 		const plan = makePlan([shipped, active]);
@@ -243,10 +256,11 @@ describe("renderPlanSeed", () => {
 		const pre = makePhase({
 			id: "pre",
 			title: "Preflight",
-			kind: "pre",
+			lifecycle: "pre",
 			branch: "",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "rename secret",
 					body: "",
@@ -271,10 +285,11 @@ describe("renderPlanSeed", () => {
 		const post = makePhase({
 			id: "post",
 			title: "Handover",
-			kind: "post",
+			lifecycle: "post",
 			branch: "",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "deploy",
 					body: "",

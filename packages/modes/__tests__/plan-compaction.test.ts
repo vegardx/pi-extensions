@@ -22,7 +22,8 @@ import {
 	shouldCompactMidPhase,
 	shouldResumeAfterCompaction,
 } from "../plan/compaction.js";
-import type { Phase, Plan } from "../plan/schema.js";
+import type { Deliverable as Phase, Plan } from "../plan/schema.js";
+import { deliverables } from "../plan/schema.js";
 
 // ---------------------------------------------------------------------------
 // Fake SessionManager — records appends, exposes getBranch.
@@ -107,25 +108,26 @@ class FakeSessionManager {
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
 	return {
+		type: "deliverable" as const,
 		id: "p-active",
 		title: "Active phase",
-		goal: "ship something",
+		body: "ship something",
 		status: "active",
 		branch: "feat/p-active",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
 	};
 }
 
-function makePlan(phases: Phase[]): Plan {
+function makePlan(nodes: Phase[]): Plan {
 	const now = new Date().toISOString();
 	return {
 		slug: "test-plan",
 		title: "Test Plan",
 		repo: { path: "/tmp/repo" },
-		phases,
+		nodes,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -155,16 +157,18 @@ describe("renderPlanSection", () => {
 	it("emits stable markdown with status and PR per phase", () => {
 		const plan = makePlan([
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-1",
 				title: "First",
-				goal: "do A",
+				body: "do A",
 				status: "shipped",
 				prNumber: 42,
 			}),
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-2",
 				title: "Second",
-				goal: "do B",
+				body: "do B",
 				status: "active",
 			}),
 		]);
@@ -190,6 +194,7 @@ describe("renderPlanSection", () => {
 describe("renderPhaseSection", () => {
 	it("formats in-progress slices with part-N", () => {
 		const phase = makePhase({
+			type: "deliverable" as const,
 			id: "p-1",
 			title: "Webhook retries",
 			status: "active",
@@ -254,15 +259,16 @@ describe("buildSummariserPreamble", () => {
 		const plan = makePlan([
 			makePhase({ id: "p-1", title: "Done", status: "shipped" }),
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-2",
 				title: "Active",
-				goal: "G2",
+				body: "G2",
 				status: "active",
 			}),
-			makePhase({ id: "p-3", title: "Next", goal: "G3", status: "planned" }),
+			makePhase({ id: "p-3", title: "Next", body: "G3", status: "planned" }),
 			makePhase({ id: "p-4", title: "Cancelled", status: "abandoned" }),
 		]);
-		const active = plan.phases[1];
+		const active = deliverables(plan)[1];
 		if (!active) throw new Error("fixture missing phase");
 		const out = buildSummariserPreamble(plan, active, 5000);
 
@@ -282,7 +288,7 @@ describe("buildSummariserPreamble", () => {
 			makePhase({ id: "p-1", status: "active" }),
 			makePhase({ id: "p-2", status: "shipped" }),
 		]);
-		const active = plan.phases[0];
+		const active = deliverables(plan)[0];
 		if (!active) throw new Error("fixture missing phase");
 		const out = buildSummariserPreamble(plan, active, 5000);
 		expect(out).not.toContain("Upcoming phases");
@@ -290,7 +296,7 @@ describe("buildSummariserPreamble", () => {
 
 	it("for partN > 1, instructs the model not to restate prior parts", () => {
 		const plan = makePlan([makePhase({ id: "p-1", status: "active" })]);
-		const active = plan.phases[0];
+		const active = deliverables(plan)[0];
 		if (!active) throw new Error("fixture missing phase");
 		const out = buildSummariserPreamble(plan, active, 5000, 3);
 		expect(out).toContain("part 3");
@@ -300,7 +306,7 @@ describe("buildSummariserPreamble", () => {
 
 	it("for partN <= 1, omits the prior-parts directive", () => {
 		const plan = makePlan([makePhase({ id: "p-1", status: "active" })]);
-		const active = plan.phases[0];
+		const active = deliverables(plan)[0];
 		if (!active) throw new Error("fixture missing phase");
 		const out1 = buildSummariserPreamble(plan, active, 5000, 1);
 		expect(out1).not.toContain("Earlier parts are already captured");
@@ -312,13 +318,14 @@ describe("buildSummariserPreamble", () => {
 		// in-progress.
 		const plan = makePlan([
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-1",
 				title: "In flight",
-				goal: "G1",
+				body: "G1",
 				status: "active",
 			}),
 		]);
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		const out = buildSummariserPreamble(plan, phase, 5000);
 		expect(out).toContain("Currently working on phase `p-1`");
@@ -329,7 +336,7 @@ describe("buildSummariserPreamble", () => {
 
 	it("includes the maxTokens budget in the prompt", () => {
 		const plan = makePlan([makePhase({ id: "p-1", status: "active" })]);
-		const active = plan.phases[0];
+		const active = deliverables(plan)[0];
 		if (!active) throw new Error("fixture missing phase");
 		const out = buildSummariserPreamble(plan, active, 8000);
 		expect(out).toContain("~8000 output tokens");
@@ -454,19 +461,21 @@ describe("buildPhaseEndSummaryPreamble", () => {
 		const plan = makePlan([
 			makePhase({ id: "p-1", title: "Done before", status: "shipped" }),
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-2",
 				title: "Just shipped",
-				goal: "core feature",
+				body: "core feature",
 				status: "in-review",
 			}),
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-3",
 				title: "Next up",
-				goal: "polish",
+				body: "polish",
 				status: "planned",
 			}),
 		]);
-		const phase = plan.phases[1];
+		const phase = deliverables(plan)[1];
 		if (!phase) throw new Error("fixture missing phase");
 		const out = buildPhaseEndSummaryPreamble(plan, phase, 8000);
 
@@ -486,7 +495,7 @@ describe("buildPhaseEndSummaryPreamble", () => {
 			makePhase({ id: "p-1", status: "in-review" }),
 			makePhase({ id: "p-2", status: "shipped" }),
 		]);
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		const out = buildPhaseEndSummaryPreamble(plan, phase, 5000);
 		expect(out).not.toContain("Upcoming phases");
@@ -494,7 +503,7 @@ describe("buildPhaseEndSummaryPreamble", () => {
 
 	it("is byte-stable for stable input", () => {
 		const plan = makePlan([makePhase({ id: "p-1", status: "in-review" })]);
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		expect(buildPhaseEndSummaryPreamble(plan, phase, 5000)).toBe(
 			buildPhaseEndSummaryPreamble(plan, phase, 5000),

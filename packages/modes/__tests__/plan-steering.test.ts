@@ -1,4 +1,8 @@
-import type { Phase, PhaseStatus, Plan } from "../plan/schema.js";
+import type {
+	Deliverable as Phase,
+	DeliverableStatus as PhaseStatus,
+	Plan,
+} from "../plan/schema.js";
 import {
 	STEERING_CLASSIFIER,
 	shouldInjectSteeringClassifier,
@@ -7,13 +11,15 @@ import {
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
 	return {
+		type: "deliverable" as const,
 		id: "p-active",
 		title: "Active phase",
-		goal: "ship something",
+		body: "ship something",
 		status: "active",
 		branch: "feat/p-active",
-		tasks: [
+		children: [
 			{
+				type: "work-item" as const,
 				id: "t-one",
 				title: "First task",
 				body: "",
@@ -22,6 +28,7 @@ function makePhase(overrides: Partial<Phase> = {}): Phase {
 				updatedAt: now,
 			},
 			{
+				type: "work-item" as const,
 				id: "t-two",
 				title: "Second task",
 				body: "",
@@ -36,13 +43,13 @@ function makePhase(overrides: Partial<Phase> = {}): Phase {
 	};
 }
 
-function makePlan(phases: Phase[]): Plan {
+function makePlan(nodes: Phase[]): Plan {
 	const now = new Date().toISOString();
 	return {
 		slug: "test-plan",
 		title: "Test Plan",
 		repo: { path: "/tmp/repo" },
-		phases,
+		nodes,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -111,7 +118,7 @@ describe("shouldInjectSteeringClassifier", () => {
 				text: "hi",
 				source: "interactive",
 				mode: "auto",
-				plan: makePlan([makePhase({ tasks: [] })]),
+				plan: makePlan([makePhase({ children: [] })]),
 			}),
 		).toBe(false);
 	});
@@ -208,8 +215,9 @@ describe("shouldInjectSteeringClassifier", () => {
 
 	it("returns false when the in-flight phase has tasks but all are done (awaiting /ship)", () => {
 		const phase = makePhase({
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t-one",
 					title: "First",
 					body: "",
@@ -218,6 +226,7 @@ describe("shouldInjectSteeringClassifier", () => {
 					updatedAt: "",
 				},
 				{
+					type: "work-item" as const,
 					id: "t-two",
 					title: "Second",
 					body: "",

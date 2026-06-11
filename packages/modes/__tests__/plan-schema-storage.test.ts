@@ -2,31 +2,34 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	abandonNonTerminalPhases,
+	abandonNonTerminalDeliverables,
 	blockedReason,
 	canTransition,
 	chainHead,
+	deliverables,
 	effectiveDependsOn,
-	effectiveTaskKind,
-	isPhaseReady,
-	matchPhaseId,
-	matchTaskId,
-	type Phase,
-	type PhaseStatus,
+	effectiveWorkItemKind,
+	isDeliverableReady,
+	matchDeliverableId,
+	matchWorkItemId,
+	ownWorkItems,
+	type Deliverable as Phase,
+	type DeliverableStatus as PhaseStatus,
 	type Plan,
-	phaseId,
+	deliverableId as phaseId,
 	pickBaseBranch,
 	planImplementBranch,
-	readyPhases,
+	readyDeliverables,
 	repoNameFromPath,
 	slugify,
-	taskId,
+	workItemId as taskId,
 } from "../plan/schema.js";
 import {
 	_setPlansRootForTests,
@@ -42,6 +45,7 @@ import {
 	plansForRepo,
 	plansForSession,
 	rebuildIndex,
+	SchemaTooNewError,
 	savePlan,
 	withPlanLock,
 } from "../plan/storage.js";
@@ -63,7 +67,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "test-plan",
 		title: "Test Plan",
 		repo: { path: "/tmp/repo-a" },
-		phases: [],
+		nodes: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -73,12 +77,13 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
 	return {
+		type: "deliverable" as const,
 		id: "p-x",
 		title: "Phase X",
-		goal: "do x",
+		body: "do x",
 		status: "planned",
 		branch: "feat/p-x",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -103,21 +108,21 @@ describe("schema helpers", () => {
 		expect(taskId("t-already-prefixed")).toBe("already-prefixed");
 	});
 
-	it("matchPhaseId tolerates legacy `p-` prefix on either side", () => {
+	it("matchDeliverableId tolerates legacy `p-` prefix on either side", () => {
 		// New plans store plain slugs; legacy plans on disk have `p-` ids;
 		// CLI args (`/ship p-foo`) and tool callers may pass either form.
-		expect(matchPhaseId("add-webhook", "add-webhook")).toBe(true);
-		expect(matchPhaseId("add-webhook", "p-add-webhook")).toBe(true);
-		expect(matchPhaseId("p-add-webhook", "add-webhook")).toBe(true);
-		expect(matchPhaseId("p-add-webhook", "p-add-webhook")).toBe(true);
-		expect(matchPhaseId("add-webhook", "validate")).toBe(false);
+		expect(matchDeliverableId("add-webhook", "add-webhook")).toBe(true);
+		expect(matchDeliverableId("add-webhook", "p-add-webhook")).toBe(true);
+		expect(matchDeliverableId("p-add-webhook", "add-webhook")).toBe(true);
+		expect(matchDeliverableId("p-add-webhook", "p-add-webhook")).toBe(true);
+		expect(matchDeliverableId("add-webhook", "validate")).toBe(false);
 	});
 
-	it("matchTaskId tolerates legacy `t-` prefix on either side", () => {
-		expect(matchTaskId("do-thing", "do-thing")).toBe(true);
-		expect(matchTaskId("do-thing", "t-do-thing")).toBe(true);
-		expect(matchTaskId("t-do-thing", "do-thing")).toBe(true);
-		expect(matchTaskId("t-do-thing", "t-other")).toBe(false);
+	it("matchWorkItemId tolerates legacy `t-` prefix on either side", () => {
+		expect(matchWorkItemId("do-thing", "do-thing")).toBe(true);
+		expect(matchWorkItemId("do-thing", "t-do-thing")).toBe(true);
+		expect(matchWorkItemId("t-do-thing", "do-thing")).toBe(true);
+		expect(matchWorkItemId("t-do-thing", "t-other")).toBe(false);
 	});
 
 	it("repoNameFromPath returns basename", () => {
@@ -149,18 +154,19 @@ describe("state machine", () => {
 	});
 });
 
-describe("abandonNonTerminalPhases", () => {
+describe("abandonNonTerminalDeliverables", () => {
 	const NOW = "2026-06-01T00:00:00.000Z";
 
 	function phase(id: string, status: PhaseStatus): Phase {
 		const t = "2026-01-01T00:00:00.000Z";
 		return {
+			type: "deliverable" as const,
 			id,
 			title: id,
-			goal: "",
+			body: "",
 			status,
 			branch: `feat/${id}`,
-			tasks: [],
+			children: [],
 			createdAt: t,
 			updatedAt: t,
 		};
@@ -171,7 +177,7 @@ describe("abandonNonTerminalPhases", () => {
 			slug: "p",
 			title: "P",
 			repo: { path: "/r" },
-			phases: [
+			nodes: [
 				phase("p-1", "shipped"),
 				phase("p-2", "in-review"),
 				phase("p-3", "active"),
@@ -183,7 +189,7 @@ describe("abandonNonTerminalPhases", () => {
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-01T00:00:00.000Z",
 		};
-		const { plan: out, archived } = abandonNonTerminalPhases(plan, NOW);
+		const { plan: out, archived } = abandonNonTerminalDeliverables(plan, NOW);
 		expect(archived.map((p) => p.id)).toEqual([
 			"p-2",
 			"p-3",
@@ -191,10 +197,14 @@ describe("abandonNonTerminalPhases", () => {
 			"p-5",
 			"p-6",
 		]);
-		expect(out.phases.find((p) => p.id === "p-1")?.status).toBe("shipped");
-		expect(out.phases.find((p) => p.id === "p-7")?.status).toBe("abandoned");
+		expect(deliverables(out).find((p) => p.id === "p-1")?.status).toBe(
+			"shipped",
+		);
+		expect(deliverables(out).find((p) => p.id === "p-7")?.status).toBe(
+			"abandoned",
+		);
 		for (const id of ["p-2", "p-3", "p-4", "p-5", "p-6"]) {
-			const p = out.phases.find((ph) => ph.id === id);
+			const p = deliverables(out).find((ph) => ph.id === id);
 			expect(p?.status).toBe("abandoned");
 			expect(p?.updatedAt).toBe(NOW);
 		}
@@ -206,14 +216,14 @@ describe("abandonNonTerminalPhases", () => {
 			slug: "p",
 			title: "P",
 			repo: { path: "/r" },
-			phases: [phase("p-1", "shipped"), phase("p-2", "abandoned")],
+			nodes: [phase("p-1", "shipped"), phase("p-2", "abandoned")],
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-15T00:00:00.000Z",
 		};
-		const { plan: out, archived } = abandonNonTerminalPhases(plan, NOW);
+		const { plan: out, archived } = abandonNonTerminalDeliverables(plan, NOW);
 		expect(archived).toEqual([]);
 		expect(out.updatedAt).toBe("2026-01-15T00:00:00.000Z");
-		expect(out.phases).toEqual(plan.phases);
+		expect(deliverables(out)).toEqual(deliverables(plan));
 	});
 
 	it("does not mutate the input plan", () => {
@@ -221,18 +231,18 @@ describe("abandonNonTerminalPhases", () => {
 			slug: "p",
 			title: "P",
 			repo: { path: "/r" },
-			phases: [phase("p-1", "in-review")],
+			nodes: [phase("p-1", "in-review")],
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-01T00:00:00.000Z",
 		};
 		const snapshot = JSON.parse(JSON.stringify(original));
-		abandonNonTerminalPhases(original, NOW);
+		abandonNonTerminalDeliverables(original, NOW);
 		expect(original).toEqual(snapshot);
 	});
 });
 
 describe("storage", () => {
-	it("saves and loads a plan (lazy-migrates v1 \u2192 v2)", () => {
+	it("saves and loads a plan (lazy-migrates to the current schema)", () => {
 		const plan = makePlan();
 		savePlan(plan);
 		expect(planExists(plan.slug)).toBe(true);
@@ -241,8 +251,7 @@ describe("storage", () => {
 		// with schemaVersion=2 and followUps=[] so callers always see v2.
 		expect(loaded).toEqual({
 			...plan,
-			schemaVersion: 2,
-			followUps: [],
+			schemaVersion: 3,
 		});
 	});
 
@@ -281,14 +290,15 @@ describe("storage", () => {
 			makePlan({
 				slug: "shipped",
 				repo: { path: "/r" },
-				phases: [
+				nodes: [
 					{
+						type: "deliverable" as const,
 						id: "p-1",
 						title: "x",
-						goal: "g",
+						body: "g",
 						status: "shipped",
 						branch: "feat/p-1",
-						tasks: [],
+						children: [],
 						createdAt: now,
 						updatedAt: now,
 					},
@@ -300,14 +310,15 @@ describe("storage", () => {
 				slug: "active",
 				repo: { path: "/r" },
 				updatedAt: new Date(Date.now() + 1000).toISOString(),
-				phases: [
+				nodes: [
 					{
+						type: "deliverable" as const,
 						id: "p-2",
 						title: "y",
-						goal: "g",
+						body: "g",
 						status: "active",
 						branch: "feat/p-2",
-						tasks: [],
+						children: [],
 						createdAt: now,
 						updatedAt: now,
 					},
@@ -320,7 +331,7 @@ describe("storage", () => {
 
 	it("empty plans are treated as active so /plan can reuse them", () => {
 		savePlan(
-			makePlan({ slug: "empty", repo: { path: "/r-empty" }, phases: [] }),
+			makePlan({ slug: "empty", repo: { path: "/r-empty" }, nodes: [] }),
 		);
 		const active = activePlanForRepo("/r-empty");
 		expect(active?.slug).toBe("empty");
@@ -414,21 +425,23 @@ describe("pickBaseBranch", () => {
 
 	it("returns default branch when phase has no parent", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
+			nodes: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
 		});
 		expect(pickBaseBranch(plan, "p-1", DEFAULT)).toBe("main");
 	});
 
 	it("returns default when parent is shipped (its work is on main)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "shipped",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -441,14 +454,16 @@ describe("pickBaseBranch", () => {
 
 	it("forks from in-review parent's branch", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "in-review",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -461,14 +476,16 @@ describe("pickBaseBranch", () => {
 
 	it("forks from ready-to-ship parent's branch", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "ready-to-ship",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -481,14 +498,16 @@ describe("pickBaseBranch", () => {
 
 	it("forks from needs-attention parent's branch", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "needs-attention",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -501,14 +520,16 @@ describe("pickBaseBranch", () => {
 
 	it("forks from active parent's branch (concurrent driver case)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "active",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -521,14 +542,16 @@ describe("pickBaseBranch", () => {
 
 	it("abandoned parent → default (parent's branch is dead-end)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "abandoned",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -540,18 +563,20 @@ describe("pickBaseBranch", () => {
 	});
 
 	it("planned parent → default (parent has no commits yet)", () => {
-		// `isPhaseReady` would return false in this state, but the picker
+		// `isDeliverableReady` would return false in this state, but the picker
 		// stays mechanical: don't fork from a branch that doesn't have any
 		// commits. The auto loop won't activate this phase anyway.
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "planned",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
@@ -564,7 +589,7 @@ describe("pickBaseBranch", () => {
 
 	it("unknown parent id → default (defensive)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
 					id: "p-1",
 					branch: "feat/p-1",
@@ -579,20 +604,23 @@ describe("pickBaseBranch", () => {
 		// p-3 depends on p-2 (in-review). p-2 contains p-1's commits via
 		// stacking, so forking from feat/p-2 is correct — NOT from feat/p-1.
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					dependsOn: [],
 					status: "in-review",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-2",
 					branch: "feat/p-2",
 					dependsOn: ["p-1"],
 					status: "in-review",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-3",
 					branch: "feat/p-3",
 					dependsOn: ["p-2"],
@@ -605,14 +633,16 @@ describe("pickBaseBranch", () => {
 
 	it("forest: sibling chains don't see each other (different parent edges)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
 					status: "in-review",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "b",
 					branch: "feat/b",
 					dependsOn: [],
@@ -629,7 +659,7 @@ describe("pickBaseBranch", () => {
 		// On migrate, dependsOn would be backfilled to ["p-1"] (skipping the
 		// abandoned p-2). Here we test the in-memory fallback directly.
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
 				makePhase({ id: "p-2", branch: "feat/p-2", status: "abandoned" }),
 				makePhase({ id: "p-3", branch: "feat/p-3", status: "planned" }),
@@ -640,14 +670,14 @@ describe("pickBaseBranch", () => {
 
 	it("phase id not in plan → default (defensive)", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
+			nodes: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
 		});
 		expect(pickBaseBranch(plan, "p-bogus", DEFAULT)).toBe("main");
 	});
 
 	it("respects the caller's defaultBranch (e.g. 'master')", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
+			nodes: [makePhase({ id: "p-1", branch: "feat/p-1", dependsOn: [] })],
 		});
 		expect(pickBaseBranch(plan, "p-1", "master")).toBe("master");
 	});
@@ -658,15 +688,16 @@ describe("planImplementBranch", () => {
 
 	it("planned phase: 'create' with picked base (default branch when no in-flight predecessors)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					status: "planned",
 				}),
 			],
 		});
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		expect(planImplementBranch(plan, phase, DEFAULT, false)).toEqual({
 			kind: "create",
@@ -677,12 +708,12 @@ describe("planImplementBranch", () => {
 
 	it("planned phase: 'create' with predecessor branch when predecessor is in-review", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({ id: "p-1", branch: "feat/p-1", status: "in-review" }),
 				makePhase({ id: "p-2", branch: "feat/p-2", status: "planned" }),
 			],
 		});
-		const phase = plan.phases[1];
+		const phase = deliverables(plan)[1];
 		if (!phase) throw new Error("fixture missing phase");
 		expect(planImplementBranch(plan, phase, DEFAULT, false)).toEqual({
 			kind: "create",
@@ -697,9 +728,9 @@ describe("planImplementBranch", () => {
 		// default branch and erasing all phase commits. The user could
 		// exit auto → plan and never come back without losing work.
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1", status: "active" })],
+			nodes: [makePhase({ id: "p-1", branch: "feat/p-1", status: "active" })],
 		});
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		expect(planImplementBranch(plan, phase, DEFAULT, true)).toEqual({
 			kind: "resume",
@@ -709,15 +740,16 @@ describe("planImplementBranch", () => {
 
 	it("needs-attention phase + branch exists: 'resume' (preserves PR-review work)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					status: "needs-attention",
 				}),
 			],
 		});
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		expect(planImplementBranch(plan, phase, DEFAULT, true)).toEqual({
 			kind: "resume",
@@ -731,9 +763,9 @@ describe("planImplementBranch", () => {
 		// pretending nothing was wrong. If the user has work on a remote
 		// or in the reflog, that's their last chance to recover it.
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1", status: "active" })],
+			nodes: [makePhase({ id: "p-1", branch: "feat/p-1", status: "active" })],
 		});
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		const out = planImplementBranch(plan, phase, DEFAULT, false);
 		expect(out.kind).toBe("abort");
@@ -746,15 +778,16 @@ describe("planImplementBranch", () => {
 
 	it("needs-attention + branch missing: 'abort' (same protection)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "p-1",
 					branch: "feat/p-1",
 					status: "needs-attention",
 				}),
 			],
 		});
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		expect(planImplementBranch(plan, phase, DEFAULT, false).kind).toBe("abort");
 	});
@@ -765,9 +798,9 @@ describe("planImplementBranch", () => {
 		// `git checkout -B` will overwrite it; that's intentional for the
 		// planned case.
 		const plan = makePlan({
-			phases: [makePhase({ id: "p-1", branch: "feat/p-1", status: "planned" })],
+			nodes: [makePhase({ id: "p-1", branch: "feat/p-1", status: "planned" })],
 		});
-		const phase = plan.phases[0];
+		const phase = deliverables(plan)[0];
 		if (!phase) throw new Error("fixture missing phase");
 		const a = planImplementBranch(plan, phase, DEFAULT, true);
 		const b = planImplementBranch(plan, phase, DEFAULT, false);
@@ -776,198 +809,343 @@ describe("planImplementBranch", () => {
 	});
 });
 
-describe("migratePlan", () => {
-	it("v1 → v2: backfills dependsOn from array order, defaults task.kind, adds followUps + schemaVersion", () => {
-		const v1: Plan = {
+describe("migratePlan (v1/v2 \u2192 v3)", () => {
+	const legacyTask = {
+		id: "t-1",
+		title: "do thing",
+		body: "details",
+		done: true,
+		createdAt: "2026-01-01T00:00:00.000Z",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+	};
+
+	function legacyPhase(over: Record<string, unknown> = {}) {
+		return {
+			id: "a",
+			title: "Phase A",
+			goal: "ship a",
+			status: "planned",
+			branch: "feat/a",
+			tasks: [],
+			createdAt: "2026-01-01T00:00:00.000Z",
+			updatedAt: "2026-01-01T00:00:00.000Z",
+			...over,
+		};
+	}
+
+	function legacyPlan(over: Record<string, unknown> = {}) {
+		return {
 			slug: "legacy",
 			title: "Legacy",
 			repo: { path: "/r" },
-			phases: [
-				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
-				makePhase({ id: "b", branch: "feat/b", status: "in-review" }),
-				makePhase({ id: "c", branch: "feat/c", status: "planned" }),
-			],
 			createdAt: "2026-01-01T00:00:00.000Z",
 			updatedAt: "2026-01-02T00:00:00.000Z",
-		};
-		v1.phases[0].tasks = [
-			{
-				id: "t-1",
-				title: "do thing",
-				body: "",
-				done: true,
-				createdAt: "2026-01-01T00:00:00.000Z",
-				updatedAt: "2026-01-01T00:00:00.000Z",
-			},
-		];
+			...over,
+		} as unknown as Plan;
+	}
 
+	it("v1 \u2192 v3 double hop: backfills dependsOn, remaps kinds, lifts followUps", () => {
+		const v1 = legacyPlan({
+			phases: [
+				legacyPhase({ id: "a", status: "shipped", tasks: [legacyTask] }),
+				legacyPhase({ id: "b", branch: "feat/b", status: "in-review" }),
+				legacyPhase({ id: "c", branch: "feat/c", status: "planned" }),
+			],
+			followUps: [{ ...legacyTask, id: "fu-1", kind: "followUp", done: false }],
+		});
 		const out = migratePlan(v1);
-		expect(out.schemaVersion).toBe(2);
-		expect(out.followUps).toEqual([]);
-		// Chain root has no parent; later phases get the previous phase as parent.
-		expect(out.phases[0].dependsOn).toEqual([]);
-		expect(out.phases[1].dependsOn).toEqual(["a"]);
-		expect(out.phases[2].dependsOn).toEqual(["b"]);
-		// Existing tasks default to deliverable.
-		expect(out.phases[0].tasks[0].kind).toBe("deliverable");
+		expect(out.schemaVersion).toBe(3);
+		const flat = deliverables(out);
+		expect(flat[0]?.dependsOn).toEqual([]);
+		expect(flat[1]?.dependsOn).toEqual(["a"]);
+		expect(flat[2]?.dependsOn).toEqual(["b"]);
+		// Legacy default task kind `deliverable` remaps to `task`.
+		const items = flat[0] ? ownWorkItems(flat[0]) : [];
+		expect(items[0]?.kind).toBe("task");
+		expect(items[0]?.type).toBe("work-item");
+		// Plan-level followUps become top-level loose leaves with the
+		// remapped `followup` kind.
+		const loose = out.nodes.filter((n) => n.type === "work-item");
+		expect(loose).toHaveLength(1);
+		expect(loose[0]?.id).toBe("fu-1");
+		expect((loose[0] as { kind?: string }).kind).toBe("followup");
 	});
 
-	it("derive parent skips abandoned phases", () => {
-		const v1: Plan = {
-			slug: "legacy-skip",
-			title: "Legacy skip",
-			repo: { path: "/r" },
+	it("v2 \u2192 v3 carries every phase field and renames goal\u2192body, tasks\u2192children", () => {
+		const v2 = legacyPlan({
+			slug: "carry",
+			schemaVersion: 2,
 			phases: [
-				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
-				makePhase({ id: "b", branch: "feat/b", status: "abandoned" }),
-				makePhase({ id: "c", branch: "feat/c", status: "planned" }),
+				legacyPhase({
+					id: "a",
+					goal: "the goal",
+					status: "in-review",
+					dependsOn: [],
+					worktreePath: "/wt/a",
+					sessionPath: "/s/a.jsonl",
+					driverSessionId: "sess-1",
+					driverSessionFile: "/s/a.jsonl",
+					driverClaimedAt: "2026-01-03T00:00:00.000Z",
+					issueNumber: 12,
+					prNumber: 34,
+					summary: "did the thing",
+					tokens: {
+						phase: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+						midPhase: [],
+					},
+					tasks: [{ ...legacyTask, kind: "question" }],
+				}),
 			],
-			createdAt: "2026-01-01T00:00:00.000Z",
-			updatedAt: "2026-01-02T00:00:00.000Z",
-		};
-		const out = migratePlan(v1);
-		// `c`'s parent should be `a`, not the abandoned `b`.
-		expect(out.phases[2].dependsOn).toEqual(["a"]);
+			followUps: [],
+		});
+		const out = migratePlan(v2);
+		const d = deliverables(out)[0];
+		if (!d) throw new Error("missing deliverable");
+		expect(d.type).toBe("deliverable");
+		expect(d.body).toBe("the goal");
+		expect((d as { goal?: unknown }).goal).toBeUndefined();
+		expect(d.worktreePath).toBe("/wt/a");
+		expect(d.sessionPath).toBe("/s/a.jsonl");
+		expect(d.driverSessionId).toBe("sess-1");
+		expect(d.driverSessionFile).toBe("/s/a.jsonl");
+		expect(d.driverClaimedAt).toBe("2026-01-03T00:00:00.000Z");
+		expect(d.issueNumber).toBe(12);
+		expect(d.prNumber).toBe(34);
+		expect(d.summary).toBe("did the thing");
+		expect(d.tokens?.phase.input).toBe(1);
+		expect(d.branch).toBe("feat/a");
+		const items = ownWorkItems(d);
+		expect(items).toHaveLength(1);
+		expect(items[0]?.kind).toBe("question");
 	});
 
-	it("is idempotent: v2 → v2 returns the same shape", () => {
-		const v1: Plan = {
-			slug: "idem",
-			title: "Idem",
-			repo: { path: "/r" },
+	it("pre/post phase kind becomes lifecycle; empty branch is dropped", () => {
+		const v2 = legacyPlan({
+			slug: "lifecycle",
+			schemaVersion: 2,
 			phases: [
-				makePhase({ id: "a", branch: "feat/a", status: "in-review" }),
-				makePhase({ id: "b", branch: "feat/b", status: "planned" }),
+				legacyPhase({ id: "pre", kind: "pre", branch: "", dependsOn: [] }),
+				legacyPhase({ id: "a", dependsOn: [] }),
+				legacyPhase({ id: "post", kind: "post", branch: "", dependsOn: [] }),
 			],
-			createdAt: "2026-01-01T00:00:00.000Z",
-			updatedAt: "2026-01-02T00:00:00.000Z",
-		};
+			followUps: [],
+		});
+		const out = migratePlan(v2);
+		const flat = deliverables(out);
+		expect(flat[0]?.lifecycle).toBe("pre");
+		expect(flat[0]?.branch).toBeUndefined();
+		expect(flat[1]?.lifecycle).toBeUndefined();
+		expect(flat[1]?.branch).toBe("feat/a");
+		expect(flat[2]?.lifecycle).toBe("post");
+	});
+
+	it("is idempotent: migrating twice equals migrating once", () => {
+		const v1 = legacyPlan({
+			phases: [
+				legacyPhase({ id: "a", status: "in-review" }),
+				legacyPhase({ id: "b", branch: "feat/b" }),
+			],
+			followUps: [{ ...legacyTask, id: "fu", kind: "followUp" }],
+		});
 		const once = migratePlan(v1);
 		const twice = migratePlan(once);
 		expect(twice).toEqual(once);
 	});
 
-	it("normalises a v2 plan that was hand-edited and dropped fields", () => {
-		const partial: Plan = {
-			slug: "partial-v2",
-			title: "Partial",
+	it("normalises a hand-edited v3 plan whose nodes dropped the discriminant", () => {
+		const handEdited = {
+			slug: "hand-edit",
+			title: "Hand edit",
 			repo: { path: "/r" },
+			schemaVersion: 3,
+			nodes: [
+				{
+					id: "a",
+					title: "A",
+					body: "",
+					status: "planned",
+					branch: "feat/a",
+					children: [
+						{
+							id: "t",
+							title: "t",
+							body: "",
+							done: false,
+							createdAt: "x",
+							updatedAt: "x",
+						},
+					],
+					createdAt: "x",
+					updatedAt: "x",
+				},
+			],
+			createdAt: "x",
+			updatedAt: "x",
+		} as unknown as Plan;
+		const out = migratePlan(handEdited);
+		expect(out.nodes[0]?.type).toBe("deliverable");
+		const d = out.nodes[0];
+		if (!d || d.type !== "deliverable") throw new Error("not a deliverable");
+		expect(d.children[0]?.type).toBe("work-item");
+	});
+});
+
+describe("schema write guard (SchemaTooNewError)", () => {
+	it("savePlan refuses a plan with a newer schemaVersion", () => {
+		const plan = makePlan({ schemaVersion: 4 });
+		expect(() => savePlan(plan)).toThrow(SchemaTooNewError);
+	});
+
+	it("withPlanLock refuses to mutate a newer-schema file on disk", async () => {
+		const plan = makePlan({ slug: "too-new", schemaVersion: 3 });
+		savePlan(plan);
+		// Hand-bump the on-disk version past what this code understands.
+		const file = join(tmp, "too-new", "plan.json");
+		const raw = JSON.parse(readFileSync(file, "utf8"));
+		raw.schemaVersion = 99;
+		writeFileSync(file, JSON.stringify(raw), "utf8");
+		await expect(
+			withPlanLock("too-new", () => {
+				throw new Error("mutator must not run");
+			}),
+		).rejects.toBeInstanceOf(SchemaTooNewError);
+	});
+});
+
+describe("rebuildIndex migrates before inspecting", () => {
+	it("indexes a v2 file (phases array) with the right active flag", () => {
+		const v2 = {
+			slug: "v2-on-disk",
+			title: "V2",
+			repo: { path: "/r2" },
 			schemaVersion: 2,
 			phases: [
 				{
-					...makePhase({ id: "a", branch: "feat/a", status: "planned" }),
-					// dependsOn missing — simulate hand-edit.
+					id: "a",
+					title: "A",
+					goal: "",
+					status: "shipped",
+					branch: "feat/a",
+					dependsOn: [],
+					tasks: [],
+					createdAt: "x",
+					updatedAt: "x",
 				},
 			],
-			createdAt: "2026-01-01T00:00:00.000Z",
-			updatedAt: "2026-01-02T00:00:00.000Z",
+			followUps: [],
+			createdAt: "x",
+			updatedAt: "2026-01-05T00:00:00.000Z",
 		};
-		const out = migratePlan(partial);
-		expect(out.phases[0].dependsOn).toEqual([]);
-		expect(out.followUps).toEqual([]);
+		mkdirSync(join(tmp, "v2-on-disk"), { recursive: true });
+		writeFileSync(
+			join(tmp, "v2-on-disk", "plan.json"),
+			JSON.stringify(v2),
+			"utf8",
+		);
+		rebuildIndex();
+		const entry = listPlans().find((p) => p.slug === "v2-on-disk");
+		expect(entry).toBeDefined();
+		// Single shipped phase \u2192 not active.
+		expect(entry?.active).toBe(false);
 	});
 
-	it(
-		"v2 normalisation backfills dependsOn even when followUps + kinds " +
-			"are already present (regression: copilot review on PR #125)",
-		() => {
-			// Trigger the exact bug path: schemaVersion=2, every task has
-			// `kind`, `followUps` is present — so the only missing field is a
-			// phase's `dependsOn`. Pre-fix, normaliseV2 returned the original
-			// plan because `mutated` never flipped, dropping the backfilled
-			// phases array.
-			const partial: Plan = {
-				slug: "partial-v2-deps-only",
-				title: "Partial deps-only",
-				repo: { path: "/r" },
-				schemaVersion: 2,
-				followUps: [],
-				phases: [
-					{
-						...makePhase({ id: "a", branch: "feat/a", status: "planned" }),
-						tasks: [
-							{
-								id: "t-1",
-								title: "task",
-								body: "",
-								done: false,
-								kind: "deliverable",
-								createdAt: "2026-01-01T00:00:00.000Z",
-								updatedAt: "2026-01-01T00:00:00.000Z",
-							},
-						],
-						// dependsOn deliberately omitted.
-					},
-				],
-				createdAt: "2026-01-01T00:00:00.000Z",
-				updatedAt: "2026-01-02T00:00:00.000Z",
-			};
-			const out = migratePlan(partial);
-			expect(out.phases[0].dependsOn).toEqual([]);
-		},
-	);
+	it("indexes a v3 file with nested deliverables", () => {
+		const plan = makePlan({
+			slug: "v3-on-disk",
+			schemaVersion: 3,
+			nodes: [
+				{
+					type: "deliverable" as const,
+					id: "group",
+					title: "Group",
+					body: "",
+					status: "planned",
+					children: [
+						{
+							type: "deliverable" as const,
+							id: "child",
+							title: "Child",
+							body: "",
+							status: "active",
+							branch: "feat/child",
+							children: [],
+							createdAt: "x",
+							updatedAt: "x",
+						},
+					],
+					createdAt: "x",
+					updatedAt: "x",
+				},
+			],
+		});
+		savePlan(plan);
+		const entry = listPlans().find((p) => p.slug === "v3-on-disk");
+		expect(entry?.active).toBe(true);
+	});
 });
 
 describe("effectiveDependsOn", () => {
 	it("returns stored dependsOn when present", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({ id: "a", branch: "feat/a" }),
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(effectiveDependsOn(plan, plan.phases[1])).toEqual(["a"]);
+		expect(effectiveDependsOn(plan, deliverables(plan)[1])).toEqual(["a"]);
 	});
 
 	it("falls back to nearest non-abandoned predecessor when dependsOn unset", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
 				makePhase({ id: "b", branch: "feat/b", status: "abandoned" }),
 				makePhase({ id: "c", branch: "feat/c", status: "planned" }),
 			],
 		});
-		expect(effectiveDependsOn(plan, plan.phases[2])).toEqual(["a"]);
+		expect(effectiveDependsOn(plan, deliverables(plan)[2])).toEqual(["a"]);
 	});
 
 	it("returns [] for first phase", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "a", branch: "feat/a" })],
+			nodes: [makePhase({ id: "a", branch: "feat/a" })],
 		});
-		expect(effectiveDependsOn(plan, plan.phases[0])).toEqual([]);
+		expect(effectiveDependsOn(plan, deliverables(plan)[0])).toEqual([]);
 	});
 });
 
-describe("effectiveTaskKind", () => {
+describe("effectiveWorkItemKind", () => {
 	it("defaults to deliverable when kind absent", () => {
-		expect(effectiveTaskKind({})).toBe("deliverable");
+		expect(effectiveWorkItemKind({})).toBe("task");
 	});
 
 	it("returns explicit kind", () => {
-		expect(effectiveTaskKind({ kind: "followUp" })).toBe("followUp");
-		expect(effectiveTaskKind({ kind: "manual" })).toBe("manual");
+		expect(effectiveWorkItemKind({ kind: "followup" })).toBe("followup");
+		expect(effectiveWorkItemKind({ kind: "manual" })).toBe("manual");
 	});
 });
 
-describe("isPhaseReady / readyPhases", () => {
+describe("isDeliverableReady / readyDeliverables", () => {
 	it("first phase with no parent is ready when planned", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
+			nodes: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
 		});
-		expect(isPhaseReady(plan, plan.phases[0])).toBe(true);
-		expect(readyPhases(plan).map((p) => p.id)).toEqual(["a"]);
+		expect(isDeliverableReady(plan, deliverables(plan)[0])).toBe(true);
+		expect(readyDeliverables(plan).map((p) => p.id)).toEqual(["a"]);
 	});
 
 	it("non-planned phases are never ready", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
 					status: "in-review",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "b",
 					branch: "feat/b",
 					dependsOn: [],
@@ -975,13 +1153,14 @@ describe("isPhaseReady / readyPhases", () => {
 				}),
 			],
 		});
-		expect(readyPhases(plan)).toEqual([]);
+		expect(readyDeliverables(plan)).toEqual([]);
 	});
 
 	it("chain: only head is ready when middle is planned", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -991,25 +1170,26 @@ describe("isPhaseReady / readyPhases", () => {
 				makePhase({ id: "c", branch: "feat/c", dependsOn: ["b"] }),
 			],
 		});
-		expect(readyPhases(plan).map((p) => p.id)).toEqual(["b"]);
+		expect(readyDeliverables(plan).map((p) => p.id)).toEqual(["b"]);
 	});
 
 	it("forest: roots of two independent chains are both ready", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({ id: "a1", branch: "feat/a1", dependsOn: [] }),
 				makePhase({ id: "a2", branch: "feat/a2", dependsOn: ["a1"] }),
 				makePhase({ id: "b1", branch: "feat/b1", dependsOn: [] }),
 				makePhase({ id: "b2", branch: "feat/b2", dependsOn: ["b1"] }),
 			],
 		});
-		expect(readyPhases(plan).map((p) => p.id)).toEqual(["a1", "b1"]);
+		expect(readyDeliverables(plan).map((p) => p.id)).toEqual(["a1", "b1"]);
 	});
 
 	it("abandoned parent blocks dependent (does not silently fall back)", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1018,17 +1198,15 @@ describe("isPhaseReady / readyPhases", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(isPhaseReady(plan, plan.phases[1])).toBe(false);
-		expect(readyPhases(plan)).toEqual([]);
+		expect(isDeliverableReady(plan, deliverables(plan)[1])).toBe(false);
+		expect(readyDeliverables(plan)).toEqual([]);
 	});
 
 	it("unknown parent blocks the dependent", () => {
 		const plan = makePlan({
-			phases: [
-				makePhase({ id: "b", branch: "feat/b", dependsOn: ["missing"] }),
-			],
+			nodes: [makePhase({ id: "b", branch: "feat/b", dependsOn: ["missing"] })],
 		});
-		expect(isPhaseReady(plan, plan.phases[0])).toBe(false);
+		expect(isDeliverableReady(plan, deliverables(plan)[0])).toBe(false);
 	});
 
 	it.each([
@@ -1039,8 +1217,9 @@ describe("isPhaseReady / readyPhases", () => {
 		["shipped"],
 	] as const)("successor is ready when parent is %s (stacked PR / shipped)", (parentStatus) => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1049,13 +1228,14 @@ describe("isPhaseReady / readyPhases", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(isPhaseReady(plan, plan.phases[1])).toBe(true);
+		expect(isDeliverableReady(plan, deliverables(plan)[1])).toBe(true);
 	});
 
 	it("successor is NOT ready when parent is still planned", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1064,32 +1244,33 @@ describe("isPhaseReady / readyPhases", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(isPhaseReady(plan, plan.phases[1])).toBe(false);
+		expect(isDeliverableReady(plan, deliverables(plan)[1])).toBe(false);
 	});
 
 	it("v1 plan (dependsOn unset) falls back to array-order parent", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({ id: "a", branch: "feat/a", status: "shipped" }),
 				makePhase({ id: "b", branch: "feat/b" }),
 			],
 		});
-		expect(readyPhases(plan).map((p) => p.id)).toEqual(["b"]);
+		expect(readyDeliverables(plan).map((p) => p.id)).toEqual(["b"]);
 	});
 });
 
 describe("chainHead", () => {
 	it("returns null when phase has no successors", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
+			nodes: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
 		});
-		expect(chainHead(plan, plan.phases[0])).toBeNull();
+		expect(chainHead(plan, deliverables(plan)[0])).toBeNull();
 	});
 
 	it("returns immediate planned successor", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1098,19 +1279,21 @@ describe("chainHead", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(chainHead(plan, plan.phases[0])?.id).toBe("b");
+		expect(chainHead(plan, deliverables(plan)[0])?.id).toBe("b");
 	});
 
 	it("skips shipped descendants and returns first non-shipped", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
 					status: "shipped",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "b",
 					branch: "feat/b",
 					dependsOn: ["a"],
@@ -1120,19 +1303,21 @@ describe("chainHead", () => {
 				makePhase({ id: "d", branch: "feat/d", dependsOn: ["c"] }),
 			],
 		});
-		expect(chainHead(plan, plan.phases[0])?.id).toBe("c");
+		expect(chainHead(plan, deliverables(plan)[0])?.id).toBe("c");
 	});
 
 	it("returns null when every descendant is shipped", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
 					status: "shipped",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "b",
 					branch: "feat/b",
 					dependsOn: ["a"],
@@ -1140,13 +1325,14 @@ describe("chainHead", () => {
 				}),
 			],
 		});
-		expect(chainHead(plan, plan.phases[0])).toBeNull();
+		expect(chainHead(plan, deliverables(plan)[0])).toBeNull();
 	});
 
 	it("on a fork picks the first child by array order", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1156,7 +1342,7 @@ describe("chainHead", () => {
 				makePhase({ id: "c", branch: "feat/c", dependsOn: ["a"] }),
 			],
 		});
-		expect(chainHead(plan, plan.phases[0])?.id).toBe("b");
+		expect(chainHead(plan, deliverables(plan)[0])?.id).toBe("b");
 	});
 
 	it("is bounded against external on-disk cycles (no infinite loop)", () => {
@@ -1164,20 +1350,23 @@ describe("chainHead", () => {
 		// chainHead must not infinite-loop when a hand-edited plan slips
 		// one through.
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
 					status: "shipped",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "b",
 					branch: "feat/b",
 					dependsOn: ["c"],
 					status: "shipped",
 				}),
 				makePhase({
+					type: "deliverable" as const,
 					id: "c",
 					branch: "feat/c",
 					dependsOn: ["b"],
@@ -1185,22 +1374,23 @@ describe("chainHead", () => {
 				}),
 			],
 		});
-		expect(() => chainHead(plan, plan.phases[0])).not.toThrow();
+		expect(() => chainHead(plan, deliverables(plan)[0])).not.toThrow();
 	});
 });
 
 describe("blockedReason", () => {
 	it("returns null when phase is ready", () => {
 		const plan = makePlan({
-			phases: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
+			nodes: [makePhase({ id: "a", branch: "feat/a", dependsOn: [] })],
 		});
-		expect(blockedReason(plan, plan.phases[0])).toBeNull();
+		expect(blockedReason(plan, deliverables(plan)[0])).toBeNull();
 	});
 
 	it("flags non-planned phase", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1208,7 +1398,7 @@ describe("blockedReason", () => {
 				}),
 			],
 		});
-		expect(blockedReason(plan, plan.phases[0])).toContain("in-review");
+		expect(blockedReason(plan, deliverables(plan)[0])).toContain("in-review");
 	});
 
 	it("returns null when parent is in-flight (stacked PR is allowed)", () => {
@@ -1216,8 +1406,9 @@ describe("blockedReason", () => {
 		// needs-attention) don't block the successor. Stacked PRs fork off
 		// the parent's branch via pickBaseBranch.
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1226,13 +1417,14 @@ describe("blockedReason", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(blockedReason(plan, plan.phases[1])).toBeNull();
+		expect(blockedReason(plan, deliverables(plan)[1])).toBeNull();
 	});
 
 	it("surfaces parent's status when waiting on a not-yet-started parent", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1241,15 +1433,16 @@ describe("blockedReason", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(blockedReason(plan, plan.phases[1])).toBe(
+		expect(blockedReason(plan, deliverables(plan)[1])).toBe(
 			"waiting on `a` (planned)",
 		);
 	});
 
 	it("explains abandoned parent", () => {
 		const plan = makePlan({
-			phases: [
+			nodes: [
 				makePhase({
+					type: "deliverable" as const,
 					id: "a",
 					branch: "feat/a",
 					dependsOn: [],
@@ -1258,23 +1451,21 @@ describe("blockedReason", () => {
 				makePhase({ id: "b", branch: "feat/b", dependsOn: ["a"] }),
 			],
 		});
-		expect(blockedReason(plan, plan.phases[1])).toContain("abandoned");
-		expect(blockedReason(plan, plan.phases[1])).toContain("dependsOn");
+		expect(blockedReason(plan, deliverables(plan)[1])).toContain("abandoned");
+		expect(blockedReason(plan, deliverables(plan)[1])).toContain("dependsOn");
 	});
 
 	it("flags unknown parent", () => {
 		const plan = makePlan({
-			phases: [
-				makePhase({ id: "b", branch: "feat/b", dependsOn: ["missing"] }),
-			],
+			nodes: [makePhase({ id: "b", branch: "feat/b", dependsOn: ["missing"] })],
 		});
-		expect(blockedReason(plan, plan.phases[0])).toContain("missing");
+		expect(blockedReason(plan, deliverables(plan)[0])).toContain("missing");
 	});
 });
 
 describe("withPlanLock", () => {
 	it("loads, mutates, and persists the plan in a single locked sequence", async () => {
-		const plan = makePlan({ slug: "lock-1", phases: [] });
+		const plan = makePlan({ slug: "lock-1", nodes: [] });
 		savePlan(plan);
 
 		const result = await withPlanLock("lock-1", (p) => {
@@ -1353,7 +1544,7 @@ describe("withPlanLock", () => {
 	});
 
 	it("serialises concurrent withPlanLock calls on the same slug", async () => {
-		savePlan(makePlan({ slug: "lock-5", phases: [] }));
+		savePlan(makePlan({ slug: "lock-5", nodes: [] }));
 
 		const order: string[] = [];
 		const a = withPlanLock("lock-5", async (p) => {
@@ -1416,7 +1607,7 @@ describe("savePlan locking", () => {
 		// valid JSON. Lock prevents two writers stomping the file
 		// mid-write. We don't assert which write wins — just that the
 		// outcome is parseable and reflects exactly one of them.
-		savePlan(makePlan({ slug: "race", phases: [] }));
+		savePlan(makePlan({ slug: "race", nodes: [] }));
 
 		const writes = Array.from({ length: 20 }, (_, i) =>
 			Promise.resolve().then(() => {

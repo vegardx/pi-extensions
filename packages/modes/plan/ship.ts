@@ -13,9 +13,10 @@ import {
 	type ShellResult,
 } from "../git.js";
 import {
-	effectiveTaskKind,
+	effectiveWorkItemKind,
+	ownWorkItems,
 	type Plan,
-	type Phase as PlanPhase,
+	type Deliverable as PlanPhase,
 	type TokenUsage,
 } from "./schema.js";
 import { addUsage, formatCost, formatTokenCount } from "./token-usage.js";
@@ -171,6 +172,15 @@ export async function shipPhase(
 			runCommandAsync(command, args, { ...opts, signal: options.signal }));
 	const isClean = options.isClean ?? defaultWorkingTreeClean;
 	const path = effectiveWorktreePath(plan, phase);
+	// Groupings and lifecycle checklists never ship; callers gate on
+	// shipsPR before invoking, so a missing branch here is a hard bug.
+	const branch = phase.branch;
+	if (!branch) {
+		return {
+			ok: false,
+			error: `deliverable \`${phase.id}\` has no branch — groupings and lifecycle checklists don't /ship`,
+		};
+	}
 
 	if (!isClean(path)) {
 		if (!options.autoCommit) {
@@ -182,7 +192,7 @@ export async function shipPhase(
 			};
 		}
 		const message =
-			options.commitMessage ?? `${phase.title}\n\nGoal: ${phase.goal}`;
+			options.commitMessage ?? `${phase.title}\n\nGoal: ${phase.body}`;
 		const stage = await run("git", ["add", "-A"], { cwd: path });
 		if (!stage.ok) {
 			return { ok: false, error: `git add -A failed: ${stage.stderr.trim()}` };
@@ -196,7 +206,7 @@ export async function shipPhase(
 		}
 	}
 
-	const push = await run("git", ["push", "-u", "origin", phase.branch], {
+	const push = await run("git", ["push", "-u", "origin", branch], {
 		cwd: path,
 	});
 	if (!push.ok) {
@@ -214,7 +224,7 @@ export async function shipPhase(
 	// it instead of erroring with a duplicate `gh pr create` failure.
 	// Covers the case where /ship is retried after a partial failure or
 	// where the user shelled out to `gh pr create` directly mid-phase.
-	const listed = await run("gh", openPrListArgs(phase.branch), { cwd: path });
+	const listed = await run("gh", openPrListArgs(branch), { cwd: path });
 	const existing = listed.ok ? parseOpenPrList(listed.stdout) : null;
 	if (existing) {
 		return {
@@ -233,7 +243,7 @@ export async function shipPhase(
 		"--body",
 		renderPrBody(plan, phase),
 		"--head",
-		phase.branch,
+		branch,
 	];
 	if (options.draft) prArgs.push("--draft");
 
@@ -277,7 +287,7 @@ export function parsePrCreateOutput(
 /** Render a PR body for a phase. Exported for testing. */
 export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 	const lines: string[] = [];
-	lines.push("## Goal", "", phase.goal || "_(no goal set)_", "");
+	lines.push("## Goal", "", phase.body || "_(no goal set)_", "");
 
 	// Token telemetry (#143): when /ship recorded per-phase usage,
 	// surface the totals so cost/token spend is visible at review.
@@ -293,16 +303,15 @@ export function renderPrBody(plan: Plan, phase: PlanPhase): string {
 	// reviewer (open questions, follow-up work to schedule, manual smoke
 	// steps to run before merge). They live in their own sections so
 	// reviewers can scan without parsing intent from prose.
-	const deliverables = phase.tasks.filter(
-		(t) => effectiveTaskKind(t) === "deliverable",
+	const items = ownWorkItems(phase);
+	const deliverables = items.filter((t) => effectiveWorkItemKind(t) === "task");
+	const followUps = items.filter(
+		(t) => effectiveWorkItemKind(t) === "followup",
 	);
-	const followUps = phase.tasks.filter(
-		(t) => effectiveTaskKind(t) === "followUp",
+	const questions = items.filter(
+		(t) => effectiveWorkItemKind(t) === "question",
 	);
-	const questions = phase.tasks.filter(
-		(t) => effectiveTaskKind(t) === "question",
-	);
-	const manuals = phase.tasks.filter((t) => effectiveTaskKind(t) === "manual");
+	const manuals = items.filter((t) => effectiveWorkItemKind(t) === "manual");
 
 	if (deliverables.length > 0) {
 		lines.push("## What this phase ships", "");

@@ -28,11 +28,14 @@
 
 import type { SessionManager } from "@mariozechner/pi-coding-agent";
 import {
-	effectivePhaseKind,
-	effectiveTaskKind,
+	deliverables,
+	effectiveWorkItemKind,
+	gatingTasks,
+	ownWorkItems,
 	type Plan,
-	type Phase as PlanPhase,
+	type Deliverable as PlanPhase,
 } from "./schema.js";
+import { topLevelLeaves } from "./tree.js";
 
 /** customType tag for the seed entry. */
 export const PLAN_SEED_CUSTOM_TYPE = "modes:plan-seed";
@@ -78,14 +81,14 @@ function indentLines(text: string, indent: number): string {
 export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 	const lines: string[] = [`## Plan: ${plan.title} (slug: ${plan.slug})`];
 
-	for (const phase of plan.phases) {
+	for (const phase of deliverables(plan)) {
 		const isActive = phase.id === activePhase.id;
 		const pr = phase.prNumber !== undefined ? ` PR #${phase.prNumber}` : "";
 		const marker = isActive ? "     ← THIS PHASE" : "";
-		const kind = effectivePhaseKind(phase);
-		const kindMarker = kind === "regular" ? "" : ` [${kind}]`;
+		const lifecycle = phase.lifecycle;
+		const kindMarker = lifecycle ? ` [${lifecycle}]` : "";
 		lines.push(
-			`- Phase \`${phase.id}\`${kindMarker} [${phase.status}]${pr} — ${phase.title}: ${phase.goal}${marker}`,
+			`- Deliverable \`${phase.id}\`${kindMarker} [${phase.status}]${pr} — ${phase.title}: ${phase.body}${marker}`,
 		);
 
 		if (phase.status === "shipped" && phase.summary) {
@@ -97,33 +100,30 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 		// the manual checklist visible without a side-load. Always
 		// rendered as `[!]` (manual) regardless of declared task kind —
 		// pre/post tasks are reviewer-facing, not agent work.
-		if (kind !== "regular" && phase.tasks.length > 0) {
+		const items = ownWorkItems(phase);
+		if (lifecycle && items.length > 0) {
 			lines.push(
-				kind === "pre"
+				lifecycle === "pre"
 					? "  Preflight (manual; user ticks before regular phases proceed):"
 					: "  Handover (manual; user completes after last regular phase ships):",
 			);
-			for (const task of phase.tasks) {
+			for (const task of items) {
 				const box = task.done ? "[x]" : "[!]";
 				lines.push(`    - ${box} ${task.title}`);
 			}
 		}
 
-		if (isActive && kind === "regular" && phase.tasks.length > 0) {
+		if (isActive && !lifecycle && items.length > 0) {
 			// Split by kind so the agent gets a clean signal: deliverables
 			// are its work; question / manual / followUp tasks are
 			// reviewer-facing notes that surface in the PR body and must
 			// not be ticked off.
-			const deliverables = phase.tasks.filter(
-				(t) => effectiveTaskKind(t) === "deliverable",
-			);
-			const notes = phase.tasks.filter(
-				(t) => effectiveTaskKind(t) !== "deliverable",
-			);
+			const gating = gatingTasks(phase);
+			const notes = items.filter((t) => effectiveWorkItemKind(t) !== "task");
 
-			if (deliverables.length > 0) {
-				lines.push("  Deliverables (your work; tick each as you finish):");
-				for (const task of deliverables) {
+			if (gating.length > 0) {
+				lines.push("  Tasks (your work; tick each as you finish):");
+				for (const task of gating) {
 					const box = task.done ? "[x]" : "[ ]";
 					lines.push(`    - ${box} ${task.title}`);
 				}
@@ -132,7 +132,7 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 			if (notes.length > 0) {
 				lines.push("  Notes (informational; not for you to tick):");
 				for (const task of notes) {
-					const kind = effectiveTaskKind(task);
+					const kind = effectiveWorkItemKind(task);
 					const kindMarker =
 						kind === "question" ? "[?]" : kind === "manual" ? "[!]" : "[~]";
 					lines.push(`    - ${kindMarker} ${task.title} (${kind})`);
@@ -141,18 +141,18 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 		}
 	}
 
-	const planFollowUps = plan.followUps ?? [];
-	if (planFollowUps.length > 0) {
+	const looseLeaves = topLevelLeaves(plan);
+	if (looseLeaves.length > 0) {
 		lines.push("");
-		lines.push("Plan-level follow-ups (not gating any phase):");
-		for (const task of planFollowUps) {
-			const kind = effectiveTaskKind(task);
+		lines.push("Plan-level loose items (not gating any deliverable):");
+		for (const task of looseLeaves) {
+			const kind = effectiveWorkItemKind(task);
 			const kindMarker =
 				kind === "question"
 					? "[?]"
 					: kind === "manual"
 						? "[!]"
-						: kind === "followUp"
+						: kind === "followup"
 							? "[~]"
 							: task.done
 								? "[x]"
@@ -163,8 +163,8 @@ export function renderPlanSeed(plan: Plan, activePhase: PlanPhase): string {
 
 	lines.push("");
 	lines.push(
-		`You are working on Phase \`${activePhase.id}\`. Only execute its deliverables. When`,
-		"all deliverables are done, run `/ship` — do NOT start the next phase.",
+		`You are working on deliverable \`${activePhase.id}\`. Only execute its tasks. When`,
+		"all tasks are done, run `/ship` — do NOT start the next deliverable.",
 		"Notes are reviewer-facing and surface in the PR body; do not tick them.",
 		"",
 		"Route commit/push/PR work through `/commit` and `/ship` so plan state stays in sync.",

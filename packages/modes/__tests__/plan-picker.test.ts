@@ -6,30 +6,35 @@ import {
 	shouldOfferShiftTabPicker,
 	snapshotPlanStructure,
 } from "../plan/picker.js";
-import type { Phase, PhaseStatus, Plan } from "../plan/schema.js";
+import type {
+	Deliverable as Phase,
+	DeliverableStatus as PhaseStatus,
+	Plan,
+} from "../plan/schema.js";
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	const now = new Date().toISOString();
 	return {
+		type: "deliverable" as const,
 		id: "p-one",
 		title: "Phase one",
-		goal: "ship something",
+		body: "ship something",
 		status: "planned",
 		branch: "feat/p-one",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
 	};
 }
 
-function makePlan(phases: Phase[]): Plan {
+function makePlan(nodes: Phase[]): Plan {
 	const now = new Date().toISOString();
 	return {
 		slug: "test-plan",
 		title: "Test Plan",
 		repo: { path: "/tmp/repo" },
-		phases,
+		nodes,
 		createdAt: now,
 		updatedAt: now,
 	};
@@ -45,8 +50,9 @@ describe("snapshotPlanStructure", () => {
 			makePhase({
 				id: "p-one",
 				status: "planned",
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "t-a",
 						title: "A",
 						body: "",
@@ -59,7 +65,7 @@ describe("snapshotPlanStructure", () => {
 		]);
 		expect(snapshotPlanStructure(plan)).toBe(
 			JSON.stringify({
-				phases: [{ id: "p-one", status: "planned", taskIds: ["t-a"] }],
+				nodes: [{ id: "p-one", status: "planned", taskIds: ["t-a"] }],
 			}),
 		);
 	});
@@ -67,9 +73,10 @@ describe("snapshotPlanStructure", () => {
 	it("ignores body changes (same shape => same snapshot)", () => {
 		const a = makePlan([
 			makePhase({
-				goal: "original goal",
-				tasks: [
+				body: "original goal",
+				children: [
 					{
+						type: "work-item" as const,
 						id: "t-a",
 						title: "A",
 						body: "original body",
@@ -82,9 +89,10 @@ describe("snapshotPlanStructure", () => {
 		]);
 		const b = makePlan([
 			makePhase({
-				goal: "rewritten goal",
-				tasks: [
+				body: "rewritten goal",
+				children: [
 					{
+						type: "work-item" as const,
 						id: "t-a",
 						title: "A",
 						body: "rewritten body with much more detail",
@@ -114,11 +122,12 @@ describe("snapshotPlanStructure", () => {
 	});
 
 	it("differs when a task is added to an existing phase", () => {
-		const a = makePlan([makePhase({ tasks: [] })]);
+		const a = makePlan([makePhase({ children: [] })]);
 		const b = makePlan([
 			makePhase({
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "t-new",
 						title: "new",
 						body: "",
@@ -296,6 +305,7 @@ describe("buildPickerCopy", () => {
 	it("returns 'in-flight' kind with resumption copy when an active phase exists", () => {
 		const plan = makePlan([
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-active",
 				status: "active",
 				branch: "feat/p-active",
@@ -315,6 +325,7 @@ describe("buildPickerCopy", () => {
 	it("treats needs-attention as in-flight", () => {
 		const plan = makePlan([
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-fix",
 				status: "needs-attention",
 				branch: "feat/p-fix",
@@ -451,6 +462,7 @@ describe("planPickerView", () => {
 	it("returns a 'show' action with resume copy for an in-flight plan", () => {
 		const plan = makePlan([
 			makePhase({
+				type: "deliverable" as const,
 				id: "p-active",
 				status: "active",
 				branch: "feat/p-active",
@@ -586,11 +598,12 @@ describe("classifyImplementContext", () => {
 		const now = new Date().toISOString();
 		const pre = makePhase({
 			id: "pre",
-			kind: "pre",
+			lifecycle: "pre",
 			branch: "",
 			dependsOn: [],
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "rename secret",
 					body: "",
@@ -615,11 +628,12 @@ describe("classifyImplementContext", () => {
 		const now = new Date().toISOString();
 		const pre = makePhase({
 			id: "pre",
-			kind: "pre",
+			lifecycle: "pre",
 			branch: "",
 			dependsOn: [],
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "x",
 					body: "",
@@ -638,11 +652,12 @@ describe("classifyImplementContext", () => {
 		const now = new Date().toISOString();
 		const pre = makePhase({
 			id: "pre",
-			kind: "pre",
+			lifecycle: "pre",
 			branch: "",
 			dependsOn: [],
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "x",
 					body: "",
@@ -665,11 +680,12 @@ describe("classifyImplementContext", () => {
 		const r1 = makePhase({ id: "r1", status: "shipped", dependsOn: [] });
 		const post = makePhase({
 			id: "post",
-			kind: "post",
+			lifecycle: "post",
 			branch: "",
 			dependsOn: ["r1"],
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "h1",
 					title: "deploy",
 					body: "",
@@ -692,11 +708,12 @@ describe("classifyImplementContext", () => {
 		const r2 = makePhase({ id: "r2", status: "in-review", dependsOn: ["r1"] });
 		const post = makePhase({
 			id: "post",
-			kind: "post",
+			lifecycle: "post",
 			branch: "",
 			dependsOn: ["r2"],
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "h1",
 					title: "deploy",
 					body: "",
@@ -719,11 +736,12 @@ describe("classifyImplementContext", () => {
 		const r1 = makePhase({ id: "r1", status: "shipped", dependsOn: [] });
 		const post = makePhase({
 			id: "post",
-			kind: "post",
+			lifecycle: "post",
 			branch: "",
 			dependsOn: ["r1"],
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "h1",
 					title: "deploy",
 					body: "",

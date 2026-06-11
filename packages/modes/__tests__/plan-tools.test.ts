@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { vi } from "vitest";
 import type { Plan } from "../plan/schema.js";
+import { deliverables, ownWorkItems } from "../plan/schema.js";
 import { _setPlansRootForTests, loadPlan, savePlan } from "../plan/storage.js";
 import { registerPlanTools } from "../plan/tools.js";
+import { topLevelLeaves } from "../plan/tree.js";
 
 let tmp: string;
 let registeredTools: Map<string, any>;
@@ -29,7 +31,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "tools-test",
 		title: "Tools Test",
 		repo: { path: "/tmp/repo" },
-		phases: [],
+		nodes: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -56,51 +58,55 @@ afterEach(() => {
 
 describe("phase", () => {
 	it("adds a phase with default status planned", async () => {
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "add",
 			title: "Add validation",
-			goal: "Validate inputs",
+			body: "Validate inputs",
 		});
 		expect(r.details.action).toBe("add");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases).toHaveLength(1);
-		expect(plan.phases[0].status).toBe("planned");
-		expect(plan.phases[0].id).toBe("add-validation");
+		expect(deliverables(plan)).toHaveLength(1);
+		expect(deliverables(plan)[0].status).toBe("planned");
+		expect(deliverables(plan)[0].id).toBe("add-validation");
 		expect(onChanged).toHaveBeenCalledTimes(1);
 	});
 
 	it("rejects duplicate phase id", async () => {
-		await call("phase", { action: "add", title: "Foo" });
-		const r = await call("phase", { action: "add", title: "Foo" });
-		expect(r.details.error).toBe("duplicate phase id");
+		await call("deliverable", { action: "add", title: "Foo" });
+		const r = await call("deliverable", { action: "add", title: "Foo" });
+		expect(r.details.error).toBe("duplicate deliverable id");
 	});
 
 	it("update enforces state machine", async () => {
-		await call("phase", { action: "add", title: "Foo" });
-		const bad = await call("phase", {
+		await call("deliverable", { action: "add", title: "Foo" });
+		const bad = await call("deliverable", {
 			action: "update",
 			id: "foo",
 			status: "shipped",
 		});
 		expect(bad.details.error).toBe("invalid transition");
 
-		const good = await call("phase", {
+		const good = await call("deliverable", {
 			action: "update",
 			id: "foo",
 			status: "active",
 		});
 		expect(good.details.action).toBe("update");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].status).toBe("active");
+		expect(deliverables(plan)[0].status).toBe("active");
 	});
 
 	it("update to same status is a no-op (idempotent)", async () => {
-		await call("phase", { action: "add", title: "Foo" });
-		await call("phase", { action: "update", id: "foo", status: "active" });
+		await call("deliverable", { action: "add", title: "Foo" });
+		await call("deliverable", {
+			action: "update",
+			id: "foo",
+			status: "active",
+		});
 		onChanged.mockClear();
 
 		// Re-asserting active→active should succeed, not error
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "update",
 			id: "foo",
 			status: "active",
@@ -110,54 +116,54 @@ describe("phase", () => {
 
 		// Status unchanged on disk
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].status).toBe("active");
+		expect(deliverables(plan)[0].status).toBe("active");
 		// onChanged still fires (timestamps update)
 		expect(onChanged).toHaveBeenCalledTimes(1);
 	});
 
 	it("remove deletes the phase", async () => {
-		await call("phase", { action: "add", title: "Foo" });
-		await call("phase", { action: "remove", id: "foo" });
+		await call("deliverable", { action: "add", title: "Foo" });
+		await call("deliverable", { action: "remove", id: "foo" });
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases).toHaveLength(0);
+		expect(deliverables(plan)).toHaveLength(0);
 	});
 
 	it("reorder moves a phase by id", async () => {
-		await call("phase", { action: "add", title: "First" });
-		await call("phase", { action: "add", title: "Second" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "First" });
+		await call("deliverable", { action: "add", title: "Second" });
+		await call("deliverable", {
 			action: "reorder",
 			id: "second",
 			position: 0,
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases.map((p) => p.id)).toEqual(["second", "first"]);
+		expect(deliverables(plan).map((p) => p.id)).toEqual(["second", "first"]);
 	});
 
 	it("accepts legacy `p-` prefixed ids on tool calls", async () => {
-		await call("phase", { action: "add", title: "Legacy" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "Legacy" });
+		const r = await call("deliverable", {
 			action: "update",
 			id: "p-legacy",
 			status: "active",
 		});
 		expect(r.details.action).toBe("update");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].id).toBe("legacy");
-		expect(plan.phases[0].status).toBe("active");
+		expect(deliverables(plan)[0].id).toBe("legacy");
+		expect(deliverables(plan)[0].status).toBe("active");
 	});
 
 	it("list returns phases", async () => {
-		await call("phase", { action: "add", title: "A" });
-		const r = await call("phase", { action: "list" });
+		await call("deliverable", { action: "add", title: "A" });
+		const r = await call("deliverable", { action: "list" });
 		expect(r.details.action).toBe("list");
-		expect(r.details.phases as any[]).toHaveLength(1);
+		expect(r.details.deliverables as unknown[]).toHaveLength(1);
 	});
 });
 
 describe("task", () => {
 	beforeEach(async () => {
-		await call("phase", { action: "add", title: "Phase one" });
+		await call("deliverable", { action: "add", title: "Phase one" });
 	});
 
 	it("adds a task to a phase", async () => {
@@ -169,10 +175,10 @@ describe("task", () => {
 		});
 		expect(r.details.action).toBe("add");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks).toHaveLength(1);
-		expect(plan.phases[0].tasks[0].title).toBe("Write spec");
-		expect(plan.phases[0].tasks[0].body).toBe("Detailed body");
-		expect(plan.phases[0].tasks[0].done).toBe(false);
+		expect(ownWorkItems(deliverables(plan)[0])).toHaveLength(1);
+		expect(ownWorkItems(deliverables(plan)[0])[0].title).toBe("Write spec");
+		expect(ownWorkItems(deliverables(plan)[0])[0].body).toBe("Detailed body");
+		expect(ownWorkItems(deliverables(plan)[0])[0].done).toBe(false);
 	});
 
 	it("toggle marks a task done", async () => {
@@ -187,7 +193,7 @@ describe("task", () => {
 			taskId: "foo",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks[0].done).toBe(true);
+		expect(ownWorkItems(deliverables(plan)[0])[0].done).toBe(true);
 	});
 
 	it("remove deletes a task", async () => {
@@ -202,11 +208,11 @@ describe("task", () => {
 			taskId: "foo",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks).toHaveLength(0);
+		expect(ownWorkItems(deliverables(plan)[0])).toHaveLength(0);
 	});
 
 	it("move relocates a task to another phase", async () => {
-		await call("phase", { action: "add", title: "Phase two" });
+		await call("deliverable", { action: "add", title: "Phase two" });
 		await call("task", {
 			action: "add",
 			phaseId: "phase-one",
@@ -219,9 +225,9 @@ describe("task", () => {
 			targetPhaseId: "phase-two",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks).toHaveLength(0);
-		expect(plan.phases[1].tasks).toHaveLength(1);
-		expect(plan.phases[1].tasks[0].id).toBe("task-a");
+		expect(ownWorkItems(deliverables(plan)[0])).toHaveLength(0);
+		expect(ownWorkItems(deliverables(plan)[1])).toHaveLength(1);
+		expect(ownWorkItems(deliverables(plan)[1])[0].id).toBe("task-a");
 	});
 
 	it("update changes title and body", async () => {
@@ -237,7 +243,7 @@ describe("task", () => {
 			body: "new body",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks[0].body).toBe("new body");
+		expect(ownWorkItems(deliverables(plan)[0])[0].body).toBe("new body");
 	});
 
 	it("accepts legacy `t-` prefixed taskId on tool calls", async () => {
@@ -253,17 +259,17 @@ describe("task", () => {
 		});
 		expect(r.details.action).toBe("toggle");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks[0].id).toBe("migrate");
-		expect(plan.phases[0].tasks[0].done).toBe(true);
+		expect(ownWorkItems(deliverables(plan)[0])[0].id).toBe("migrate");
+		expect(ownWorkItems(deliverables(plan)[0])[0].done).toBe(true);
 	});
 });
 
 describe("plan", () => {
 	it("returns markdown summary", async () => {
-		await call("phase", {
+		await call("deliverable", {
 			action: "add",
 			title: "Foo",
-			goal: "Make it work",
+			body: "Make it work",
 		});
 		await call("task", {
 			action: "add",
@@ -292,76 +298,76 @@ describe("plan", () => {
 
 describe("phase dependsOn", () => {
 	it("stores dependsOn on add", async () => {
-		await call("phase", { action: "add", title: "First" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "First" });
+		const r = await call("deliverable", {
 			action: "add",
 			title: "Second",
 			dependsOn: ["first"],
 		});
 		expect(r.details.action).toBe("add");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[1].dependsOn).toEqual(["first"]);
+		expect(deliverables(plan)[1].dependsOn).toEqual(["first"]);
 	});
 
 	it("defaults dependsOn to last phase when omitted (linear chain ergonomic)", async () => {
-		await call("phase", { action: "add", title: "First" });
-		await call("phase", { action: "add", title: "Second" });
+		await call("deliverable", { action: "add", title: "First" });
+		await call("deliverable", { action: "add", title: "Second" });
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[1].dependsOn).toEqual(["first"]);
+		expect(deliverables(plan)[1].dependsOn).toEqual(["first"]);
 	});
 
 	it("first phase in an empty plan defaults to []", async () => {
-		await call("phase", { action: "add", title: "Solo" });
+		await call("deliverable", { action: "add", title: "Solo" });
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].dependsOn).toEqual([]);
+		expect(deliverables(plan)[0].dependsOn).toEqual([]);
 	});
 
 	it("explicit dependsOn: [] declares a sibling root (overrides default)", async () => {
-		await call("phase", { action: "add", title: "First" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "First" });
+		await call("deliverable", {
 			action: "add",
 			title: "Second",
 			dependsOn: [],
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[1].dependsOn).toEqual([]);
+		expect(deliverables(plan)[1].dependsOn).toEqual([]);
 	});
 
 	it("explicit dependsOn forks off an earlier phase", async () => {
-		await call("phase", { action: "add", title: "A" });
-		await call("phase", { action: "add", title: "B" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "A" });
+		await call("deliverable", { action: "add", title: "B" });
+		await call("deliverable", {
 			action: "add",
 			title: "C",
 			dependsOn: ["a"],
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[2].dependsOn).toEqual(["a"]);
+		expect(deliverables(plan)[2].dependsOn).toEqual(["a"]);
 	});
 
 	it("rejects multi-parent on add (chain-only constraint)", async () => {
-		await call("phase", { action: "add", title: "A" });
-		await call("phase", { action: "add", title: "B" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "A" });
+		await call("deliverable", { action: "add", title: "B" });
+		const r = await call("deliverable", {
 			action: "add",
 			title: "C",
 			dependsOn: ["a", "b"],
 		});
-		expect(r.details.error).toContain("cannot depend on multiple phases");
+		expect(r.details.error).toContain("cannot depend on multiple deliverables");
 	});
 
 	it("rejects unknown dependsOn id", async () => {
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "add",
 			title: "X",
 			dependsOn: ["nope"],
 		});
-		expect(r.details.error).toContain("unknown phase");
+		expect(r.details.error).toContain("unknown deliverable");
 	});
 
 	it("rejects self-reference on update", async () => {
-		await call("phase", { action: "add", title: "Solo" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "Solo" });
+		const r = await call("deliverable", {
 			action: "update",
 			id: "solo",
 			dependsOn: ["solo"],
@@ -372,15 +378,15 @@ describe("phase dependsOn", () => {
 	it("detects 2-cycle on update (A → B → A)", async () => {
 		// Add A and B as roots so neither has a dependsOn yet, then create
 		// the chain manually with updates.
-		await call("phase", { action: "add", title: "A" });
-		await call("phase", { action: "add", title: "B" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "A" });
+		await call("deliverable", { action: "add", title: "B" });
+		await call("deliverable", {
 			action: "update",
 			id: "b",
 			dependsOn: ["a"],
 		});
 		// Now point A back at B: this should be a cycle.
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "update",
 			id: "a",
 			dependsOn: ["b"],
@@ -389,20 +395,20 @@ describe("phase dependsOn", () => {
 	});
 
 	it("detects 3-cycle on update (A → B → C → A)", async () => {
-		await call("phase", { action: "add", title: "A" });
-		await call("phase", { action: "add", title: "B" });
-		await call("phase", { action: "add", title: "C" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "A" });
+		await call("deliverable", { action: "add", title: "B" });
+		await call("deliverable", { action: "add", title: "C" });
+		await call("deliverable", {
 			action: "update",
 			id: "b",
 			dependsOn: ["a"],
 		});
-		await call("phase", {
+		await call("deliverable", {
 			action: "update",
 			id: "c",
 			dependsOn: ["b"],
 		});
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "update",
 			id: "a",
 			dependsOn: ["c"],
@@ -411,29 +417,29 @@ describe("phase dependsOn", () => {
 	});
 
 	it("canonicalises legacy `p-` prefix in dependsOn", async () => {
-		await call("phase", { action: "add", title: "Root" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "Root" });
+		const r = await call("deliverable", {
 			action: "add",
 			title: "Child",
 			dependsOn: ["p-root"],
 		});
 		expect(r.details.action).toBe("add");
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[1].dependsOn).toEqual(["root"]);
+		expect(deliverables(plan)[1].dependsOn).toEqual(["root"]);
 	});
 });
 
 describe("task kind + @plan sentinel", () => {
 	it("round-trips kind on add and update", async () => {
-		await call("phase", { action: "add", title: "P" });
+		await call("deliverable", { action: "add", title: "P" });
 		await call("task", {
 			action: "add",
 			phaseId: "p",
 			title: "Note",
-			kind: "followUp",
+			kind: "followup",
 		});
 		const plan1 = loadPlan("tools-test") as Plan;
-		expect(plan1.phases[0].tasks[0].kind).toBe("followUp");
+		expect(ownWorkItems(deliverables(plan1)[0])[0].kind).toBe("followup");
 
 		await call("task", {
 			action: "update",
@@ -442,31 +448,31 @@ describe("task kind + @plan sentinel", () => {
 			kind: "manual",
 		});
 		const plan2 = loadPlan("tools-test") as Plan;
-		expect(plan2.phases[0].tasks[0].kind).toBe("manual");
+		expect(ownWorkItems(deliverables(plan2)[0])[0].kind).toBe("manual");
 	});
 
 	it("defaults kind to deliverable when omitted", async () => {
-		await call("phase", { action: "add", title: "P" });
+		await call("deliverable", { action: "add", title: "P" });
 		await call("task", {
 			action: "add",
 			phaseId: "p",
 			title: "T",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks[0].kind).toBe("deliverable");
+		expect(ownWorkItems(deliverables(plan)[0])[0].kind).toBe("task");
 	});
 
-	it("@plan: add stores task on plan.followUps", async () => {
+	it("@plan: add stores task on topLevelLeaves(plan)", async () => {
 		await call("task", {
 			action: "add",
 			phaseId: "@plan",
 			title: "Cross-cutting note",
-			kind: "followUp",
+			kind: "followup",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.followUps).toHaveLength(1);
-		expect(plan.followUps?.[0].title).toBe("Cross-cutting note");
-		expect(plan.followUps?.[0].kind).toBe("followUp");
+		expect(topLevelLeaves(plan)).toHaveLength(1);
+		expect(topLevelLeaves(plan)[0].title).toBe("Cross-cutting note");
+		expect(topLevelLeaves(plan)[0].kind).toBe("followup");
 	});
 
 	it("@plan: toggle marks plan-level task done", async () => {
@@ -474,6 +480,7 @@ describe("task kind + @plan sentinel", () => {
 			action: "add",
 			phaseId: "@plan",
 			title: "Tell support",
+			kind: "manual",
 		});
 		await call("task", {
 			action: "toggle",
@@ -481,15 +488,16 @@ describe("task kind + @plan sentinel", () => {
 			taskId: "tell-support",
 		});
 		const plan = loadPlan("tools-test") as Plan;
-		expect(plan.followUps?.[0].done).toBe(true);
+		expect(topLevelLeaves(plan)[0].done).toBe(true);
 	});
 
 	it("@plan: move from phase to @plan and back", async () => {
-		await call("phase", { action: "add", title: "Phase" });
+		await call("deliverable", { action: "add", title: "Phase" });
 		await call("task", {
 			action: "add",
 			phaseId: "phase",
 			title: "Mover",
+			kind: "followup",
 		});
 		await call("task", {
 			action: "move",
@@ -498,8 +506,8 @@ describe("task kind + @plan sentinel", () => {
 			targetPhaseId: "@plan",
 		});
 		let plan = loadPlan("tools-test") as Plan;
-		expect(plan.phases[0].tasks).toHaveLength(0);
-		expect(plan.followUps?.[0].id).toBe("mover");
+		expect(ownWorkItems(deliverables(plan)[0])).toHaveLength(0);
+		expect(topLevelLeaves(plan)[0].id).toBe("mover");
 
 		await call("task", {
 			action: "move",
@@ -508,15 +516,15 @@ describe("task kind + @plan sentinel", () => {
 			targetPhaseId: "phase",
 		});
 		plan = loadPlan("tools-test") as Plan;
-		expect(plan.followUps).toHaveLength(0);
-		expect(plan.phases[0].tasks[0].id).toBe("mover");
+		expect(topLevelLeaves(plan)).toHaveLength(0);
+		expect(ownWorkItems(deliverables(plan)[0])[0].id).toBe("mover");
 	});
 });
 
 describe("plan markdown rendering", () => {
 	it("renders dependsOn header, task kind markers, and follow-ups section", async () => {
-		await call("phase", { action: "add", title: "Root" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "Root" });
+		await call("deliverable", {
 			action: "add",
 			title: "Child",
 			dependsOn: ["root"],
@@ -536,7 +544,7 @@ describe("plan markdown rendering", () => {
 			action: "add",
 			phaseId: "@plan",
 			title: "Tell support",
-			kind: "followUp",
+			kind: "followup",
 		});
 		const r = await call("plan", {});
 		const text = (r.content[0] as any).text as string;
@@ -546,18 +554,18 @@ describe("plan markdown rendering", () => {
 		// Question kind rendered with [?] marker.
 		expect(text).toContain("[?] **Open question**");
 		// Follow-ups section appears at the end.
-		expect(text).toContain("## Follow-ups");
+		expect(text).toContain("## Loose items");
 		expect(text).toContain("[~] **Tell support**");
 	});
 
 	it("shows driver-session prefix on phases that carry a claim", async () => {
-		await call("phase", { action: "add", title: "Owned" });
+		await call("deliverable", { action: "add", title: "Owned" });
 		// Inject a driver claim by reaching into the saved plan; the
 		// claim normally arrives via doImplement, which isn't exercised
 		// in the tools test.
 		const plan = loadPlan("tools-test");
 		if (!plan) throw new Error("plan missing");
-		plan.phases[0]!.driverSessionId = "abcdef0123456789";
+		deliverables(plan)[0]!.driverSessionId = "abcdef0123456789";
 		savePlan(plan);
 		const r = await call("plan", {});
 		const text = (r.content[0] as any).text as string;
@@ -566,133 +574,119 @@ describe("plan markdown rendering", () => {
 });
 
 describe("phase kind (pre/post)", () => {
-	it('adds a pre phase with branch="" and dependsOn=[]', async () => {
-		const r = await call("phase", {
+	it("adds a pre lifecycle checklist without a branch", async () => {
+		const r = await call("deliverable", {
 			action: "add",
 			title: "Preflight",
-			kind: "pre",
+			lifecycle: "pre",
 		});
 		expect(r.details.error).toBeUndefined();
 		const plan = loadPlan("tools-test");
-		const phase = plan?.phases[0];
-		expect(phase?.kind).toBe("pre");
-		expect(phase?.branch).toBe("");
+		const phase = plan ? deliverables(plan)[0] : undefined;
+		expect(phase?.lifecycle).toBe("pre");
+		expect(phase?.branch).toBeUndefined();
 		expect(phase?.dependsOn).toEqual([]);
 	});
 
-	it('adds a post phase with branch=""', async () => {
-		await call("phase", { action: "add", title: "Regular" });
-		const r = await call("phase", {
+	it("adds a post lifecycle checklist without a branch", async () => {
+		await call("deliverable", { action: "add", title: "Regular" });
+		const r = await call("deliverable", {
 			action: "add",
 			title: "Handover",
-			kind: "post",
+			lifecycle: "post",
 		});
 		expect(r.details.error).toBeUndefined();
 		const plan = loadPlan("tools-test");
-		const post = plan?.phases.find((p) => p.id === "handover");
-		expect(post?.kind).toBe("post");
-		expect(post?.branch).toBe("");
+		const post = plan
+			? deliverables(plan).find((p) => p.id === "handover")
+			: undefined;
+		expect(post?.lifecycle).toBe("post");
+		expect(post?.branch).toBeUndefined();
 	});
 
-	it("regular phase omits the kind field on disk (back-compat)", async () => {
-		await call("phase", { action: "add", title: "Plain" });
+	it("regular deliverable omits the lifecycle field on disk", async () => {
+		await call("deliverable", { action: "add", title: "Plain" });
 		const plan = loadPlan("tools-test");
-		expect(plan?.phases[0]?.kind).toBeUndefined();
+		expect(
+			(plan ? deliverables(plan)[0] : undefined)?.lifecycle,
+		).toBeUndefined();
 	});
 
 	it("rejects a second pre phase", async () => {
-		await call("phase", {
+		await call("deliverable", {
 			action: "add",
 			title: "Preflight",
-			kind: "pre",
+			lifecycle: "pre",
 		});
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "add",
 			title: "Another preflight",
-			kind: "pre",
+			lifecycle: "pre",
 		});
-		expect(r.details.error).toBe("duplicate pre phase");
+		expect(r.details.error).toBe("duplicate pre deliverable");
 	});
 
 	it("rejects a second post phase", async () => {
-		await call("phase", {
+		await call("deliverable", {
 			action: "add",
 			title: "Handover",
-			kind: "post",
+			lifecycle: "post",
 		});
-		const r = await call("phase", {
+		const r = await call("deliverable", {
 			action: "add",
 			title: "More handover",
-			kind: "post",
+			lifecycle: "post",
 		});
-		expect(r.details.error).toBe("duplicate post phase");
+		expect(r.details.error).toBe("duplicate post deliverable");
 	});
 
 	it("update can promote regular → pre, clears branch", async () => {
-		await call("phase", { action: "add", title: "Plain" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "Plain" });
+		const r = await call("deliverable", {
 			action: "update",
 			id: "plain",
-			kind: "pre",
+			lifecycle: "pre",
 		});
 		expect(r.details.error).toBeUndefined();
 		const plan = loadPlan("tools-test");
-		const phase = plan?.phases[0];
-		expect(phase?.kind).toBe("pre");
-		expect(phase?.branch).toBe("");
-	});
-
-	it("update can demote pre → regular, re-issues default branch", async () => {
-		await call("phase", {
-			action: "add",
-			title: "Preflight",
-			kind: "pre",
-		});
-		const r = await call("phase", {
-			action: "update",
-			id: "preflight",
-			kind: "regular",
-		});
-		expect(r.details.error).toBeUndefined();
-		const plan = loadPlan("tools-test");
-		const phase = plan?.phases[0];
-		expect(phase?.kind).toBeUndefined();
-		expect(phase?.branch).toBe("feat/preflight");
+		const phase = plan ? deliverables(plan)[0] : undefined;
+		expect(phase?.lifecycle).toBe("pre");
+		expect(phase?.branch).toBeUndefined();
 	});
 
 	it("update rejects switch to pre when one already exists", async () => {
-		await call("phase", {
+		await call("deliverable", {
 			action: "add",
 			title: "Preflight",
-			kind: "pre",
+			lifecycle: "pre",
 		});
-		await call("phase", { action: "add", title: "Other" });
-		const r = await call("phase", {
+		await call("deliverable", { action: "add", title: "Other" });
+		const r = await call("deliverable", {
 			action: "update",
 			id: "other",
-			kind: "pre",
+			lifecycle: "pre",
 		});
-		expect(r.details.error).toBe("duplicate pre phase");
+		expect(r.details.error).toBe("duplicate pre deliverable");
 	});
 });
 
 describe("plan markdown sections for pre/post", () => {
 	it("renders Preflight, Phases, and Handover sections", async () => {
-		await call("phase", {
+		await call("deliverable", {
 			action: "add",
 			title: "Preflight",
-			kind: "pre",
+			lifecycle: "pre",
 		});
-		await call("phase", { action: "add", title: "Regular" });
-		await call("phase", {
+		await call("deliverable", { action: "add", title: "Regular" });
+		await call("deliverable", {
 			action: "add",
 			title: "Handover",
-			kind: "post",
+			lifecycle: "post",
 		});
 		const r = await call("plan", {});
 		const text = (r.content[0] as any).text as string;
 		expect(text).toContain("## Preflight");
-		expect(text).toContain("## Phases");
+		expect(text).toContain("## Deliverables");
 		expect(text).toContain("## Handover");
 		// Pre/post phases get the [pre]/[post] kind marker on their
 		// heading line.
@@ -701,16 +695,16 @@ describe("plan markdown sections for pre/post", () => {
 	});
 
 	it("pre/post tasks render with [!] regardless of declared kind", async () => {
-		await call("phase", {
+		await call("deliverable", {
 			action: "add",
 			title: "Preflight",
-			kind: "pre",
+			lifecycle: "pre",
 		});
 		await call("task", {
 			action: "add",
 			phaseId: "preflight",
 			title: "rename secret",
-			kind: "deliverable",
+			kind: "task",
 		});
 		const r = await call("plan", {});
 		const text = (r.content[0] as any).text as string;

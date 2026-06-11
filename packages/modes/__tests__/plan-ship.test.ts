@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import type { ShellResult } from "../git.js";
-import type { Phase, Plan } from "../plan/schema.js";
+import type { Deliverable as Phase, Plan } from "../plan/schema.js";
 import {
 	parsePrCreateOutput,
 	probeOpenPrForBranch,
@@ -16,7 +16,7 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "p",
 		title: "Test plan",
 		repo: { path: "/tmp/repo" },
-		phases: [],
+		nodes: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -25,13 +25,14 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	return {
+		type: "deliverable" as const,
 		id: "p-foo",
 		title: "Foo",
-		goal: "Make it work",
+		body: "Make it work",
 		status: "active",
 		branch: "feat/p-foo",
 		worktreePath: "/tmp/repo",
-		tasks: [],
+		children: [],
 		createdAt: now,
 		updatedAt: now,
 		...overrides,
@@ -73,8 +74,9 @@ describe("renderPrBody", () => {
 			makePlan({ parentIssueNumber: 100 }),
 			makePhase({
 				issueNumber: 101,
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "t-a",
 						title: "Task A",
 						body: "",
@@ -83,6 +85,7 @@ describe("renderPrBody", () => {
 						updatedAt: now,
 					},
 					{
+						type: "work-item" as const,
 						id: "t-b",
 						title: "Task B",
 						body: "",
@@ -102,7 +105,7 @@ describe("renderPrBody", () => {
 	});
 
 	it("falls back when goal is empty", () => {
-		const body = renderPrBody(makePlan(), makePhase({ goal: "" }));
+		const body = renderPrBody(makePlan(), makePhase({ body: "" }));
 		expect(body).toContain("_(no goal set)_");
 	});
 
@@ -110,13 +113,14 @@ describe("renderPrBody", () => {
 		const body = renderPrBody(
 			makePlan(),
 			makePhase({
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "t-1",
 						title: "Ship me",
 						body: "",
 						done: true,
-						kind: "deliverable",
+						kind: "task",
 						createdAt: now,
 						updatedAt: now,
 					},
@@ -132,17 +136,19 @@ describe("renderPrBody", () => {
 		const body = renderPrBody(
 			makePlan(),
 			makePhase({
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "d",
 						title: "core change",
 						body: "",
 						done: true,
-						kind: "deliverable",
+						kind: "task",
 						createdAt: now,
 						updatedAt: now,
 					},
 					{
+						type: "work-item" as const,
 						id: "q",
 						title: "Should we drop legacy v1?",
 						body: "v1 plans haven't been written in 6 months.",
@@ -152,15 +158,17 @@ describe("renderPrBody", () => {
 						updatedAt: now,
 					},
 					{
+						type: "work-item" as const,
 						id: "f",
 						title: "Index in-flight plans by branch",
 						body: "",
 						done: false,
-						kind: "followUp",
+						kind: "followup",
 						createdAt: now,
 						updatedAt: now,
 					},
 					{
+						type: "work-item" as const,
 						id: "m",
 						title: "Smoke-test on a v1 plan locally",
 						body: "",
@@ -189,13 +197,14 @@ describe("renderPrBody", () => {
 		const body = renderPrBody(
 			makePlan(),
 			makePhase({
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "d",
 						title: "only deliverable",
 						body: "",
 						done: true,
-						kind: "deliverable",
+						kind: "task",
 						createdAt: now,
 						updatedAt: now,
 					},
@@ -211,17 +220,19 @@ describe("renderPrBody", () => {
 		const body = renderPrBody(
 			makePlan(),
 			makePhase({
-				tasks: [
+				children: [
 					{
+						type: "work-item" as const,
 						id: "f1",
 						title: "already filed as #99",
 						body: "",
 						done: true,
-						kind: "followUp",
+						kind: "followup",
 						createdAt: now,
 						updatedAt: now,
 					},
 					{
+						type: "work-item" as const,
 						id: "m1",
 						title: "reviewer ran the smoke test",
 						body: "",

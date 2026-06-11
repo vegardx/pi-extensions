@@ -20,8 +20,8 @@
  * empty input are never wrapped — see `shouldInjectSteeringClassifier`.
  */
 
-import type { Phase, Plan } from "./schema.js";
-import { WORKTREE_STATUSES } from "./schema.js";
+import type { Deliverable, Plan } from "./schema.js";
+import { deliverables, gatingTasks, WORKTREE_STATUSES } from "./schema.js";
 
 export type SteeringSource = "interactive" | "rpc" | "extension";
 export type SteeringMode = "plan" | "auto" | "ask" | "hack";
@@ -33,8 +33,10 @@ export interface SteeringInput {
 	plan: Plan | null;
 }
 
-function inflightPhase(plan: Plan): Phase | null {
-	return plan.phases.find((p) => WORKTREE_STATUSES.includes(p.status)) ?? null;
+function inflightDeliverable(plan: Plan): Deliverable | null {
+	return (
+		deliverables(plan).find((p) => WORKTREE_STATUSES.includes(p.status)) ?? null
+	);
 }
 
 /**
@@ -61,10 +63,11 @@ export function shouldInjectSteeringClassifier(input: SteeringInput): boolean {
 	if (text.trim().length === 0) return false;
 	if (text.trimStart().startsWith("/")) return false;
 	if (!input.plan) return false;
-	const phase = inflightPhase(input.plan);
-	if (!phase) return false;
-	if (phase.tasks.length === 0) return false;
-	if (phase.tasks.every((t) => t.done)) return false;
+	const d = inflightDeliverable(input.plan);
+	if (!d) return false;
+	const tasks = gatingTasks(d);
+	if (tasks.length === 0) return false;
+	if (tasks.every((t) => t.done)) return false;
 	return true;
 }
 

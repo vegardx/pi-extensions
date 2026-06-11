@@ -8,6 +8,7 @@
  */
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { Plan } from "../plan/schema.js";
+import { deliverables } from "../plan/schema.js";
 import {
 	diffWorkerEvents,
 	WorkerMailbox,
@@ -63,26 +64,27 @@ function makeDeps(
 }
 
 function plan(
-	phases: Array<{ id: string; status: string; prNumber?: number }>,
+	nodes: Array<{ id: string; status: string; prNumber?: number }>,
 ): Plan {
 	return {
 		slug: "test",
 		title: "t",
 		summary: "",
-		phases: phases.map((p, i) => ({
+		nodes: nodes.map((p, i) => ({
+			type: "deliverable" as const,
 			id: p.id,
 			title: p.id,
-			goal: "",
+			body: "",
 			status: p.status as never,
-			tasks: [],
+			children: [],
 			updatedAt: new Date(2026, 0, 1, 0, i).toISOString(),
 			...(p.prNumber !== undefined ? { prNumber: p.prNumber } : {}),
-			...(i > 0 ? { dependsOn: [phases[i - 1]!.id] } : {}),
+			...(i > 0 ? { dependsOn: [nodes[i - 1]!.id] } : {}),
 		})) as never,
 		updatedAt: new Date().toISOString(),
 		createdAt: new Date().toISOString(),
 		repo: { path: "/repo" },
-		schemaVersion: 2,
+		schemaVersion: 3,
 	} as Plan;
 }
 
@@ -90,7 +92,7 @@ describe("diffWorkerEvents", () => {
 	it("emits phase-started when a phase flips to active", () => {
 		const before = { p1: "planned" as const };
 		const after = plan([{ id: "p1", status: "active" }]);
-		after.phases[0]!.branch = "feat/p1";
+		deliverables(after)[0]!.branch = "feat/p1";
 		const events = diffWorkerEvents(before, after, "p1", "p1");
 		expect(events).toContainEqual({
 			kind: "phase-started",
@@ -160,9 +162,9 @@ describe("WorkerMailbox", () => {
 		const agent = makeMockAgent();
 		const before = plan([{ id: "p1", status: "planned" }]);
 		const afterStart = plan([{ id: "p1", status: "active" }]);
-		afterStart.phases[0]!.branch = "feat/p1";
+		deliverables(afterStart)[0]!.branch = "feat/p1";
 		const afterShip = plan([{ id: "p1", status: "in-review", prNumber: 7 }]);
-		afterShip.phases[0]!.branch = "feat/p1";
+		deliverables(afterShip)[0]!.branch = "feat/p1";
 		const { deps } = makeDeps(agent, [before, afterStart, afterShip]);
 		const mailbox = new WorkerMailbox(
 			CTX,
