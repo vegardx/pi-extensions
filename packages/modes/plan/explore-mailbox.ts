@@ -39,11 +39,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
-import {
-	type PersistentAgent,
-	SubagentPool,
-} from "@vegardx/pi-extensions-shared/subagent-pool.js";
 import {
 	AsyncJobMailbox,
 	type BaseJob,
@@ -53,13 +48,18 @@ import {
 	type DispatchHandle,
 	type MailboxState,
 	type TaskStatus,
-} from "./async-job-mailbox.js";
+} from "@vegardx/pi-extensions-shared/async-job-mailbox.js";
+import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import {
+	type PersistentAgent,
+	SubagentPool,
+} from "@vegardx/pi-extensions-shared/subagent-pool.js";
 import { hasRoom } from "./scaling-policy.js";
 
 // ---- Public types -----------------------------------------------------------
 
 // Re-export TaskStatus so existing imports keep working.
-export type { TaskStatus } from "./async-job-mailbox.js";
+export type { TaskStatus } from "@vegardx/pi-extensions-shared/async-job-mailbox.js";
 
 export interface ExploreTask extends BaseJob {
 	question: string;
@@ -141,7 +141,7 @@ export type {
 	CheckOptions,
 	CheckResult,
 	MailboxState,
-} from "./async-job-mailbox.js";
+} from "@vegardx/pi-extensions-shared/async-job-mailbox.js";
 
 export interface SpawnedAgent {
 	agent: PersistentAgent;
