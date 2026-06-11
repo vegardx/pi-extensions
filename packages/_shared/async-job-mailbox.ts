@@ -275,14 +275,17 @@ export class AsyncJobMailbox<
 	}
 
 	/**
-	 * Block until the named job reaches a terminal state, or the
-	 * timeout fires. On timeout the underlying dispatcher keeps
-	 * running; subsequent `check`/`wait` may still observe the real
-	 * outcome.
+	 * Block until the named job reaches a terminal state, the timeout
+	 * fires, or `signal` aborts. On timeout the underlying dispatcher
+	 * keeps running; subsequent `check`/`wait` may still observe the real
+	 * outcome. An abort settles the wait promptly (status `aborted`) so a
+	 * caller holding an external slot — e.g. the subagent delegate
+	 * semaphore — can release it; the dispatcher itself is unaffected.
 	 */
 	async wait(
 		id: string,
 		timeoutMs: number = this.defaultWaitTimeoutMs,
+		signal?: AbortSignal,
 	): Promise<TJob> {
 		if (this.disposed) throw new Error(`${this.opts.kind} mailbox is disposed`);
 		const job = this.jobById.get(id);
@@ -298,14 +301,31 @@ export class AsyncJobMailbox<
 			};
 		}
 		if (isTerminal(job.status)) return snapshot(job);
+		if (signal?.aborted) {
+			return {
+				...snapshot(job),
+				status: "error",
+				error: `wait(${id}) aborted`,
+				endedAt: Date.now(),
+			};
+		}
 
 		return new Promise<TJob>((resolve) => {
 			let settled = false;
+			let onAbort: (() => void) | undefined;
 			const settle = (j: TJob) => {
 				if (settled) return;
 				settled = true;
 				if (waiter.timer) clearTimeout(waiter.timer);
+				if (onAbort) signal?.removeEventListener("abort", onAbort);
 				resolve(j);
+			};
+			const removeWaiter = () => {
+				const arr = this.waiters.get(id);
+				if (arr) {
+					const idx = arr.indexOf(waiter);
+					if (idx >= 0) arr.splice(idx, 1);
+				}
 			};
 			const waiter: Waiter<TJob> = {
 				resolve: (j) => settle(snapshot(j)),
@@ -317,12 +337,20 @@ export class AsyncJobMailbox<
 					error: `wait(${id}) timed out after ${timeoutMs}ms`,
 					endedAt: Date.now(),
 				});
-				const arr = this.waiters.get(id);
-				if (arr) {
-					const idx = arr.indexOf(waiter);
-					if (idx >= 0) arr.splice(idx, 1);
-				}
+				removeWaiter();
 			}, timeoutMs);
+			if (signal) {
+				onAbort = () => {
+					settle({
+						...snapshot(job),
+						status: "error",
+						error: `wait(${id}) aborted`,
+						endedAt: Date.now(),
+					});
+					removeWaiter();
+				};
+				signal.addEventListener("abort", onAbort, { once: true });
+			}
 			const arr = this.waiters.get(id) ?? [];
 			arr.push(waiter);
 			this.waiters.set(id, arr);

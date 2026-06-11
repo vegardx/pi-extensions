@@ -238,6 +238,33 @@ describe("AsyncJobMailbox", () => {
 			expect(out.error).toContain("unknown");
 		});
 
+		it("settles promptly when the passed signal aborts, leaving the job running", async () => {
+			const dispatch: Dispatcher<TestJob, TestNote> = () =>
+				new Promise(() => {});
+			const mb = makeMailbox({ dispatch });
+			const { id } = enqueueTestJob(mb, "q");
+			const ctrl = new AbortController();
+			const waitP = mb.wait(id, 60_000, ctrl.signal);
+			ctrl.abort();
+			const out = await waitP;
+			expect(out.status).toBe("error");
+			expect(out.error).toContain("aborted");
+			// The underlying dispatcher keeps running — abort only frees the waiter.
+			expect(mb.check({ id }).tasks[0]?.status).not.toBe("error");
+			await mb.dispose();
+		});
+
+		it("returns an aborted record when the signal is already aborted", async () => {
+			const dispatch: Dispatcher<TestJob, TestNote> = () =>
+				new Promise(() => {});
+			const mb = makeMailbox({ dispatch });
+			const { id } = enqueueTestJob(mb, "q");
+			const out = await mb.wait(id, 60_000, AbortSignal.abort());
+			expect(out.status).toBe("error");
+			expect(out.error).toContain("aborted");
+			await mb.dispose();
+		});
+
 		it("resolves every concurrent waiter on the same job", async () => {
 			let resolveDispatch: ((v: { text: string }) => void) | null = null;
 			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {

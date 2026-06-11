@@ -133,8 +133,22 @@ describe("registerModesDelegateTargets", () => {
 			timeoutMs: 9000,
 		});
 		expect(ask).toHaveBeenCalledWith("where do files live?");
-		expect(wait).toHaveBeenCalledWith("e1", 9000);
+		expect(wait).toHaveBeenCalledWith("e1", 9000, undefined);
 		expect(out?.text).toBe("files live in src/");
+	});
+
+	it("explorer forwards the host abort signal into mailbox.wait", async () => {
+		const { deps, wait } = makeDeps();
+		wait.mockResolvedValue({ status: "done", text: "ok" });
+		registerModesDelegateTargets(deps);
+		const ctrl = new AbortController();
+		await getDelegateTarget("explorer")?.execute({
+			message: "q",
+			ctx,
+			timeoutMs: 9000,
+			signal: ctrl.signal,
+		});
+		expect(wait).toHaveBeenCalledWith("e1", 9000, ctrl.signal);
 	});
 
 	it("explorer error/timeout statuses become structured failures", async () => {

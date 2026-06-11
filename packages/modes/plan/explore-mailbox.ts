@@ -440,15 +440,16 @@ export class ExploreMailbox {
 	async wait(
 		id: string,
 		timeoutMs: number = DEFAULT_WAIT_TIMEOUT_MS,
+		signal?: AbortSignal,
 	): Promise<ExploreTask> {
 		// Route by ownership rather than id-prefix literal: ask each inner
 		// mailbox via a synchronous `check({ id })` whether it knows the id,
 		// then `wait()` on the owner. Falls back to seed for unknown ids so
 		// the unknown-id error still surfaces with the seed's mailbox kind.
 		if (this.childMailbox.check({ id }).tasks.length > 0) {
-			return this.childMailbox.wait(id, timeoutMs);
+			return this.childMailbox.wait(id, timeoutMs, signal);
 		}
-		return this.seedMailbox.wait(id, timeoutMs);
+		return this.seedMailbox.wait(id, timeoutMs, signal);
 	}
 
 	get hasInFlight(): boolean {
