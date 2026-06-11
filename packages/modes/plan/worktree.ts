@@ -20,7 +20,7 @@ import { dirname, join, resolve } from "node:path";
 import { runCommand, workingTreeClean } from "../git.js";
 import {
 	type Plan,
-	type Phase as PlanPhase,
+	type Deliverable as PlanPhase,
 	repoNameFromPath,
 } from "./schema.js";
 
@@ -65,13 +65,24 @@ export function createWorktree(
 	const repoPath = resolve(plan.repo.path);
 	const canonical = worktreePath(plan, phase);
 
+	// Groupings and lifecycle checklists have no branch; nothing to
+	// check out. /implement refuses them before getting here, so this
+	// is a defensive guard.
+	const branch = phase.branch;
+	if (!branch) {
+		return {
+			ok: false,
+			error: `deliverable \`${phase.id}\` has no branch — groupings and lifecycle checklists don't get worktrees`,
+		};
+	}
+
 	if (existsSync(canonical)) {
 		return { ok: true, path: canonical, created: false };
 	}
 
 	// If the branch is already checked out in some worktree (commonly the
 	// main repo dir), reuse that path.
-	const existing = findCheckoutOf(repoPath, phase.branch);
+	const existing = findCheckoutOf(repoPath, branch);
 	if (existing) {
 		return { ok: true, path: existing, created: false };
 	}
@@ -82,15 +93,15 @@ export function createWorktree(
 
 	const branchExists = runCommand(
 		"git",
-		["show-ref", "--verify", "--quiet", `refs/heads/${phase.branch}`],
+		["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
 		{ cwd: repoPath },
 	).ok;
 
 	const args = ["worktree", "add"];
 	if (branchExists) {
-		args.push(canonical, phase.branch);
+		args.push(canonical, branch);
 	} else {
-		args.push("-b", phase.branch, canonical, baseBranch);
+		args.push("-b", branch, canonical, baseBranch);
 	}
 
 	const result = runCommand("git", args, { cwd: repoPath });

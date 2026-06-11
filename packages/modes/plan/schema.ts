@@ -1,10 +1,15 @@
 /**
- * Phase / Task plan schema.
+ * Deliverable / WorkItem plan schema (v3).
  *
- * A Plan is a structured replacement for the flat `plan_step` list. It
- * groups Tasks under Phases. Each Phase ships as one PR / one issue.
+ * A Plan is a forest of nodes. A node is either a **Deliverable**
+ * (something that ships — one PR / one issue — or a grouping of child
+ * deliverables) or a **WorkItem** (a checklist line: task, question,
+ * followup, manual step). Deliverables nest: a deliverable either has
+ * its own gating work-items (a leaf that ships a PR) XOR child
+ * deliverables (a grouping that completes when its subtree ships) —
+ * never both.
  *
- * Status flow:
+ * Status flow (per deliverable):
  *
  *   planned ─► active ─► in-review ─► ready-to-ship ─► shipped
  *                            │
@@ -13,13 +18,14 @@
  *
  * Plus a terminal `abandoned` reachable from any non-terminal state.
  *
- * Worktree lifecycle is bound to active work: a worktree exists only while
- * a phase is in `active` or `needs-attention`. Branches are kept forever.
+ * Worktree lifecycle is bound to active work: a worktree exists only
+ * while a deliverable is in `active` or `needs-attention`. Branches
+ * are kept forever.
  */
 
 import { basename, resolve } from "node:path";
 
-export const PHASE_STATUSES = [
+export const DELIVERABLE_STATUSES = [
 	"planned",
 	"active",
 	"in-review",
@@ -29,281 +35,168 @@ export const PHASE_STATUSES = [
 	"abandoned",
 ] as const;
 
-export type PhaseStatus = (typeof PHASE_STATUSES)[number];
+export type DeliverableStatus = (typeof DELIVERABLE_STATUSES)[number];
 
 /** Statuses that require a worktree (active editing). */
-export const WORKTREE_STATUSES: readonly PhaseStatus[] = [
+export const WORKTREE_STATUSES: readonly DeliverableStatus[] = [
 	"active",
 	"needs-attention",
 ] as const;
 
-/** Terminal statuses — phase will not transition again. */
-export const TERMINAL_STATUSES: readonly PhaseStatus[] = [
+/** Terminal statuses — the deliverable will not transition again. */
+export const TERMINAL_STATUSES: readonly DeliverableStatus[] = [
 	"shipped",
 	"abandoned",
 ] as const;
 
 /**
- * Pure transform behind `/plan archive`: returns a new plan whose
- * non-terminal phases have been flipped to `abandoned`, alongside the
- * list of phases that were touched. Caller is responsible for saving
- * the returned plan and reconciling worktrees afterwards.
+ * Kinds of work captured by a WorkItem.
  *
- * Kept in schema.ts (not index.ts) so the archive policy is unit
- * testable without booting the extension closure.
- */
-export function abandonNonTerminalPhases(
-	plan: Plan,
-	now: string,
-): { plan: Plan; archived: Phase[] } {
-	const archived: Phase[] = [];
-	const phases = plan.phases.map((phase): Phase => {
-		if (TERMINAL_STATUSES.includes(phase.status)) return phase;
-		// Drop driver claim on archive: the phase will never run again,
-		// so leaving a stale claim around would just be noise in plan
-		// inspections and confuse the adoption guard for any future plan
-		// that re-uses these slugs.
-		const next: Phase = {
-			...phase,
-			status: "abandoned",
-			updatedAt: now,
-		};
-		delete next.driverSessionId;
-		delete next.driverSessionFile;
-		delete next.driverClaimedAt;
-		archived.push(next);
-		return next;
-	});
-	return {
-		plan: {
-			...plan,
-			phases,
-			updatedAt: archived.length > 0 ? now : plan.updatedAt,
-		},
-		archived,
-	};
-}
-
-/**
- * A phase that is non-terminal but cannot progress without external
- * action we can't drive from session_start: `in-review` without a
- * `prNumber`. The PR is the only signal `syncPlanFromRemote` can use
- * to advance the phase to shipped/abandoned, so a phase in this state
- * is effectively waiting on the user to either open a PR or archive
- * the plan.
- */
-export function isStuckPhase(
-	phase: Pick<Phase, "status" | "prNumber">,
-): boolean {
-	return phase.status === "in-review" && phase.prNumber === undefined;
-}
-
-/**
- * A plan is "stuck" iff it has at least one non-terminal phase AND
- * every non-terminal phase is stuck (no phase the user can advance via
- * /implement, /ship, or PR-merge sync). Used by /plan list to flag
- * plans that need user attention vs. plans still in normal flight.
- */
-export function isPlanStuck(plan: Pick<Plan, "phases">): boolean {
-	const nonTerminal = plan.phases.filter(
-		(p) => !TERMINAL_STATUSES.includes(p.status),
-	);
-	if (nonTerminal.length === 0) return false;
-	return nonTerminal.every(isStuckPhase);
-}
-
-/**
- * Kinds of work captured by a Task.
- *
- *   - `deliverable` — agent-actionable acceptance criterion. Gates
- *     phase completion: a phase isn't done until every deliverable
- *     task is checked.
- *   - `followUp` — informational note carried alongside the phase
- *     (or at plan level). Doesn't block ship; surfaced in PR/issue
- *     bodies for the human reviewer.
+ *   - `task` — agent-actionable acceptance criterion. Gates the parent
+ *     deliverable's completion: a deliverable isn't done until every
+ *     `task` item is checked. (v2 name: `deliverable`.)
+ *   - `followup` — informational note carried alongside the
+ *     deliverable (or at plan level). Doesn't block ship; surfaced in
+ *     PR/issue bodies for the human reviewer. (v2 name: `followUp`.)
  *   - `question` — open design question for a side-conversation;
- *     never blocks ship.
+ *     never blocks ship. Can carry an `answer` once decided.
  *   - `manual` — manual / human-only step (e.g. "smoke on staging");
  *     surfaces as a reviewer checklist on the PR, never blocks ship.
  *
- * The agent should set `kind` explicitly when adding a task; missing
- * `kind` is read as `deliverable` for back-compat with v1 plans.
+ * The agent should set `kind` explicitly when adding a work item;
+ * missing `kind` reads as `task`.
  */
-export const TASK_KINDS = [
-	"deliverable",
-	"followUp",
+export const WORK_ITEM_KINDS = [
+	"task",
+	"followup",
 	"question",
 	"manual",
 ] as const;
 
-export type TaskKind = (typeof TASK_KINDS)[number];
+export type WorkItemKind = (typeof WORK_ITEM_KINDS)[number];
 
-export interface Task {
+export interface WorkItem {
+	type: "work-item";
 	id: string;
 	/** Short, scannable. No length cap — but agent should keep it concise. */
 	title: string;
 	/** Detailed: context, acceptance criteria, files, test notes. */
 	body: string;
 	done: boolean;
+	/** Read via {@link effectiveWorkItemKind} which defaults to `task`. */
+	kind?: WorkItemKind;
 	/**
-	 * Optional for back-compat with v1 plans. Read via
-	 * {@link effectiveTaskKind} which defaults to `deliverable`.
+	 * For `question` items: the decision once made. Accepting an
+	 * answer also stamps {@link decidedAt}.
 	 */
-	kind?: TaskKind;
+	answer?: string;
+	/** ISO timestamp at which `answer` was recorded. */
+	decidedAt?: string;
 	createdAt: string;
 	updatedAt: string;
 }
 
-/** Read a task's kind, defaulting to `deliverable` for v1 plans. */
-export function effectiveTaskKind(task: Pick<Task, "kind">): TaskKind {
-	return task.kind ?? "deliverable";
+/** Read a work item's kind, defaulting to `task`. */
+export function effectiveWorkItemKind(
+	item: Pick<WorkItem, "kind">,
+): WorkItemKind {
+	return item.kind ?? "task";
 }
 
 /**
- * Phase kinds. Distinguishes implementable work from manual-intervention
- * checklists at the plan boundaries.
+ * Lifecycle deliverables are manual-intervention checklists at the
+ * plan boundaries — never implemented, never shipped as PRs:
  *
- *   - `regular` (default): a unit of code work. Claims a feature branch,
- *     gets implemented under `/implement`, ships via `/ship` as one PR.
  *   - `pre`: preflight checklist. Manual prerequisites the user has to
- *     complete before any `regular` phase becomes implementable.
- *     At most one per plan. Never claims a branch. Never ships via
- *     `/ship`. Never opens a PR. Auto mode refuses to enter regular
- *     phases until every task on the pre-phase is `done`.
- *   - `post`: handover checklist. Manual follow-ups the user has to
- *     do after the last `regular` phase ships (deploy steps, comms,
- *     external filings). At most one per plan. Same constraints as
- *     `pre`. Auto mode pops a handover dialog listing the remaining
- *     post tasks after the last regular phase ships and exits.
+ *     complete before any regular deliverable becomes implementable.
+ *     At most one per plan, top-level only.
+ *   - `post`: handover checklist. Manual follow-ups after the last
+ *     regular deliverable ships. Same constraints as `pre`.
  *
- * Optional for back-compat with v1/v2 plans. Read via
- * {@link effectivePhaseKind} which defaults to `regular`.
+ * Absent `lifecycle` means a regular deliverable.
  */
-export const PHASE_KINDS = ["pre", "regular", "post"] as const;
-export type PhaseKind = (typeof PHASE_KINDS)[number];
+export type DeliverableLifecycle = "pre" | "post";
 
-export interface Phase {
+export interface Deliverable {
+	type: "deliverable";
 	id: string;
 	title: string;
-	/** One-line: what ships when this merges. */
-	goal: string;
-	status: PhaseStatus;
+	/** What ships when this merges — context, acceptance criteria. (v2 name: `goal`.) */
+	body: string;
+	status: DeliverableStatus;
 	/**
-	 * Git branch — typically `feat/<phase-id>`.
-	 *
-	 * Empty string for `pre`/`post` phases: those don't claim a feature
-	 * branch (no PR, no `/ship`). This is a tool-layer invariant
-	 * enforced by `plan_phase add`/`update`; `loadPlan`/`migratePlan`
-	 * do not validate it, so a hand-edited `plan.json` could violate
-	 * it. Treat reads defensively at the boundary.
+	 * Git branch — typically `feat/<id>`. Optional: lifecycle
+	 * deliverables never claim a branch, and groupings (children are
+	 * deliverables) don't use theirs — `pickBaseBranch` skips them.
+	 * Leaf deliverables that ship PRs must have one; the tool layer
+	 * assigns it at creation.
 	 */
-	branch: string;
+	branch?: string;
+	/** See {@link DeliverableLifecycle}. Top-level only, ≤ 1 each. */
+	lifecycle?: DeliverableLifecycle;
 	/**
-	 * Phase kind. See {@link PhaseKind}. Optional for back-compat with
-	 * v1/v2 plans — missing field reads as `regular` via
-	 * {@link effectivePhaseKind}. Constraint enforced at write time:
-	 * at most one `pre` and at most one `post` per plan.
-	 */
-	kind?: PhaseKind;
-	/**
-	 * Phase ids this phase depends on. Authoritative dependency edge —
-	 * the `phases[]` array order is purely cosmetic from v2 onwards.
-	 *
-	 * Constraint enforced at write time (in `phase`): at most one
-	 * parent. Multi-parent (diamond) DAGs are rejected because the
-	 * compaction-summary carry-forward only flows along a chain; phases
-	 * that would share a child must instead be chained.
-	 *
-	 * Optional for back-compat with v1 plans, which encoded the
-	 * dependency implicitly via array order. Read via
-	 * {@link effectiveDependsOn}.
+	 * Deliverable ids this deliverable depends on (the stacking edge).
+	 * At most one parent; targets must be deliverables (cross-subtree
+	 * allowed); cycles rejected at write time.
 	 */
 	dependsOn?: string[];
 	/**
-	 * Absolute path to the worktree where this phase's branch is currently
-	 * checked out. Undefined while no worktree exists. May point at the
-	 * main repo dir when the branch was checked out there directly
-	 * (e.g. by /implement). Set when status enters WORKTREE_STATUSES,
-	 * cleared when it leaves.
+	 * Children: own gating work-items XOR child deliverables.
+	 * Mixed work-items alongside child deliverables are allowed only
+	 * when none of the work-items gate (question/followup/manual);
+	 * gating `task` items and child deliverables are mutually
+	 * exclusive (enforced at write time).
+	 */
+	children: PlanNode[];
+	/**
+	 * Absolute path to the worktree where this deliverable's branch is
+	 * currently checked out. Undefined while no worktree exists. May
+	 * point at the main repo dir when the branch was checked out there
+	 * directly (e.g. by /implement). Set when status enters
+	 * WORKTREE_STATUSES, cleared when it leaves.
 	 */
 	worktreePath?: string;
 	/**
-	 * Absolute path to the pi session file backing this phase's auto
-	 * session. Set on first `/implement` (when `ctx.newSession` creates
-	 * the session); reused by subsequent `/implement` invocations on the
-	 * same phase to resume via `ctx.switchSession`. Never cleared —
-	 * the session file is kept on disk as a historical record even
-	 * after the phase ships.
-	 *
-	 * Optional for back-compat with phases created before per-phase
-	 * sessions landed; missing-on-resume falls back to creating a fresh
-	 * session.
+	 * Absolute path to the pi session file backing this deliverable's
+	 * auto session. Set on first `/implement`; reused on resume. Never
+	 * cleared.
 	 */
 	sessionPath?: string;
 	/**
-	 * Identity of the pi session currently driving this phase. Set
-	 * when a session begins implementing the phase (status flips to
-	 * `active`); cleared when the phase enters a terminal status
-	 * (`shipped` / `abandoned`). Used for the multi-driver adoption
-	 * guard — a second session that tries to `/implement` the same
-	 * phase is refused unless the recorded driver is stale or the user
-	 * explicitly takes over.
-	 *
-	 * Liveness is decided by the recorded session's file mtime
-	 * (see `evaluateClaim` in `./driver-claim.ts`). A missing session
-	 * file is treated as stale, so crashed sessions don't block
-	 * forever.
-	 *
-	 * Optional: phases that have never been activated have no
-	 * driver, and v1 plans carry no driver field at all.
+	 * Identity of the pi session currently driving this deliverable.
+	 * Set on activation, cleared on terminal status. Used by the
+	 * multi-driver adoption guard; liveness via the session file's
+	 * mtime (see `evaluateClaim` in `./driver-claim.ts`).
 	 */
 	driverSessionId?: string;
-	/**
-	 * Filesystem path to the driving session's JSONL, captured
-	 * alongside `driverSessionId`. Used by the liveness check to
-	 * stat the session file's mtime. Optional because ephemeral
-	 * sessions and back-compat plans may not have it.
-	 */
+	/** Session JSONL path captured alongside `driverSessionId`. */
 	driverSessionFile?: string;
-	/** ISO timestamp at which the driver claim was made. Cosmetic; for diagnostics. */
+	/** ISO timestamp of the driver claim. Cosmetic; for diagnostics. */
 	driverClaimedAt?: string;
 	/** GitHub issue number after /park; undefined before. */
 	issueNumber?: number;
-	tasks: Task[];
 	/** PR number once /ship has opened it. */
 	prNumber?: number;
 	/**
-	 * Distilled outcome of this phase, written at /ship time. Capped at
-	 * ~`compaction.phaseTokens` (default 10k tokens). Carried forward
-	 * into future phases' seed via `seedPlanDoc` so phase N learns from
-	 * phase N-1's discoveries without ingesting the raw auto-session.
-	 *
-	 * Idempotent: once set, /ship retries do not regenerate. Manual
-	 * edits survive.
+	 * Distilled outcome, written at /ship time. Capped at
+	 * ~`compaction.phaseTokens` tokens; carried forward into future
+	 * deliverables' seed. Idempotent — /ship retries don't regenerate.
 	 */
 	summary?: string;
-	/**
-	 * Per-phase token telemetry, populated at /ship time. Counts the
-	 * cumulative LLM cost of executing the phase across its auto session,
-	 * the per-phase end-of-phase summary, and any mid-phase compactions
-	 * that fired while the phase was active.
-	 *
-	 * Shape:
-	 *   - `phase`     — sum of every assistant message's `usage` recorded
-	 *                   in the phase's auto session
-	 *   - `summary`   — the single LLM call that wrote `phase.summary`
-	 *                   at /ship time (absent for phases that shipped
-	 *                   without a summariser available)
-	 *   - `midPhase`  — one entry per mid-phase compaction that fired
-	 *                   during the phase (chronological order)
-	 *
-	 * Optional for back-compat: phases that shipped before this field
-	 * existed have no telemetry. Re-running /ship on a shipped phase
-	 * does not recompute the totals — they're written once.
-	 */
-	tokens?: PhaseTokens;
+	/** Per-deliverable token telemetry, populated at /ship time. */
+	tokens?: DeliverableTokens;
 	createdAt: string;
 	updatedAt: string;
+}
+
+export type PlanNode = Deliverable | WorkItem;
+
+export function isDeliverable(node: PlanNode): node is Deliverable {
+	return node.type === "deliverable";
+}
+
+export function isWorkItem(node: PlanNode): node is WorkItem {
+	return node.type === "work-item";
 }
 
 /**
@@ -323,10 +216,12 @@ export interface TokenUsage {
 }
 
 /**
- * Per-phase telemetry written at /ship time. See `Phase.tokens` for the
- * field-by-field semantics.
+ * Per-deliverable telemetry written at /ship time.
+ *   - `phase`     — sum of every assistant message's usage in the auto session
+ *   - `summary`   — the single LLM call that wrote `summary`
+ *   - `midPhase`  — one entry per mid-deliverable compaction (chronological)
  */
-export interface PhaseTokens {
+export interface DeliverableTokens {
 	phase: TokenUsage;
 	summary?: TokenUsage;
 	midPhase: TokenUsage[];
@@ -338,9 +233,8 @@ export interface PlanRepo {
 
 /**
  * Identity of the session that first saved a plan. Captured at /plan
- * creation time. Optional on the schema for back-compat with plans
- * created before session-ownership tracking landed — those load with
- * `createdBy` undefined and are treated as legacy/orphan plans.
+ * creation time. Optional for back-compat with plans created before
+ * session-ownership tracking landed.
  */
 export interface PlanOwnership {
 	/** Session UUID from `SessionManager.getSessionId()`. */
@@ -356,57 +250,187 @@ export interface Plan {
 	title: string;
 	repo: PlanRepo;
 	/**
-	 * On-disk schema version. Absent / 1 = legacy (linear array order is
-	 * the implicit dependency edge, no Task.kind, no plan.followUps).
-	 * 2 adds Phase.dependsOn + Task.kind + Plan.followUps. Migration runs
-	 * lazily on `loadPlan`.
+	 * On-disk schema version. Absent / 1 = legacy linear (array order is
+	 * the implicit dependency edge). 2 adds Phase.dependsOn + Task.kind +
+	 * Plan.followUps. 3 replaces the flat phases/followUps split with the
+	 * recursive node forest (`nodes`). Migration runs lazily on
+	 * `loadPlan`.
 	 */
 	schemaVersion?: number;
 	/**
-	 * Plan-level standalone tasks. Used for follow-ups that aren't tied
-	 * to a specific phase (e.g. "after release: tell support", "open
-	 * design question to revisit"). Surfaced on the parent /park issue
-	 * and in plan; never blocks any /ship.
-	 *
-	 * Optional for back-compat with v1 plans.
+	 * The node forest. Top-level deliverables are the old phases;
+	 * top-level work-items ("loose leaves") are the old plan-level
+	 * followUps — never gating, surfaced on the /park tracking issue.
 	 */
-	followUps?: Task[];
-	/** GitHub plan-tracking issue (parent of phase sub-issues) after /park. */
+	nodes: PlanNode[];
+	/** GitHub plan-tracking issue (parent of deliverable issues) after /park. */
 	parentIssueNumber?: number;
-	phases: Phase[];
 	/**
 	 * Absolute path to the pi session file backing this plan's planning
-	 * session. Set on first `/plan` (recorded from the active session);
-	 * `switchSession`'d to on `/plan resume <slug>` and on auto→plan
-	 * transitions. Optional for back-compat with plans from before
-	 * per-plan sessions landed; missing-on-resume keeps the current
-	 * session.
+	 * session. Set on first `/plan`; `switchSession`'d to on
+	 * `/plan resume <slug>` and on auto→plan transitions.
 	 */
 	planSessionPath?: string;
 	/** Last successful PR-state sync via gh. */
 	lastSyncedAt?: string;
 	/**
 	 * Session that first created this plan. Optional for back-compat —
-	 * plans on disk from before this field existed load as legacy
-	 * (no owner). Legacy plans never auto-adopt at session_start; the
-	 * user can claim one via /plan resume.
+	 * legacy plans never auto-adopt at session_start.
 	 */
 	createdBy?: PlanOwnership;
 	/**
-	 * Distinct session ids that have ever bound this plan (via /plan or
-	 * /plan resume). Drives /plan list grouping. Optional/empty for
-	 * legacy plans.
+	 * Distinct session ids that have ever bound this plan. Drives
+	 * /plan list grouping. Optional/empty for legacy plans.
 	 */
 	seenIn?: string[];
 	createdAt: string;
 	updatedAt: string;
 }
 
+// ---- Forest traversal (minimal core; richer helpers in tree.ts) --------
+
+/**
+ * Preorder flatten of every deliverable in the forest. THE drop-in for
+ * the old `plan.phases` array — selectors below all run over it.
+ * Re-exported (with friends) from `tree.ts`.
+ */
+export function deliverables(plan: Pick<Plan, "nodes">): Deliverable[] {
+	const out: Deliverable[] = [];
+	const visit = (nodes: readonly PlanNode[]): void => {
+		for (const node of nodes) {
+			if (isDeliverable(node)) {
+				out.push(node);
+				visit(node.children);
+			}
+		}
+	};
+	visit(plan.nodes);
+	return out;
+}
+
+/** Work-items directly on a deliverable (not in nested deliverables). */
+export function ownWorkItems(d: Pick<Deliverable, "children">): WorkItem[] {
+	return d.children.filter(isWorkItem);
+}
+
+/** Child deliverables directly under a deliverable. */
+export function childDeliverables(
+	d: Pick<Deliverable, "children">,
+): Deliverable[] {
+	return d.children.filter(isDeliverable);
+}
+
+/** Gating work-items: `task`-kind items directly on the deliverable. */
+export function gatingTasks(d: Pick<Deliverable, "children">): WorkItem[] {
+	return ownWorkItems(d).filter((t) => effectiveWorkItemKind(t) === "task");
+}
+
+/** A grouping has child deliverables (and therefore no gating tasks). */
+export function isGrouping(d: Pick<Deliverable, "children">): boolean {
+	return childDeliverables(d).length > 0;
+}
+
+/**
+ * Does this deliverable ship as one PR? Lifecycle checklists never
+ * ship; groupings complete via their subtree; a leaf ships iff it has
+ * at least one gating task.
+ */
+export function shipsPR(
+	d: Pick<Deliverable, "children" | "lifecycle">,
+): boolean {
+	return !d.lifecycle && !isGrouping(d) && gatingTasks(d).length >= 1;
+}
+
+/**
+ * An implementable leaf: not a lifecycle checklist, not a grouping.
+ * Looser than {@link shipsPR} — a freshly added leaf with no tasks yet
+ * is still implementable (and /ship-able), it just doesn't gate
+ * anything until tasks land.
+ */
+export function isImplementableLeaf(
+	d: Pick<Deliverable, "children" | "lifecycle">,
+): boolean {
+	return !d.lifecycle && !isGrouping(d);
+}
+
+// ---- Archive ------------------------------------------------------------
+
+/**
+ * Pure transform behind `/plan archive`: returns a new plan whose
+ * non-terminal deliverables (anywhere in the forest) have been flipped
+ * to `abandoned`, alongside the list touched. Caller saves the plan
+ * and reconciles worktrees afterwards.
+ */
+export function abandonNonTerminalDeliverables(
+	plan: Plan,
+	now: string,
+): { plan: Plan; archived: Deliverable[] } {
+	const archived: Deliverable[] = [];
+	const visit = (nodes: readonly PlanNode[]): PlanNode[] =>
+		nodes.map((node): PlanNode => {
+			if (!isDeliverable(node)) return node;
+			const children = visit(node.children);
+			if (TERMINAL_STATUSES.includes(node.status)) {
+				return children === node.children ? node : { ...node, children };
+			}
+			// Drop driver claim on archive: the deliverable will never run
+			// again, so a stale claim would just confuse the adoption guard.
+			const next: Deliverable = {
+				...node,
+				children,
+				status: "abandoned",
+				updatedAt: now,
+			};
+			delete next.driverSessionId;
+			delete next.driverSessionFile;
+			delete next.driverClaimedAt;
+			archived.push(next);
+			return next;
+		});
+	const nodes = visit(plan.nodes);
+	return {
+		plan: {
+			...plan,
+			nodes,
+			updatedAt: archived.length > 0 ? now : plan.updatedAt,
+		},
+		archived,
+	};
+}
+
+/**
+ * A deliverable that is non-terminal but cannot progress without
+ * external action we can't drive from session_start: `in-review`
+ * without a `prNumber`. The PR is the only signal remote sync can use
+ * to advance it.
+ */
+export function isStuckDeliverable(
+	d: Pick<Deliverable, "status" | "prNumber">,
+): boolean {
+	return d.status === "in-review" && d.prNumber === undefined;
+}
+
+/**
+ * A plan is "stuck" iff it has at least one non-terminal deliverable
+ * AND every non-terminal deliverable is stuck. Used by /plan list to
+ * flag plans needing user attention.
+ */
+export function isPlanStuck(plan: Pick<Plan, "nodes">): boolean {
+	const nonTerminal = deliverables(plan).filter(
+		(d) => !TERMINAL_STATUSES.includes(d.status),
+	);
+	if (nonTerminal.length === 0) return false;
+	return nonTerminal.every(isStuckDeliverable);
+}
+
 /**
  * State-machine transitions. Maps current → allowed next states.
  * Used both for validation and for UI hints.
  */
-export const PHASE_TRANSITIONS: Record<PhaseStatus, readonly PhaseStatus[]> = {
+export const DELIVERABLE_TRANSITIONS: Record<
+	DeliverableStatus,
+	readonly DeliverableStatus[]
+> = {
 	planned: ["active", "abandoned"],
 	active: ["in-review", "abandoned"],
 	"in-review": ["ready-to-ship", "needs-attention", "abandoned"],
@@ -416,8 +440,11 @@ export const PHASE_TRANSITIONS: Record<PhaseStatus, readonly PhaseStatus[]> = {
 	abandoned: [],
 };
 
-export function canTransition(from: PhaseStatus, to: PhaseStatus): boolean {
-	return PHASE_TRANSITIONS[from].includes(to);
+export function canTransition(
+	from: DeliverableStatus,
+	to: DeliverableStatus,
+): boolean {
+	return DELIVERABLE_TRANSITIONS[from].includes(to);
 }
 
 /** Slug-ifies a free-text title into a kebab id suitable for ids/branches. */
@@ -431,154 +458,111 @@ export function slugify(input: string): string {
 }
 
 /**
- * Generate a phase id from a title.
- *
- * Returns a plain slug — the `p-` prefix that earlier versions of
- * modes baked in is gone. Human-rendered surfaces add a `Phase:` /
- * `Phase \`<id>\`` annotation in surrounding prose so the kind is
- * still readable at a glance; ids themselves stay clean (so do the
- * derived branch names: `feat/<id>` rather than `feat/p-<id>`).
- *
- * Stripping a leading `p-` keeps idempotence on legacy inputs and
- * lets callers pass already-prefixed ids during migration without
- * ending up with an `id !== id` lookup mismatch.
+ * Generate a deliverable id from a title. Returns a plain slug;
+ * strips the legacy `p-` prefix for idempotence on legacy inputs.
  */
-export function phaseId(title: string): string {
+export function deliverableId(title: string): string {
 	return slugify(title).replace(/^p-/, "");
 }
 
 /**
- * Generate a task id from a title. Same prefix-stripping policy as
- * {@link phaseId}: returns a plain slug, drops legacy `t-` prefixes
- * from the input.
+ * Generate a work-item id from a title. Same prefix-stripping policy
+ * as {@link deliverableId} for the legacy `t-` prefix.
  */
-export function taskId(title: string): string {
+export function workItemId(title: string): string {
 	return slugify(title).replace(/^t-/, "");
 }
 
 /**
- * Compare two phase ids ignoring a legacy `p-` prefix on either side.
- * Plans created before the prefix-drop have `id: "p-add-webhook"` on
- * disk; new plans have `id: "add-webhook"`. Tool callers and CLI
- * arguments may legitimately pass either form. Normalising on every
- * comparison lets the two coexist during the migration window.
+ * Compare two deliverable ids ignoring a legacy `p-` prefix on either
+ * side (plans created before the prefix-drop have `id: "p-…"` on
+ * disk).
  */
-export function matchPhaseId(stored: string, query: string): boolean {
+export function matchDeliverableId(stored: string, query: string): boolean {
 	return stored.replace(/^p-/, "") === query.replace(/^p-/, "");
 }
 
-/** Companion to {@link matchPhaseId} for task ids and the legacy `t-` prefix. */
-export function matchTaskId(stored: string, query: string): boolean {
+/** Companion to {@link matchDeliverableId} for the legacy `t-` prefix. */
+export function matchWorkItemId(stored: string, query: string): boolean {
 	return stored.replace(/^t-/, "") === query.replace(/^t-/, "");
 }
 
-/** Default branch name derived from a phase id. */
-export function defaultBranchForPhase(phase: Pick<Phase, "id">): string {
-	return `feat/${phase.id}`;
+/** Default branch name derived from a deliverable id. */
+export function defaultBranchForDeliverable(
+	d: Pick<Deliverable, "id">,
+): string {
+	return `feat/${d.id}`;
 }
 
 /**
- * Read a phase's kind, defaulting to `regular` for v1/v2 plans that
- * don't yet have the field set.
+ * Find the unique top-level pre/post lifecycle deliverable, if any.
+ * Schema validation enforces top-level-only and at-most-one each.
  */
-export function effectivePhaseKind(phase: Pick<Phase, "kind">): PhaseKind {
-	return phase.kind ?? "regular";
+export function findLifecycle(
+	plan: Pick<Plan, "nodes">,
+	which: DeliverableLifecycle,
+): Deliverable | undefined {
+	return plan.nodes.filter(isDeliverable).find((d) => d.lifecycle === which);
 }
 
 /**
- * Find the unique pre-phase (manual-intervention preflight checklist)
- * if one exists. Schema validation enforces at-most-one.
+ * Deliverables that hold actual code work. Excludes lifecycle
+ * checklists; includes groupings (their subtrees hold the work).
  */
-export function findPrePhase(plan: Pick<Plan, "phases">): Phase | undefined {
-	return plan.phases.find((p) => effectivePhaseKind(p) === "pre");
+export function regularDeliverables(plan: Pick<Plan, "nodes">): Deliverable[] {
+	return deliverables(plan).filter((d) => !d.lifecycle);
 }
 
 /**
- * Find the unique post-phase (manual-intervention handover checklist)
- * if one exists. Schema validation enforces at-most-one.
+ * Lifecycle gate. Returns the pre/post deliverable if one exists AND
+ * has at least one work-item that isn't `done` — items of any kind
+ * count (the checklist is itself manual). Returns `null` when absent
+ * or fully ticked.
  */
-export function findPostPhase(plan: Pick<Plan, "phases">): Phase | undefined {
-	return plan.phases.find((p) => effectivePhaseKind(p) === "post");
+export function pendingLifecycle(
+	plan: Pick<Plan, "nodes">,
+	which: DeliverableLifecycle,
+): Deliverable | null {
+	const d = findLifecycle(plan, which);
+	if (!d) return null;
+	const items = ownWorkItems(d);
+	if (items.length === 0) return null;
+	const allDone = items.every((t) => t.done);
+	return allDone ? null : d;
 }
 
 /**
- * Phases that hold actual code work (a feature branch + PR). Excludes
- * `pre` and `post` checklist phases. Used by `/implement`,
- * {@link readyPhases}, and {@link chainHead} to ignore manual phases
- * when sequencing implementation work.
- */
-export function regularPhases(plan: Pick<Plan, "phases">): Phase[] {
-	return plan.phases.filter((p) => effectivePhaseKind(p) === "regular");
-}
-
-/**
- * Pre-phase gate. Returns the pre-phase if one exists AND has at
- * least one task that isn't `done` — the auto-mode driver and
- * `/implement` use this to refuse to start regular work until the
- * user ticks through the preflight.
+ * Read a deliverable's `dependsOn`, defaulting to a single-parent
+ * fallback derived from the flattened order for legacy in-memory plan
+ * objects that bypass storage (fixtures, ad-hoc test plans). Plans
+ * persisted under v2+ always have `dependsOn` populated by migration.
  *
- * Tasks of any kind count toward the gate (deliverable / manual /
- * question / followUp): the pre-phase is itself a manual checklist
- * and the user is expected to mark every line complete before
- * automation proceeds. Returns `null` when no pre-phase exists or
- * every task is done.
- */
-export function pendingPrePhase(plan: Pick<Plan, "phases">): Phase | null {
-	const pre = findPrePhase(plan);
-	if (!pre) return null;
-	if (pre.tasks.length === 0) return null;
-	const allDone = pre.tasks.every((t) => t.done);
-	return allDone ? null : pre;
-}
-
-/**
- * Post-phase handover. Returns the post-phase if it exists and has
- * at least one un-done task. Used after the last regular phase ships
- * to surface the remaining manual handover checklist before auto
- * mode exits.
- */
-export function pendingPostPhase(plan: Pick<Plan, "phases">): Phase | null {
-	const post = findPostPhase(plan);
-	if (!post) return null;
-	if (post.tasks.length === 0) return null;
-	const allDone = post.tasks.every((t) => t.done);
-	return allDone ? null : post;
-}
-
-/**
- * Read a phase's `dependsOn`, defaulting to a single-parent fallback
- * derived from the array order for v1 plans that don't yet have the
- * field set on disk.
- *
- * Fallback rule: parent = nearest preceding non-abandoned phase. If
- * the phase is the first in the array (or every preceding phase is
- * abandoned), the fallback is `[]`.
- *
- * Plans persisted under v2 always have `dependsOn` populated by
- * `migratePlan`, so this fallback only matters for in-memory plan
- * objects that bypass storage (e.g. fixtures, ad-hoc test plans).
+ * Fallback rule: parent = nearest preceding non-abandoned deliverable
+ * in preorder. First in the forest (or every predecessor abandoned)
+ * → `[]`.
  */
 export function effectiveDependsOn(
-	plan: Pick<Plan, "phases">,
-	phase: Pick<Phase, "id" | "dependsOn">,
+	plan: Pick<Plan, "nodes">,
+	d: Pick<Deliverable, "id" | "dependsOn">,
 ): string[] {
-	if (phase.dependsOn !== undefined) return phase.dependsOn;
-	const idx = plan.phases.findIndex((p) => p.id === phase.id);
+	if (d.dependsOn !== undefined) return d.dependsOn;
+	const flat = deliverables(plan);
+	const idx = flat.findIndex((p) => p.id === d.id);
 	if (idx <= 0) return [];
 	for (let i = idx - 1; i >= 0; i--) {
-		const prev = plan.phases[i];
+		const prev = flat[i];
 		if (prev && prev.status !== "abandoned") return [prev.id];
 	}
 	return [];
 }
 
 /**
- * Phase statuses where the phase's branch holds work that hasn't
- * reached the default branch yet. A successor phase activated while a
+ * Statuses where the deliverable's branch holds work that hasn't
+ * reached the default branch yet. A successor activated while a
  * predecessor is in one of these states must fork from the
  * predecessor's branch (stacked PR) — see {@link pickBaseBranch}.
  */
-const IN_FLIGHT_PARENT_STATUSES: readonly PhaseStatus[] = [
+const IN_FLIGHT_PARENT_STATUSES: readonly DeliverableStatus[] = [
 	"active",
 	"in-review",
 	"ready-to-ship",
@@ -586,93 +570,78 @@ const IN_FLIGHT_PARENT_STATUSES: readonly PhaseStatus[] = [
 ] as const;
 
 /**
- * Phase statuses where a successor phase can be activated. Either the
- * parent has already shipped (default branch carries the change), or
- * it's in-flight (successor stacks on parent's branch). Excludes
- * `planned` (parent has no commits yet) and `abandoned` (parent's
- * branch is gone).
+ * Statuses where a successor can be activated. Either the parent has
+ * shipped (default branch carries the change) or it's in-flight
+ * (successor stacks on the parent's branch). Excludes `planned`
+ * (parent has no commits yet) and `abandoned` (branch is gone).
  */
-const ACTIVATABLE_PARENT_STATUSES: readonly PhaseStatus[] = [
+const ACTIVATABLE_PARENT_STATUSES: readonly DeliverableStatus[] = [
 	...IN_FLIGHT_PARENT_STATUSES,
 	"shipped",
 ] as const;
 
 /**
- * A phase is "ready" when `/implement` can activate it: it's still
- * `planned` AND its (single) parent in {@link effectiveDependsOn} is
- * either absent, `shipped`, or in-flight (active / in-review /
- * ready-to-ship / needs-attention).
- *
- * Allowing in-flight parents matches the stacked-PR workflow: a
- * successor's branch forks off the parent's branch via
- * {@link pickBaseBranch} and rebases onto the default branch when the
- * parent's PR merges. Without this, the auto-loop would stall after
- * every `/ship` (which only flips parent to `in-review`, not
- * `shipped`).
- *
- * `planned`, `abandoned`, and unknown parents block the dependent
- * phase. The user must activate / revive the parent or edit
- * `dependsOn` to unblock.
+ * A deliverable is "ready" when `/implement` can activate it: it's
+ * `planned`, it's an implementable leaf (lifecycle checklists and
+ * groupings never enter the activation queue — a grouping's children
+ * do), AND its (single) parent in {@link effectiveDependsOn} is
+ * absent, `shipped`, or in-flight (stacked-PR workflow).
  */
-export function isPhaseReady(
-	plan: Pick<Plan, "phases">,
-	phase: Pick<Phase, "id" | "status" | "dependsOn" | "kind">,
+export function isDeliverableReady(
+	plan: Pick<Plan, "nodes">,
+	d: Pick<
+		Deliverable,
+		"id" | "status" | "dependsOn" | "lifecycle" | "children"
+	>,
 ): boolean {
-	if (phase.status !== "planned") return false;
-	// Pre/post phases are manual checklists, not implementable work.
-	// They never enter the activation queue.
-	if (effectivePhaseKind(phase) !== "regular") return false;
-	const deps = effectiveDependsOn(plan, phase);
+	if (d.status !== "planned") return false;
+	if (!isImplementableLeaf(d)) return false;
+	const deps = effectiveDependsOn(plan, d);
 	if (deps.length === 0) return true;
-	const parent = plan.phases.find((p) => p.id === deps[0]);
+	const parent = deliverables(plan).find((p) => p.id === deps[0]);
 	if (!parent) return false;
+	if (isGrouping(parent)) {
+		// A grouping never carries commits itself; it gates on its
+		// subtree. Treat it as activatable once its subtree has fully
+		// shipped (the grouping's own status flips via /sync), else
+		// blocked — children stack on each other, not on the grouping.
+		return parent.status === "shipped";
+	}
 	return ACTIVATABLE_PARENT_STATUSES.includes(parent.status);
 }
 
 /**
- * Phases that can be activated right now, in array order.
- *
- * Used by:
- *   - the auto loop's "next phase" picker (single driver picks the
- *     first ready phase by array order),
- *   - concurrent driver discovery (Phase 5 of plan-19),
- *   - widgets that surface what's available to start.
+ * Deliverables that can be activated right now, in preorder.
+ * Used by the auto loop's next picker, concurrent driver discovery,
+ * and widgets.
  */
-export function readyPhases(plan: Pick<Plan, "phases">): Phase[] {
-	return plan.phases.filter((p) => isPhaseReady(plan, p));
+export function readyDeliverables(plan: Pick<Plan, "nodes">): Deliverable[] {
+	return deliverables(plan).filter((d) => isDeliverableReady(plan, d));
 }
 
 /**
- * Walk down the chain rooted at `phase`, following the first
- * successor by array order at each step. Skips successors whose
- * status is `shipped` (already done) and returns the first
- * non-shipped successor on that path, or `null` if the path
- * dead-ends (no successor) or terminates in `shipped`.
+ * Walk down the chain rooted at `d`, following the first successor in
+ * preorder at each step. Skips shipped successors and non-shipping
+ * nodes (lifecycle, groupings); returns the first non-shipped
+ * PR-shipping successor on that path, or `null` when the path
+ * dead-ends.
  *
- * Used by the auto loop after `/ship` to advance to the next phase in
- * the same chain.
- *
- * Note: in a forked chain (`A → B`, `A → C`), only the first child by
- * array order is followed. Sibling chains aren't visited; they're for
- * a concurrent driver (Pattern Y) or fleet worker (Pattern X) to
- * claim independently.
+ * Used by the auto loop after `/ship` to advance to the next
+ * deliverable in the same chain.
  */
 export function chainHead(
-	plan: Pick<Plan, "phases">,
-	phase: Pick<Phase, "id">,
-): Phase | null {
-	let curId = phase.id;
-	// Bound the walk by the phase count so a hand-edited plan with a
-	// dependency cycle can't infinite-loop here. Cycles are rejected at
-	// write time but on-disk plans may still be edited externally.
-	for (let steps = 0; steps < plan.phases.length; steps++) {
-		const next = plan.phases.find(
-			(p) => effectiveDependsOn(plan, p)[0] === curId,
-		);
+	plan: Pick<Plan, "nodes">,
+	d: Pick<Deliverable, "id">,
+): Deliverable | null {
+	const flat = deliverables(plan);
+	let curId = d.id;
+	// Bound the walk so a hand-edited plan with a dependency cycle
+	// can't infinite-loop. Cycles are rejected at write time but
+	// on-disk plans may be edited externally.
+	for (let steps = 0; steps < flat.length; steps++) {
+		const next = flat.find((p) => effectiveDependsOn(plan, p)[0] === curId);
 		if (!next) return null;
-		// Skip non-regular phases entirely — pre/post phases are manual
-		// checklists and never participate in the auto-loop's chain walk.
-		if (effectivePhaseKind(next) !== "regular") {
+		if (!isImplementableLeaf(next)) {
 			curId = next.id;
 			continue;
 		}
@@ -686,29 +655,29 @@ export function chainHead(
 }
 
 /**
- * Human-readable reason `phase` isn't in {@link readyPhases}, or
- * `null` when the phase IS ready (caller treats that as "go for it").
- *
- * Surface examples (used by widgets / `/plan list`):
- *   - `"phase \`auth\` is in-review, not planned"`
- *   - `"waiting on \`auth\` (in-review)"`
- *   - `"waiting on abandoned phase \`old-auth\` — edit dependsOn to unblock"`
+ * Human-readable reason `d` isn't in {@link readyDeliverables}, or
+ * `null` when it IS ready.
  */
 export function blockedReason(
-	plan: Pick<Plan, "phases">,
-	phase: Pick<Phase, "id" | "status" | "dependsOn">,
+	plan: Pick<Plan, "nodes">,
+	d: Pick<Deliverable, "id" | "status" | "dependsOn">,
 ): string | null {
-	if (phase.status !== "planned") {
-		return `phase \`${phase.id}\` is ${phase.status}, not planned`;
+	if (d.status !== "planned") {
+		return `deliverable \`${d.id}\` is ${d.status}, not planned`;
 	}
-	const deps = effectiveDependsOn(plan, phase);
+	const deps = effectiveDependsOn(plan, d);
 	if (deps.length === 0) return null;
 	const parentId = deps[0];
-	const parent = plan.phases.find((p) => p.id === parentId);
+	const parent = deliverables(plan).find((p) => p.id === parentId);
 	if (!parent) return `unknown parent \`${parentId}\``;
+	if (isGrouping(parent)) {
+		return parent.status === "shipped"
+			? null
+			: `waiting on grouping \`${parent.id}\` (completes when its children ship)`;
+	}
 	if (ACTIVATABLE_PARENT_STATUSES.includes(parent.status)) return null;
 	if (parent.status === "abandoned") {
-		return `waiting on abandoned phase \`${parent.id}\` — edit dependsOn to unblock`;
+		return `waiting on abandoned deliverable \`${parent.id}\` — edit dependsOn to unblock`;
 	}
 	return `waiting on \`${parent.id}\` (${parent.status})`;
 }
@@ -723,71 +692,55 @@ export function repoNameFromPath(path: string): string {
 }
 
 /**
- * Statuses where the phase's branch holds work that hasn't reached the
- * default branch yet. A successor phase activated while a predecessor
- * is in one of these states must fork from the predecessor's branch,
- * not from main — otherwise the new branch loses access to the
- * predecessor's changes until that PR merges.
+ * Statuses where the parent's branch holds work that hasn't reached
+ * the default branch yet — the stacked-PR fork case.
  */
-const PARENT_BRANCH_STATUSES: readonly PhaseStatus[] =
+const PARENT_BRANCH_STATUSES: readonly DeliverableStatus[] =
 	IN_FLIGHT_PARENT_STATUSES;
 
 /**
- * Pick the base branch a freshly-activated phase should fork from.
+ * Pick the base branch a freshly-activated deliverable should fork
+ * from.
  *
- * The plan/phase model supports phase N+1 starting while N is still
- * `in-review` (the worktree lifecycle explicitly allows it). When that
- * happens, N's PR isn't merged yet — N's changes live on N's branch,
- * not on main. A successor that forks from main loses access to those
- * changes until N merges, which can introduce silent conflicts or
- * "why is this code missing?" confusion.
- *
- * Under v2 (DAG) semantics, the dependency edge is whatever
- * {@link effectiveDependsOn} returns — the explicit `dependsOn` if set,
- * else a v1-fallback to the nearest non-abandoned predecessor by array
- * order. Multi-parent is rejected at write time so the parent set is
- * at most one phase.
- *
- * Algorithm: look at the at-most-one parent.
- *   - No parent / parent missing from plan / parent shipped / parent
- *     abandoned / parent planned → fork from `defaultBranch`. (Parent
- *     has either no in-flight branch with extra commits, or its work
- *     has already landed on main, so main is the right base.)
- *   - Parent active / in-review / ready-to-ship / needs-attention →
- *     fork from parent's branch. (Stacked-PR case: parent's PR isn't
- *     merged, but its commits live on its branch.)
- *
- * Returns `defaultBranch` when the activating phase isn't found in the
- * plan (defensive fallback).
+ * Algorithm: look at the at-most-one parent from
+ * {@link effectiveDependsOn}.
+ *   - No parent / parent missing / shipped / abandoned / planned →
+ *     fork from `defaultBranch`.
+ *   - Parent is a grouping → fork from `defaultBranch` (groupings
+ *     never carry commits; their children's branches stack on each
+ *     other directly).
+ *   - Parent in-flight with a branch → fork from the parent's branch
+ *     (stacked-PR case).
  */
 export function pickBaseBranch(
-	plan: Pick<Plan, "phases">,
-	activatingPhaseId: string,
+	plan: Pick<Plan, "nodes">,
+	activatingId: string,
 	defaultBranch: string,
 ): string {
-	const activating = plan.phases.find((p) => p.id === activatingPhaseId);
+	const flat = deliverables(plan);
+	const activating = flat.find((d) => d.id === activatingId);
 	if (!activating) return defaultBranch;
 	const deps = effectiveDependsOn(plan, activating);
 	const parentId = deps[0];
 	if (!parentId) return defaultBranch;
-	const parent = plan.phases.find((p) => p.id === parentId);
+	const parent = flat.find((d) => d.id === parentId);
 	if (!parent) return defaultBranch;
-	if (PARENT_BRANCH_STATUSES.includes(parent.status)) return parent.branch;
+	if (isGrouping(parent)) return defaultBranch;
+	if (PARENT_BRANCH_STATUSES.includes(parent.status) && parent.branch) {
+		return parent.branch;
+	}
 	return defaultBranch;
 }
 
 /**
- * Decision for how `/implement` should set up a phase's branch.
+ * Decision for how `/implement` should set up a deliverable's branch.
  *
- *   - `create`: phase is `planned` (first-time activation). Create the
- *     branch from the picked base (`baseBranch`).
- *   - `resume`: phase is already in flight (`active` / `needs-attention`)
- *     and its branch exists locally. Plain checkout, no reset — the
- *     phase's commits must be preserved.
- *   - `abort`: phase is in flight but its branch is missing locally
- *     (manually deleted, lost worktree, etc.). Refuse to proceed; a
- *     destructive `-B` re-create would silently lose any phase work
- *     still on a remote / reflog.
+ *   - `create`: first-time activation (status `planned`). Create the
+ *     branch from the picked base.
+ *   - `resume`: already in flight and its branch exists locally.
+ *     Plain checkout, no reset — commits must be preserved.
+ *   - `abort`: in flight but the branch is missing locally. Refuse —
+ *     a destructive `-B` re-create would silently lose work.
  */
 export type ImplementBranchPlan =
 	| { kind: "create"; branch: string; baseBranch: string }
@@ -795,37 +748,117 @@ export type ImplementBranchPlan =
 	| { kind: "abort"; reason: string };
 
 /**
- * Decide what `/implement` should do to set up the phase branch.
- *
- * Splitting this out from doImplement gives unit-testable coverage of
- * the destructive-reset bug: previously /implement always ran
- * `git checkout -B <branch>`, which silently reset an in-flight phase
- * branch to HEAD when re-invoked. Going from auto → plan → auto via
- * /implement would erase all of the phase's commits.
+ * Decide what `/implement` should do to set up the deliverable's
+ * branch. Unit-testable coverage of the destructive-reset bug:
+ * re-invoking /implement must never reset an in-flight branch.
  */
 export function planImplementBranch(
-	plan: Pick<Plan, "phases">,
-	phase: Pick<Phase, "id" | "branch" | "status">,
+	plan: Pick<Plan, "nodes">,
+	d: Pick<Deliverable, "id" | "branch" | "status">,
 	defaultBranch: string,
 	branchExists: boolean,
 ): ImplementBranchPlan {
-	if (phase.status === "planned") {
+	const branch = d.branch ?? defaultBranchForDeliverable(d);
+	if (d.status === "planned") {
 		return {
 			kind: "create",
-			branch: phase.branch,
-			baseBranch: pickBaseBranch(plan, phase.id, defaultBranch),
+			branch,
+			baseBranch: pickBaseBranch(plan, d.id, defaultBranch),
 		};
 	}
 	if (!branchExists) {
 		return {
 			kind: "abort",
 			reason:
-				`phase branch \`${phase.branch}\` is missing locally. ` +
+				`deliverable branch \`${branch}\` is missing locally. ` +
 				"Was it deleted? Refusing to recreate — that would silently " +
-				"reset the phase to the default branch and lose any commits. " +
-				"Investigate (e.g. `git reflog`, `git branch -a`) and restore " +
-				"the branch before re-running /implement.",
+				"reset the deliverable to the default branch and lose any " +
+				"commits. Investigate (e.g. `git reflog`, `git branch -a`) " +
+				"and restore the branch before re-running /implement.",
 		};
 	}
-	return { kind: "resume", branch: phase.branch };
+	return { kind: "resume", branch };
+}
+
+// ---- Write-time validation ----------------------------------------------
+
+/**
+ * Structural invariants enforced at write time (the tool layer calls
+ * this before saving). Returns human-readable problems; empty array
+ * means the plan shape is valid.
+ *
+ *   - gating XOR: a deliverable cannot have both gating `task` items
+ *     and child deliverables.
+ *   - dependsOn: ≤ 1 entry; targets must be deliverable ids that
+ *     exist; no cycles.
+ *   - lifecycle: top-level only, at most one `pre` and one `post`,
+ *     and lifecycle deliverables cannot nest child deliverables.
+ */
+export function validatePlanShape(plan: Pick<Plan, "nodes">): string[] {
+	const problems: string[] = [];
+	const flat = deliverables(plan);
+	const ids = new Set(flat.map((d) => d.id));
+
+	for (const d of flat) {
+		if (gatingTasks(d).length > 0 && childDeliverables(d).length > 0) {
+			problems.push(
+				`deliverable \`${d.id}\` has both gating tasks and child deliverables — split the tasks into a child deliverable or remove the nesting`,
+			);
+		}
+		const deps = d.dependsOn ?? [];
+		if (deps.length > 1) {
+			problems.push(
+				`deliverable \`${d.id}\` has ${deps.length} dependsOn entries — at most one parent is allowed`,
+			);
+		}
+		for (const dep of deps) {
+			if (!ids.has(dep)) {
+				problems.push(
+					`deliverable \`${d.id}\` depends on unknown deliverable \`${dep}\``,
+				);
+			}
+		}
+		if (d.lifecycle && childDeliverables(d).length > 0) {
+			problems.push(
+				`lifecycle deliverable \`${d.id}\` cannot contain child deliverables`,
+			);
+		}
+	}
+
+	// Lifecycle: top-level only, ≤1 each.
+	const nested = flat.filter((d) => d.lifecycle && !plan.nodes.includes(d));
+	for (const d of nested) {
+		problems.push(
+			`lifecycle deliverable \`${d.id}\` must be top-level, not nested`,
+		);
+	}
+	for (const which of ["pre", "post"] as const) {
+		const count = flat.filter((d) => d.lifecycle === which).length;
+		if (count > 1) {
+			problems.push(
+				`plan has ${count} \`${which}\` deliverables — at most one is allowed`,
+			);
+		}
+	}
+
+	// Cycle check over dependsOn edges.
+	const colour = new Map<string, "visiting" | "done">();
+	const byId = new Map(flat.map((d) => [d.id, d]));
+	const visit = (id: string, trail: string[]): void => {
+		const state = colour.get(id);
+		if (state === "done") return;
+		if (state === "visiting") {
+			problems.push(`dependsOn cycle: ${[...trail, id].join(" → ")}`);
+			return;
+		}
+		colour.set(id, "visiting");
+		const node = byId.get(id);
+		for (const dep of node?.dependsOn ?? []) {
+			if (byId.has(dep)) visit(dep, [...trail, id]);
+		}
+		colour.set(id, "done");
+	};
+	for (const d of flat) visit(d.id, []);
+
+	return problems;
 }

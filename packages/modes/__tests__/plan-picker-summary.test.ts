@@ -17,38 +17,41 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "test-plan",
 		title: "Test Plan",
 		planSessionPath: "/tmp/session",
-		phases: [
+		nodes: [
 			{
+				type: "deliverable" as const,
 				id: "phase-a",
 				title: "Phase A",
-				goal: "Do A",
+				body: "Do A",
 				status: "shipped",
 				branch: "feat/phase-a",
 				dependsOn: [],
-				tasks: [],
+				children: [],
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
 				prNumber: 42,
 			},
 			{
+				type: "deliverable" as const,
 				id: "phase-b",
 				title: "Phase B",
-				goal: "Do B",
+				body: "Do B",
 				status: "active",
 				branch: "feat/phase-b",
 				dependsOn: ["phase-a"],
-				tasks: [],
+				children: [],
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
 			},
 			{
+				type: "deliverable" as const,
 				id: "phase-c",
 				title: "Phase C",
-				goal: "Do C",
+				body: "Do C",
 				status: "planned",
 				branch: "feat/phase-c",
 				dependsOn: ["phase-b"],
-				tasks: [],
+				children: [],
 				createdAt: new Date().toISOString(),
 				updatedAt: new Date().toISOString(),
 			},
@@ -88,7 +91,7 @@ describe("renderPlanSection", () => {
 	});
 
 	it("handles a plan with no phases", () => {
-		const out = renderPlanSection(makePlan({ phases: [] }));
+		const out = renderPlanSection(makePlan({ nodes: [] }));
 		expect(out).toBe("## Plan: Test Plan (slug: test-plan)");
 	});
 });

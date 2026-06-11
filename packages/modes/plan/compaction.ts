@@ -93,8 +93,8 @@ import type {
 	SessionManager,
 	SessionMessageEntry,
 } from "@mariozechner/pi-coding-agent";
-import type { Plan, Phase as PlanPhase, TokenUsage } from "./schema.js";
-import { effectivePhaseKind, TERMINAL_STATUSES } from "./schema.js";
+import type { Plan, Deliverable as PlanPhase, TokenUsage } from "./schema.js";
+import { deliverables, TERMINAL_STATUSES } from "./schema.js";
 
 /** Type alias to avoid importing AgentMessage directly from pi-agent-core. */
 type AgentMessage = SessionMessageEntry["message"];
@@ -264,7 +264,7 @@ export function buildSummariserPreamble(
 	maxTokens: number,
 	partN: number = 1,
 ): string {
-	const upcoming = plan.phases.filter(
+	const upcoming = deliverables(plan).filter(
 		(p) => !TERMINAL_STATUSES.includes(p.status) && p.id !== activePhase.id,
 	);
 
@@ -273,7 +273,7 @@ export function buildSummariserPreamble(
 		"continue without re-reading the full conversation.",
 		"",
 		`Currently working on phase \`${activePhase.id}\` — ${activePhase.title}`,
-		`Goal: ${activePhase.goal}`,
+		`Goal: ${activePhase.body}`,
 		"",
 		"This phase is NOT done yet — context grew large enough to trigger a",
 		"mid-phase compaction. Summarise the work-so-far accurately; the phase",
@@ -295,7 +295,7 @@ export function buildSummariserPreamble(
 			"(file paths, exact identifiers, schema fragments, decisions, error messages):",
 		);
 		for (const p of upcoming) {
-			lines.push(`  - \`${p.id}\` — ${p.title}: ${p.goal}`);
+			lines.push(`  - \`${p.id}\` — ${p.title}: ${p.body}`);
 		}
 		lines.push("");
 	}
@@ -320,12 +320,11 @@ export function buildSummariserPreamble(
 /** `## Plan` section emitted at plan→implement. Stable for stable plan input. */
 export function renderPlanSection(plan: Plan): string {
 	const lines: string[] = [`## Plan: ${plan.title} (slug: ${plan.slug})`];
-	for (const p of plan.phases) {
+	for (const p of deliverables(plan)) {
 		const pr = p.prNumber !== undefined ? ` PR #${p.prNumber}` : "";
-		const kind = effectivePhaseKind(p);
-		const kindMarker = kind === "regular" ? "" : ` [${kind}]`;
+		const kindMarker = p.lifecycle ? ` [${p.lifecycle}]` : "";
 		lines.push(
-			`- \`${p.id}\`${kindMarker} [${p.status}]${pr} — ${p.title}: ${p.goal}`,
+			`- \`${p.id}\`${kindMarker} [${p.status}]${pr} — ${p.title}: ${p.body}`,
 		);
 	}
 	return lines.join("\n");
@@ -348,7 +347,7 @@ export function buildPhaseEndSummaryPreamble(
 	phase: PlanPhase,
 	maxTokens: number,
 ): string {
-	const upcoming = plan.phases.filter(
+	const upcoming = deliverables(plan).filter(
 		(p) => !TERMINAL_STATUSES.includes(p.status) && p.id !== phase.id,
 	);
 
@@ -361,7 +360,7 @@ export function buildPhaseEndSummaryPreamble(
 		"diverged from the original plan, what new constraints surfaced, and",
 		"what future phases must know to avoid repeating mistakes.",
 		"",
-		`Goal of the just-shipped phase: ${phase.goal}`,
+		`Goal of the just-shipped phase: ${phase.body}`,
 		"",
 	];
 
@@ -371,7 +370,7 @@ export function buildPhaseEndSummaryPreamble(
 			"(file paths, exact identifiers, schema fragments, decisions, error messages):",
 		);
 		for (const p of upcoming) {
-			lines.push(`  - \`${p.id}\` — ${p.title}: ${p.goal}`);
+			lines.push(`  - \`${p.id}\` — ${p.title}: ${p.body}`);
 		}
 		lines.push("");
 	}
@@ -582,7 +581,7 @@ export async function buildPhaseSliceCompactionResult(
 		signal,
 	} = opts;
 
-	const phase = plan.phases.find((p) => p.id === phaseId);
+	const phase = deliverables(plan).find((p) => p.id === phaseId);
 	if (!phase) {
 		throw new Error(
 			`buildPhaseSliceCompactionResult: phase ${phaseId} not found in plan ${plan.slug}`,
@@ -637,10 +636,10 @@ export async function buildPhaseSliceCompactionResult(
  * payload that future phases' seeds will inline. Pure; no I/O.
  */
 export function computeCarryForwardSummaryChars(
-	plan: Pick<Plan, "phases">,
+	plan: Pick<Plan, "nodes">,
 ): number {
 	let n = 0;
-	for (const phase of plan.phases) {
+	for (const phase of deliverables(plan)) {
 		if (phase.status === "shipped" && phase.summary) {
 			n += phase.summary.length;
 		}

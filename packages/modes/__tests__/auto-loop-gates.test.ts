@@ -14,7 +14,7 @@ import {
 	diagnoseResumeAfterCompaction,
 } from "../plan/auto-loop-gates.js";
 import { shouldResumeAfterCompaction } from "../plan/compaction.js";
-import { readyPhases, WORKTREE_STATUSES } from "../plan/schema.js";
+import { readyDeliverables, WORKTREE_STATUSES } from "../plan/schema.js";
 
 // ---- diagnoseAgentEndCompletion -----------------------------------------
 
@@ -203,7 +203,7 @@ describe("diagnoseResumeAfterCompaction", () => {
 // diagnoseAgentEndCompletion returns gate=="no-tasks":
 //
 //   1. activePhase(plan) === null  (no phase in WORKTREE_STATUSES)
-//      → auto mode: try readyPhases() + auto-advance via doImplement
+//      → auto mode: try readyDeliverables() + auto-advance via doImplement
 //      → ask  mode: fall through to the warning
 //
 //   2. activePhase(plan) !== null but phase has zero tasks
@@ -215,19 +215,20 @@ describe("diagnoseResumeAfterCompaction", () => {
 // ---------------------------------------------------------------------------
 
 function makePlan(
-	phases: Array<{ id: string; status: string; tasks?: unknown[] }>,
+	nodes: Array<{ id: string; status: string; tasks?: unknown[] }>,
 ) {
 	return {
 		slug: "test",
 		title: "Test",
 		repo: { path: "/tmp" },
-		phases: phases.map((p) => ({
+		nodes: nodes.map((p) => ({
 			...p,
+			type: "deliverable" as const,
 			title: p.id,
-			goal: p.id,
+			body: p.id,
 			branch: `feat/${p.id}`,
 			dependsOn: [],
-			tasks: p.tasks ?? [],
+			children: p.tasks ?? [],
 			createdAt: new Date().toISOString(),
 			updatedAt: new Date().toISOString(),
 		})),
@@ -243,36 +244,38 @@ describe("no-tasks gate sub-cases — discriminating predicates", () => {
 		expect(WORKTREE_STATUSES).toContain("active");
 	});
 
-	it("readyPhases returns planned phases with no deps (auto-advance candidates)", () => {
+	it("readyDeliverables returns planned phases with no deps (auto-advance candidates)", () => {
 		const plan = makePlan([
 			{ id: "a", status: "planned" },
 			{ id: "b", status: "planned" },
 		]);
-		const ready = readyPhases(
-			plan as unknown as Parameters<typeof readyPhases>[0],
+		const ready = readyDeliverables(
+			plan as unknown as Parameters<typeof readyDeliverables>[0],
 		);
 		expect(ready.map((p) => p.id)).toEqual(["a", "b"]);
 	});
 
-	it("readyPhases is empty when all phases are shipped (no auto-advance candidate)", () => {
+	it("readyDeliverables is empty when all phases are shipped (no auto-advance candidate)", () => {
 		const plan = makePlan([
 			{ id: "a", status: "shipped" },
 			{ id: "b", status: "shipped" },
 		]);
 		expect(
-			readyPhases(plan as unknown as Parameters<typeof readyPhases>[0]),
+			readyDeliverables(
+				plan as unknown as Parameters<typeof readyDeliverables>[0],
+			),
 		).toHaveLength(0);
 	});
 
-	it("readyPhases excludes an active phase (WORKTREE_STATUS) — not a candidate", () => {
+	it("readyDeliverables excludes an active phase (WORKTREE_STATUS) — not a candidate", () => {
 		// A phase in a WORKTREE_STATUS is already running; it must not be
 		// returned as an auto-advance candidate.
 		const plan = makePlan([
 			{ id: "a", status: "active" },
 			{ id: "b", status: "planned" },
 		]);
-		const ids = readyPhases(
-			plan as unknown as Parameters<typeof readyPhases>[0],
+		const ids = readyDeliverables(
+			plan as unknown as Parameters<typeof readyDeliverables>[0],
 		).map((p) => p.id);
 		expect(ids).not.toContain("a");
 		expect(ids).toContain("b");

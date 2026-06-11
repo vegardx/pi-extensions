@@ -1,26 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
 	chainHead,
-	effectivePhaseKind,
-	findPostPhase,
-	findPrePhase,
-	isPhaseReady,
-	type Phase,
+	findLifecycle,
+	isDeliverableReady,
+	type Deliverable as Phase,
 	type Plan,
-	pendingPostPhase,
-	pendingPrePhase,
-	readyPhases,
-	regularPhases,
+	pendingLifecycle,
+	readyDeliverables,
+	regularDeliverables,
 } from "../plan/schema.js";
 
 const NOW = "2026-05-16T00:00:00.000Z";
 
-function makePlan(phases: Phase[]): Plan {
+function makePlan(nodes: Phase[]): Plan {
 	return {
 		slug: "test",
 		title: "Test",
 		repo: { path: "/tmp/r" },
-		phases,
+		nodes,
 		createdAt: NOW,
 		updatedAt: NOW,
 	};
@@ -28,58 +25,57 @@ function makePlan(phases: Phase[]): Plan {
 
 function makePhase(overrides: Partial<Phase> = {}): Phase {
 	return {
+		type: "deliverable" as const,
 		id: "p",
 		title: "P",
-		goal: "g",
+		body: "g",
 		status: "planned",
 		branch: "feat/p",
 		dependsOn: [],
-		tasks: [],
+		children: [],
 		createdAt: NOW,
 		updatedAt: NOW,
 		...overrides,
 	};
 }
 
-describe("effectivePhaseKind", () => {
-	it("defaults to regular when kind is undefined (v1/v2 plans)", () => {
-		expect(effectivePhaseKind({ kind: undefined })).toBe("regular");
-		expect(effectivePhaseKind({} as Pick<Phase, "kind">)).toBe("regular");
+describe("lifecycle field", () => {
+	it("absent lifecycle means a regular deliverable", () => {
+		expect(makePhase({}).lifecycle).toBeUndefined();
 	});
 
-	it("returns the explicit kind when set", () => {
-		expect(effectivePhaseKind({ kind: "pre" })).toBe("pre");
-		expect(effectivePhaseKind({ kind: "post" })).toBe("post");
-		expect(effectivePhaseKind({ kind: "regular" })).toBe("regular");
+	it("carries the explicit lifecycle when set", () => {
+		expect(makePhase({ lifecycle: "pre" }).lifecycle).toBe("pre");
+		expect(makePhase({ lifecycle: "post" }).lifecycle).toBe("post");
 	});
 });
 
 describe("findPrePhase / findPostPhase", () => {
 	it("finds pre/post phases by kind", () => {
-		const pre = makePhase({ id: "pre", kind: "pre", branch: "" });
+		const pre = makePhase({ id: "pre", lifecycle: "pre" });
 		const reg = makePhase({ id: "r1" });
-		const post = makePhase({ id: "post", kind: "post", branch: "" });
+		const post = makePhase({ id: "post", lifecycle: "post" });
 		const plan = makePlan([pre, reg, post]);
-		expect(findPrePhase(plan)?.id).toBe("pre");
-		expect(findPostPhase(plan)?.id).toBe("post");
+		expect(findLifecycle(plan, "pre")?.id).toBe("pre");
+		expect(findLifecycle(plan, "post")?.id).toBe("post");
 	});
 
 	it("returns undefined when no pre/post exists", () => {
 		const plan = makePlan([makePhase({ id: "r1" })]);
-		expect(findPrePhase(plan)).toBeUndefined();
-		expect(findPostPhase(plan)).toBeUndefined();
+		expect(findLifecycle(plan, "pre")).toBeUndefined();
+		expect(findLifecycle(plan, "post")).toBeUndefined();
 	});
 });
 
 describe("regularPhases", () => {
 	it("filters out pre and post", () => {
 		const plan = makePlan([
-			makePhase({ id: "pre", kind: "pre", branch: "" }),
+			makePhase({ id: "pre", lifecycle: "pre" }),
 			makePhase({ id: "r1" }),
 			makePhase({ id: "r2" }),
-			makePhase({ id: "post", kind: "post", branch: "" }),
+			makePhase({ id: "post", lifecycle: "post" }),
 		]);
-		expect(regularPhases(plan).map((p) => p.id)).toEqual(["r1", "r2"]);
+		expect(regularDeliverables(plan).map((p) => p.id)).toEqual(["r1", "r2"]);
 	});
 });
 
@@ -87,10 +83,11 @@ describe("pendingPrePhase / pendingPostPhase", () => {
 	it("returns the pre-phase when any task is undone", () => {
 		const pre = makePhase({
 			id: "pre",
-			kind: "pre",
+			lifecycle: "pre",
 			branch: "",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "rename secret",
 					body: "",
@@ -101,16 +98,17 @@ describe("pendingPrePhase / pendingPostPhase", () => {
 			],
 		});
 		const plan = makePlan([pre]);
-		expect(pendingPrePhase(plan)?.id).toBe("pre");
+		expect(pendingLifecycle(plan, "pre")?.id).toBe("pre");
 	});
 
 	it("returns null when every pre-phase task is done", () => {
 		const pre = makePhase({
 			id: "pre",
-			kind: "pre",
+			lifecycle: "pre",
 			branch: "",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "rename secret",
 					body: "",
@@ -121,25 +119,28 @@ describe("pendingPrePhase / pendingPostPhase", () => {
 			],
 		});
 		const plan = makePlan([pre]);
-		expect(pendingPrePhase(plan)).toBeNull();
+		expect(pendingLifecycle(plan, "pre")).toBeNull();
 	});
 
 	it("returns null when pre-phase has no tasks", () => {
-		const pre = makePhase({ id: "pre", kind: "pre", branch: "" });
-		expect(pendingPrePhase(makePlan([pre]))).toBeNull();
+		const pre = makePhase({ id: "pre", lifecycle: "pre" });
+		expect(pendingLifecycle(makePlan([pre]), "pre")).toBeNull();
 	});
 
 	it("returns null when no pre-phase exists", () => {
-		expect(pendingPrePhase(makePlan([makePhase({ id: "r1" })]))).toBeNull();
+		expect(
+			pendingLifecycle(makePlan([makePhase({ id: "r1" })]), "pre"),
+		).toBeNull();
 	});
 
 	it("post-phase variant follows the same rules", () => {
 		const post = makePhase({
 			id: "post",
-			kind: "post",
+			lifecycle: "post",
 			branch: "",
-			tasks: [
+			children: [
 				{
+					type: "work-item" as const,
 					id: "t1",
 					title: "deploy",
 					body: "",
@@ -149,35 +150,35 @@ describe("pendingPrePhase / pendingPostPhase", () => {
 				},
 			],
 		});
-		expect(pendingPostPhase(makePlan([post]))?.id).toBe("post");
+		expect(pendingLifecycle(makePlan([post]), "post")?.id).toBe("post");
 	});
 });
 
-describe("isPhaseReady — kind awareness", () => {
+describe("isDeliverableReady — kind awareness", () => {
 	it("returns false for pre-phase even when planned and unblocked", () => {
-		const pre = makePhase({ id: "pre", kind: "pre", branch: "" });
-		expect(isPhaseReady(makePlan([pre]), pre)).toBe(false);
+		const pre = makePhase({ id: "pre", lifecycle: "pre" });
+		expect(isDeliverableReady(makePlan([pre]), pre)).toBe(false);
 	});
 
 	it("returns false for post-phase even when planned and unblocked", () => {
-		const post = makePhase({ id: "post", kind: "post", branch: "" });
-		expect(isPhaseReady(makePlan([post]), post)).toBe(false);
+		const post = makePhase({ id: "post", lifecycle: "post" });
+		expect(isDeliverableReady(makePlan([post]), post)).toBe(false);
 	});
 
 	it("returns true for regular planned root phase", () => {
-		const r = makePhase({ id: "r", kind: "regular" });
-		expect(isPhaseReady(makePlan([r]), r)).toBe(true);
+		const r = makePhase({ id: "r" });
+		expect(isDeliverableReady(makePlan([r]), r)).toBe(true);
 	});
 });
 
-describe("readyPhases — pre/post excluded", () => {
+describe("readyDeliverables — pre/post excluded", () => {
 	it("only surfaces regular phases", () => {
 		const plan = makePlan([
-			makePhase({ id: "pre", kind: "pre", branch: "" }),
+			makePhase({ id: "pre", lifecycle: "pre" }),
 			makePhase({ id: "r1" }),
-			makePhase({ id: "post", kind: "post", branch: "" }),
+			makePhase({ id: "post", lifecycle: "post" }),
 		]);
-		expect(readyPhases(plan).map((p) => p.id)).toEqual(["r1"]);
+		expect(readyDeliverables(plan).map((p) => p.id)).toEqual(["r1"]);
 	});
 });
 
@@ -186,7 +187,7 @@ describe("chainHead — skips pre/post", () => {
 		const r1 = makePhase({ id: "r1", status: "shipped", dependsOn: [] });
 		const post = makePhase({
 			id: "post",
-			kind: "post",
+			lifecycle: "post",
 			branch: "",
 			dependsOn: ["r1"],
 		});

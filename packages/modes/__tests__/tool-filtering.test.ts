@@ -24,7 +24,7 @@ describe("computeActiveTools — plan mode", () => {
 		expect(tools).not.toContain("edit");
 		expect(tools).toContain("read");
 		expect(tools).toContain("bash");
-		expect(tools).toContain("phase");
+		expect(tools).toContain("deliverable");
 		expect(tools).toContain("task");
 		expect(tools).toContain("plan");
 	});
@@ -54,7 +54,7 @@ describe("computeActiveTools — auto/ask/hack mode", () => {
 		// Simulate priorTools that pre-date plan support.
 		const priorWithout = ["read", "bash", "write", "edit"];
 		const tools = computeActiveTools("ask", priorWithout);
-		expect(tools).toContain("phase");
+		expect(tools).toContain("deliverable");
 		expect(tools).toContain("task");
 		expect(tools).toContain("plan");
 		expect(tools).toContain("delegate");

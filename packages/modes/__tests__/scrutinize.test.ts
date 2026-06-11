@@ -19,11 +19,9 @@ import { scrutinizePlan } from "../plan/scrutinize.js";
 
 // ---- Fixtures ------------------------------------------------------------
 
-function makeTask(
-	id: string,
-	body = "Task body.",
-): Plan["phases"][0]["tasks"][0] {
+function makeTask(id: string, body = "Task body."): Plan["nodes"][0] {
 	return {
+		type: "work-item" as const,
 		id,
 		title: `Task ${id}`,
 		body,
@@ -38,15 +36,16 @@ function makePlan(overrides: Partial<Plan> = {}): Plan {
 		slug: "test-plan",
 		title: "Test Plan",
 		repo: { path: "/fake/repo" },
-		phases: [
+		nodes: [
 			{
+				type: "deliverable" as const,
 				id: "phase-1",
 				title: "Phase 1",
-				goal: "Ship phase 1",
+				body: "Ship phase 1",
 				status: "planned",
 				branch: "feat/phase-1",
 				summary: "This is the phase summary — should be stripped.",
-				tasks: [makeTask("t1"), makeTask("t2")],
+				children: [makeTask("t1"), makeTask("t2")],
 				createdAt: "2026-01-01T00:00:00Z",
 				updatedAt: "2026-01-01T00:00:00Z",
 			},
@@ -256,17 +255,18 @@ describe("scrutinizePlan", () => {
 		it("truncates task.body longer than 500 chars", async () => {
 			const longBody = "x".repeat(600);
 			const plan = makePlan({
-				phases: [
+				nodes: [
 					{
+						type: "deliverable" as const,
 						id: "p1",
 						title: "P1",
-						goal: "goal",
+						body: "goal",
 						status: "planned",
 						branch: "feat/p1",
-						tasks: [makeTask("t1", longBody)],
+						children: [makeTask("t1", longBody)],
 						createdAt: "2026-01-01T00:00:00Z",
 						updatedAt: "2026-01-01T00:00:00Z",
-					} as Plan["phases"][0],
+					} as Plan["nodes"][0],
 				],
 			});
 
@@ -296,61 +296,64 @@ describe("scrutinizePlan", () => {
 		it("includes task.kind in the payload (defaults to deliverable)", async () => {
 			await scrutinizePlan(makePlan(), MOCK_CTX);
 			const call = vi.mocked(runSubagent).mock.calls[0]![0];
-			expect(call.task).toContain('"kind":"deliverable"');
+			expect(call.task).toContain('"kind":"task"');
 		});
 
 		it("carries non-deliverable kinds through verbatim", async () => {
 			const plan = makePlan({
-				phases: [
+				nodes: [
 					{
+						type: "deliverable" as const,
 						id: "p1",
 						title: "P",
-						goal: "g",
+						body: "g",
 						status: "planned",
 						branch: "feat/p1",
-						tasks: [
-							{ ...makeTask("d"), kind: "deliverable" },
+						children: [
+							{ ...makeTask("d"), kind: "task" },
 							{ ...makeTask("q"), kind: "question" },
-							{ ...makeTask("f"), kind: "followUp" },
+							{ ...makeTask("f"), kind: "followup" },
 							{ ...makeTask("m"), kind: "manual" },
 						],
 						createdAt: "x",
 						updatedAt: "x",
-					} as Plan["phases"][0],
+					} as Plan["nodes"][0],
 				],
 			});
 			await scrutinizePlan(plan, MOCK_CTX);
 			const call = vi.mocked(runSubagent).mock.calls[0]![0];
-			expect(call.task).toContain('"kind":"deliverable"');
+			expect(call.task).toContain('"kind":"task"');
 			expect(call.task).toContain('"kind":"question"');
-			expect(call.task).toContain('"kind":"followUp"');
+			expect(call.task).toContain('"kind":"followup"');
 			expect(call.task).toContain('"kind":"manual"');
 		});
 
 		it("includes phase.dependsOn in the payload", async () => {
 			const plan = makePlan({
-				phases: [
+				nodes: [
 					{
+						type: "deliverable" as const,
 						id: "a",
 						title: "A",
-						goal: "g",
+						body: "g",
 						status: "shipped",
 						branch: "feat/a",
-						tasks: [],
+						children: [],
 						createdAt: "x",
 						updatedAt: "x",
-					} as Plan["phases"][0],
+					} as Plan["nodes"][0],
 					{
+						type: "deliverable" as const,
 						id: "b",
 						title: "B",
-						goal: "g",
+						body: "g",
 						status: "planned",
 						branch: "feat/b",
 						dependsOn: ["a"],
-						tasks: [],
+						children: [],
 						createdAt: "x",
 						updatedAt: "x",
-					} as Plan["phases"][0],
+					} as Plan["nodes"][0],
 				],
 			});
 			await scrutinizePlan(plan, MOCK_CTX);
@@ -360,19 +363,23 @@ describe("scrutinizePlan", () => {
 		});
 
 		it("includes plan.followUps in the payload", async () => {
-			const plan = makePlan({
-				followUps: [
+			const base = makePlan({});
+			const plan = {
+				...base,
+				nodes: [
+					...base.nodes,
 					{
+						type: "work-item" as const,
 						id: "pf",
 						title: "Doc the new schema",
 						body: "",
 						done: false,
-						kind: "followUp",
+						kind: "followup" as const,
 						createdAt: "x",
 						updatedAt: "x",
 					},
 				],
-			});
+			};
 			await scrutinizePlan(plan, MOCK_CTX);
 			const call = vi.mocked(runSubagent).mock.calls[0]![0];
 			expect(call.task).toContain('"followUps"');

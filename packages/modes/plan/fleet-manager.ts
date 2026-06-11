@@ -29,11 +29,12 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { evaluateClaim } from "./driver-claim.js";
 import { admit } from "./scaling-policy.js";
 import {
+	type Deliverable,
+	deliverables,
 	effectiveDependsOn,
-	isPhaseReady,
-	type Phase,
+	isDeliverableReady,
 	type Plan,
-	readyPhases,
+	readyDeliverables,
 } from "./schema.js";
 import { loadPlan } from "./storage.js";
 import {
@@ -89,18 +90,19 @@ export interface FleetSnapshot {
 // ---- Helpers ----------------------------------------------------------------
 
 /**
- * Compute the chain id for a phase: walk `effectiveDependsOn` to the
- * root and return the root phase id. Bounded by `phases.length` to
- * defeat cycles in hand-edited plans.
+ * Compute the chain id for a deliverable: walk `effectiveDependsOn` to
+ * the root and return the root deliverable id. Bounded by the flattened
+ * deliverable count to defeat cycles in hand-edited plans.
  */
-export function chainIdFor(plan: Plan, phase: Phase): string {
-	let cur: Phase = phase;
-	const limit = plan.phases.length;
+export function chainIdFor(plan: Plan, d: Deliverable): string {
+	const flat = deliverables(plan);
+	let cur: Deliverable = d;
+	const limit = flat.length;
 	for (let i = 0; i < limit; i++) {
 		const parents = effectiveDependsOn(plan, cur);
 		const parentId = parents[0];
 		if (!parentId) return cur.id;
-		const parent = plan.phases.find((p) => p.id === parentId);
+		const parent = flat.find((p) => p.id === parentId);
 		if (!parent) return cur.id;
 		cur = parent;
 	}
@@ -108,8 +110,8 @@ export function chainIdFor(plan: Plan, phase: Phase): string {
 }
 
 /**
- * Find unclaimed ready chain heads. A "head" is a phase where
- * `isPhaseReady` is true AND no live driver currently owns it.
+ * Find unclaimed ready chain heads. A "head" is a deliverable where
+ * `isDeliverableReady` is true AND no live driver currently owns it.
  * Chain ids are deduplicated so two ready siblings under the same
  * parent only surface once.
  */
@@ -119,13 +121,13 @@ export function unclaimedChainHeads(
 ): { chainId: string; phaseId: string }[] {
 	const seen = new Set<string>();
 	const out: { chainId: string; phaseId: string }[] = [];
-	for (const phase of readyPhases(plan)) {
-		const decision = evaluateClaim(phase, selfSessionId);
+	for (const d of readyDeliverables(plan)) {
+		const decision = evaluateClaim(d, selfSessionId);
 		if (decision.kind === "occupied") continue;
-		const cid = chainIdFor(plan, phase);
+		const cid = chainIdFor(plan, d);
 		if (seen.has(cid)) continue;
 		seen.add(cid);
-		out.push({ chainId: cid, phaseId: phase.id });
+		out.push({ chainId: cid, phaseId: d.id });
 	}
 	return out;
 }
@@ -263,8 +265,8 @@ export class FleetManager {
 		chainId: string,
 		chainHeadPhaseId: string,
 	): Promise<void> {
-		const phase = plan.phases.find((p) => p.id === chainHeadPhaseId);
-		if (!phase || !isPhaseReady(plan, phase)) return;
+		const phase = deliverables(plan).find((p) => p.id === chainHeadPhaseId);
+		if (!phase || !isDeliverableReady(plan, phase)) return;
 		const cwd = phase.worktreePath ?? this.ctx.cwd;
 		const opts: WorkerOptions = {
 			chainId,

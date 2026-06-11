@@ -16,21 +16,22 @@ import {
 import type { Plan } from "../plan/schema.js";
 
 function makePlan(
-	phases: Array<{ id: string; prNumber?: number }>,
-): Pick<Plan, "phases"> {
+	nodes: Array<{ id: string; prNumber?: number }>,
+): Pick<Plan, "nodes"> {
 	return {
-		phases: phases.map((p, i) => ({
+		nodes: nodes.map((p, i) => ({
+			type: "deliverable" as const,
 			id: p.id,
 			title: p.id,
-			goal: "",
+			body: "",
 			status: p.prNumber ? "shipped" : "planned",
-			tasks: [],
+			children: [],
 			branch: `feat/${p.id}`,
 			createdAt: "0",
 			updatedAt: "0",
 			prNumber: p.prNumber,
 			position: i,
-		})) as unknown as Plan["phases"],
+		})) as unknown as Plan["nodes"],
 	};
 }
 

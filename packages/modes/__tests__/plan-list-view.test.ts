@@ -1,9 +1,9 @@
 import { formatRelativeTime, renderPlanListView } from "../plan/list-view.js";
 import {
 	isPlanStuck,
-	isStuckPhase,
-	type Phase,
-	type PhaseStatus,
+	isStuckDeliverable,
+	type Deliverable as Phase,
+	type DeliverableStatus as PhaseStatus,
 	type Plan,
 } from "../plan/schema.js";
 
@@ -15,12 +15,13 @@ function phase(
 	overrides: Partial<Phase> = {},
 ): Phase {
 	return {
+		type: "deliverable" as const,
 		id,
 		title: id,
-		goal: "",
+		body: "",
 		status,
 		branch: `feat/${id}`,
-		tasks: [],
+		children: [],
 		createdAt: T0,
 		updatedAt: T0,
 		...overrides,
@@ -32,17 +33,19 @@ function plan(overrides: Partial<Plan> = {}): Plan {
 		slug: "p",
 		title: "P",
 		repo: { path: "/r" },
-		phases: [],
+		nodes: [],
 		createdAt: T0,
 		updatedAt: T0,
 		...overrides,
 	};
 }
 
-describe("isStuckPhase", () => {
+describe("isStuckDeliverable", () => {
 	it("is true only for in-review without prNumber", () => {
-		expect(isStuckPhase(phase("p", "in-review"))).toBe(true);
-		expect(isStuckPhase(phase("p", "in-review", { prNumber: 42 }))).toBe(false);
+		expect(isStuckDeliverable(phase("p", "in-review"))).toBe(true);
+		expect(isStuckDeliverable(phase("p", "in-review", { prNumber: 42 }))).toBe(
+			false,
+		);
 	});
 
 	it.each<PhaseStatus>([
@@ -53,14 +56,14 @@ describe("isStuckPhase", () => {
 		"shipped",
 		"abandoned",
 	])("is false for %s regardless of prNumber", (status) => {
-		expect(isStuckPhase(phase("p", status))).toBe(false);
-		expect(isStuckPhase(phase("p", status, { prNumber: 1 }))).toBe(false);
+		expect(isStuckDeliverable(phase("p", status))).toBe(false);
+		expect(isStuckDeliverable(phase("p", status, { prNumber: 1 }))).toBe(false);
 	});
 });
 
 describe("isPlanStuck", () => {
 	it("is true when every non-terminal phase is stuck", () => {
-		expect(isPlanStuck(plan({ phases: [phase("p-1", "in-review")] }))).toBe(
+		expect(isPlanStuck(plan({ nodes: [phase("p-1", "in-review")] }))).toBe(
 			true,
 		);
 	});
@@ -69,7 +72,7 @@ describe("isPlanStuck", () => {
 		expect(
 			isPlanStuck(
 				plan({
-					phases: [phase("p-1", "shipped"), phase("p-2", "in-review")],
+					nodes: [phase("p-1", "shipped"), phase("p-2", "in-review")],
 				}),
 			),
 		).toBe(true);
@@ -79,14 +82,14 @@ describe("isPlanStuck", () => {
 		expect(
 			isPlanStuck(
 				plan({
-					phases: [phase("p-1", "in-review"), phase("p-2", "active")],
+					nodes: [phase("p-1", "in-review"), phase("p-2", "active")],
 				}),
 			),
 		).toBe(false);
 		expect(
 			isPlanStuck(
 				plan({
-					phases: [phase("p-1", "in-review", { prNumber: 7 })],
+					nodes: [phase("p-1", "in-review", { prNumber: 7 })],
 				}),
 			),
 		).toBe(false);
@@ -96,14 +99,14 @@ describe("isPlanStuck", () => {
 		expect(
 			isPlanStuck(
 				plan({
-					phases: [phase("p-1", "shipped"), phase("p-2", "abandoned")],
+					nodes: [phase("p-1", "shipped"), phase("p-2", "abandoned")],
 				}),
 			),
 		).toBe(false);
 	});
 
 	it("is false for empty plans", () => {
-		expect(isPlanStuck(plan({ phases: [] }))).toBe(false);
+		expect(isPlanStuck(plan({ nodes: [] }))).toBe(false);
 	});
 });
 
@@ -156,7 +159,7 @@ describe("renderPlanListView", () => {
 			updatedAt: new Date(NOW - 60_000).toISOString(),
 			createdBy: { sessionId: SESSION },
 			seenIn: [SESSION],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const mineOld = plan({
 			slug: "mine-old",
@@ -164,7 +167,7 @@ describe("renderPlanListView", () => {
 			updatedAt: new Date(NOW - 86_400_000).toISOString(),
 			createdBy: { sessionId: "s-other" },
 			seenIn: ["s-other", SESSION],
-			phases: [phase("p-1", "shipped")],
+			nodes: [phase("p-1", "shipped")],
 		});
 		const others = plan({
 			slug: "others",
@@ -172,13 +175,13 @@ describe("renderPlanListView", () => {
 			updatedAt: new Date(NOW - 3 * 86_400_000).toISOString(),
 			createdBy: { sessionId: "s-them", sessionName: "work" },
 			seenIn: ["s-them"],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const legacy = plan({
 			slug: "legacy",
 			title: "Old",
 			updatedAt: new Date(NOW - 14 * 86_400_000).toISOString(),
-			phases: [phase("p-1", "shipped")],
+			nodes: [phase("p-1", "shipped")],
 		});
 
 		const lines = renderPlanListView({
@@ -211,7 +214,7 @@ describe("renderPlanListView", () => {
 			title: "Stuck plan",
 			createdBy: { sessionId: SESSION },
 			seenIn: [SESSION],
-			phases: [phase("p-1", "in-review"), phase("p-2", "shipped")],
+			nodes: [phase("p-1", "in-review"), phase("p-2", "shipped")],
 			updatedAt: new Date(NOW - 60_000).toISOString(),
 		});
 		const lines = renderPlanListView({
@@ -232,7 +235,7 @@ describe("renderPlanListView", () => {
 			repo: { path: CWD },
 			createdBy: { sessionId: SESSION },
 			seenIn: [SESSION],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const elsewhere = plan({
 			slug: "elsewhere",
@@ -240,7 +243,7 @@ describe("renderPlanListView", () => {
 			repo: { path: "/other" },
 			createdBy: { sessionId: SESSION },
 			seenIn: [SESSION],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const lines = renderPlanListView({
 			plans: [here, elsewhere],
@@ -260,14 +263,14 @@ describe("renderPlanListView", () => {
 			title: "Mine",
 			createdBy: { sessionId: SESSION, sessionName: "self" },
 			seenIn: [SESSION],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const theirs = plan({
 			slug: "theirs",
 			title: "Theirs",
 			createdBy: { sessionId: "s-them", sessionName: "work" },
 			seenIn: ["s-them"],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const lines = renderPlanListView({
 			plans: [mine, theirs],
@@ -285,7 +288,7 @@ describe("renderPlanListView", () => {
 		const legacy = plan({
 			slug: "legacy",
 			title: "Legacy",
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const lines = renderPlanListView({
 			plans: [legacy],
@@ -305,7 +308,7 @@ describe("renderPlanListView", () => {
 			title: "Mine",
 			createdBy: { sessionId: SESSION },
 			seenIn: [SESSION],
-			phases: [phase("p-1", "active")],
+			nodes: [phase("p-1", "active")],
 		});
 		const lines = renderPlanListView({
 			plans: [mine],

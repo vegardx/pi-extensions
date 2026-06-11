@@ -17,7 +17,15 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { candidateJsonPayloads } from "@vegardx/pi-extensions-shared/json-extraction.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
-import { effectiveTaskKind, type Plan, type TaskKind } from "./schema.js";
+import {
+	deliverables,
+	effectiveWorkItemKind,
+	ownWorkItems,
+	type Plan,
+	type WorkItem,
+	type WorkItemKind,
+} from "./schema.js";
+import { topLevelLeaves } from "./tree.js";
 
 const PROMPTS_DIR = join(
 	dirname(fileURLToPath(import.meta.url)),
@@ -59,7 +67,7 @@ interface PlanPayloadTask {
 	title: string;
 	body: string;
 	done: boolean;
-	kind: TaskKind;
+	kind: WorkItemKind;
 }
 
 interface PlanPayloadPhase {
@@ -88,9 +96,7 @@ interface PlanPayload {
  * actually allowed to depend on which.
  */
 function serialisePlan(plan: Plan): string {
-	const toTask = (
-		task: Plan["phases"][number]["tasks"][number],
-	): PlanPayloadTask => ({
+	const toTask = (task: WorkItem): PlanPayloadTask => ({
 		id: task.id,
 		title: task.title,
 		body:
@@ -98,18 +104,18 @@ function serialisePlan(plan: Plan): string {
 				? task.body.slice(0, MAX_BODY_CHARS) + "…"
 				: task.body,
 		done: task.done,
-		kind: effectiveTaskKind(task),
+		kind: effectiveWorkItemKind(task),
 	});
 	const payload: PlanPayload = {
-		phases: plan.phases.map((phase) => ({
+		phases: deliverables(plan).map((phase) => ({
 			id: phase.id,
 			title: phase.title,
-			goal: phase.goal,
+			goal: phase.body,
 			status: phase.status,
 			dependsOn: phase.dependsOn ?? [],
-			tasks: phase.tasks.map(toTask),
+			tasks: ownWorkItems(phase).map(toTask),
 		})),
-		followUps: (plan.followUps ?? []).map(toTask),
+		followUps: topLevelLeaves(plan).map(toTask),
 	};
 	return JSON.stringify(payload);
 }

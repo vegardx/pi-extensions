@@ -23,7 +23,7 @@
  * Empty groups are omitted entirely.
  */
 
-import { isPlanStuck, type Plan } from "./schema.js";
+import { deliverables, isPlanStuck, type Plan } from "./schema.js";
 
 export interface PlanListInput {
 	plans: Plan[];
@@ -96,10 +96,11 @@ function ownerLabel(plan: Plan): string {
 
 function activityGlyph(plan: Plan): string {
 	if (isPlanStuck(plan)) return "⊘";
-	const anyActive = plan.phases.some(
+	const flat = deliverables(plan);
+	const anyActive = flat.some(
 		(p) => p.status !== "shipped" && p.status !== "abandoned",
 	);
-	return anyActive || plan.phases.length === 0 ? "●" : "○";
+	return anyActive || flat.length === 0 ? "●" : "○";
 }
 
 function renderPlanLine(

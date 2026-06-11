@@ -14,6 +14,7 @@ import {
 	unclaimedChainHeads,
 } from "../plan/fleet-manager.js";
 import type { Plan } from "../plan/schema.js";
+import { deliverables } from "../plan/schema.js";
 import { _setPlansRootForTests } from "../plan/storage.js";
 import type {
 	WorkerMailbox,
@@ -25,25 +26,26 @@ import type { WorkerNotification } from "../plan/worker-protocol.js";
 const CTX = { cwd: "/repo", hasUI: false } as never;
 
 function chainPlan(
-	phases: Array<{ id: string; status: string; deps?: string[] }>,
+	nodes: Array<{ id: string; status: string; deps?: string[] }>,
 ): Plan {
 	return {
 		slug: "fleet-test",
 		title: "t",
 		summary: "",
-		phases: phases.map((p, i) => ({
+		nodes: nodes.map((p, i) => ({
+			type: "deliverable" as const,
 			id: p.id,
 			title: p.id,
-			goal: "",
+			body: "",
 			status: p.status as never,
-			tasks: [],
+			children: [],
 			updatedAt: new Date(2026, 0, 1, 0, i).toISOString(),
 			...(p.deps !== undefined ? { dependsOn: p.deps } : {}),
 		})) as never,
 		updatedAt: new Date().toISOString(),
 		createdAt: new Date().toISOString(),
 		repo: { path: "/repo" },
-		schemaVersion: 2,
+		schemaVersion: 3,
 	} as Plan;
 }
 
@@ -107,7 +109,7 @@ afterEach(() => {
 describe("chainIdFor", () => {
 	it("returns the phase id for a root phase (no parent)", () => {
 		const plan = chainPlan([{ id: "root", status: "planned" }]);
-		expect(chainIdFor(plan, plan.phases[0]!)).toBe("root");
+		expect(chainIdFor(plan, deliverables(plan)[0]!)).toBe("root");
 	});
 
 	it("walks up dependsOn to the root for a deep chain", () => {
@@ -116,7 +118,7 @@ describe("chainIdFor", () => {
 			{ id: "b", status: "shipped", deps: ["a"] },
 			{ id: "c", status: "planned", deps: ["b"] },
 		]);
-		expect(chainIdFor(plan, plan.phases[2]!)).toBe("a");
+		expect(chainIdFor(plan, deliverables(plan)[2]!)).toBe("a");
 	});
 
 	it("treats sibling chains under the same parent as one chain", () => {
@@ -125,8 +127,8 @@ describe("chainIdFor", () => {
 			{ id: "x", status: "planned", deps: ["root"] },
 			{ id: "y", status: "planned", deps: ["root"] },
 		]);
-		expect(chainIdFor(plan, plan.phases[1]!)).toBe("root");
-		expect(chainIdFor(plan, plan.phases[2]!)).toBe("root");
+		expect(chainIdFor(plan, deliverables(plan)[1]!)).toBe("root");
+		expect(chainIdFor(plan, deliverables(plan)[2]!)).toBe("root");
 	});
 
 	it("is bounded against hand-edited cycles", () => {
@@ -134,7 +136,7 @@ describe("chainIdFor", () => {
 			{ id: "a", status: "planned", deps: ["b"] },
 			{ id: "b", status: "planned", deps: ["a"] },
 		]);
-		expect(() => chainIdFor(plan, plan.phases[0]!)).not.toThrow();
+		expect(() => chainIdFor(plan, deliverables(plan)[0]!)).not.toThrow();
 	});
 });
 
@@ -163,17 +165,17 @@ describe("unclaimedChainHeads", () => {
 			{ id: "a", status: "planned", deps: [] },
 			{ id: "b", status: "planned", deps: [] },
 		]);
-		plan.phases[0]!.driverSessionId = "other-session";
-		plan.phases[0]!.driverSessionFile = "/tmp/never-exists.jsonl";
-		plan.phases[0]!.driverClaimedAt = new Date().toISOString();
+		deliverables(plan)[0]!.driverSessionId = "other-session";
+		deliverables(plan)[0]!.driverSessionFile = "/tmp/never-exists.jsonl";
+		deliverables(plan)[0]!.driverClaimedAt = new Date().toISOString();
 		const heads = unclaimedChainHeads(plan, "self");
 		// "a" filtered (occupied by other) — stale check uses session-file
 		// existence; the file doesn't exist, so it's stale, not occupied.
 		// To force "occupied", point at a real file.
 		const realFile = join(plansRoot, "live.jsonl");
 		writeFileSync(realFile, "");
-		plan.phases[0]!.driverSessionFile = realFile;
-		plan.phases[0]!.driverClaimedAt = new Date().toISOString();
+		deliverables(plan)[0]!.driverSessionFile = realFile;
+		deliverables(plan)[0]!.driverClaimedAt = new Date().toISOString();
 		const heads2 = unclaimedChainHeads(plan, "self");
 		expect(heads2.find((h) => h.phaseId === "a")).toBeUndefined();
 		expect(heads.map((h) => h.phaseId)).toContain("b");

@@ -1,7 +1,7 @@
 /**
  * Plan-completion prompt logic.
  *
- * When `/ship` lands the last actionable phase of a plan, we offer the
+ * When `/ship` lands the last actionable deliverable of a plan, we offer the
  * user a small picker: stay in the planning context, start a fresh
  * plan, or archive the current plan. Pure decision-building lives here
  * so it's unit-testable without instantiating the modes extension.
@@ -11,7 +11,8 @@
  */
 
 import type { Plan } from "./schema.js";
-import { TERMINAL_STATUSES } from "./schema.js";
+import { deliverables, isGrouping, TERMINAL_STATUSES } from "./schema.js";
+import { subtreeComplete } from "./tree.js";
 
 export type CompletionDecision =
 	| { action: "stay" }
@@ -30,7 +31,7 @@ const OPT_ARCHIVE = "Archive this plan and stay";
 /**
  * Pure check: is the plan "done as far as the user's hands go"?
  *
- * True when every phase is in `shipped`, `abandoned`, or `in-review`.
+ * True when every deliverable is in `shipped`, `abandoned`, or `in-review` (or, for groupings, its subtree is complete).
  * `in-review` counts because /ship sets that status when the PR is
  * opened — the work has left the user's hands and is at review. The
  * later "shipped" transition happens passively when `syncPlanOnStart`
@@ -38,36 +39,42 @@ const OPT_ARCHIVE = "Archive this plan and stay";
  * served its purpose. Without including `in-review` here, the prompt
  * (and the PR sweep it gates) never fires on the auto path.
  */
-export function isPlanComplete(plan: Pick<Plan, "phases">): boolean {
-	if (plan.phases.length === 0) return false;
-	return plan.phases.every(
-		(p) => TERMINAL_STATUSES.includes(p.status) || p.status === "in-review",
+export function isPlanComplete(plan: Pick<Plan, "nodes">): boolean {
+	const flat = deliverables(plan);
+	if (flat.length === 0) return false;
+	return flat.every(
+		(d) =>
+			TERMINAL_STATUSES.includes(d.status) ||
+			d.status === "in-review" ||
+			// Groupings don't ship PRs themselves; they count as complete
+			// when their whole subtree has left the user's hands.
+			(isGrouping(d) && subtreeComplete(d)),
 	);
 }
 
 /**
- * True when every phase is in a strictly terminal state
+ * True when every deliverable is in a strictly terminal state
  * (`shipped`/`abandoned`). Used by surfaces that need to distinguish
  * "merged" from "in flight at review" — e.g. the prompt title.
  */
-function allPhasesTerminal(plan: Pick<Plan, "phases">): boolean {
-	return plan.phases.every((p) => TERMINAL_STATUSES.includes(p.status));
+function allDeliverablesTerminal(plan: Pick<Plan, "nodes">): boolean {
+	return deliverables(plan).every((d) => TERMINAL_STATUSES.includes(d.status));
 }
 
 /**
  * Build the prompt shown when a plan completes. Returns null when no
- * prompt should fire (plan still has actionable phases, or the caller
+ * prompt should fire (plan still has actionable deliverables, or the caller
  * is headless and shouldn't prompt).
  */
 export function buildCompletionPrompt(
-	plan: Pick<Plan, "title" | "phases">,
+	plan: Pick<Plan, "title" | "nodes">,
 	hasUI: boolean,
 ): CompletionPrompt | null {
 	if (!hasUI) return null;
 	if (!isPlanComplete(plan)) return null;
-	const title = allPhasesTerminal(plan)
-		? `Plan "${plan.title}" is complete. All phases are shipped or abandoned. What next?`
-		: `Plan "${plan.title}" is complete. All phases are shipped, abandoned, or in review. What next?`;
+	const title = allDeliverablesTerminal(plan)
+		? `Plan "${plan.title}" is complete. Everything is shipped or abandoned. What next?`
+		: `Plan "${plan.title}" is complete. Everything is shipped, abandoned, or in review. What next?`;
 	return {
 		title,
 		options: [OPT_STAY, OPT_NEW_PLAN, OPT_ARCHIVE],
