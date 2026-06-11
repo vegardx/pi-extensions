@@ -74,12 +74,41 @@ const REVIEWER_PARAMS = Type.Object({
 				"Directory for the full report artifact. Default: <agentDir>/review.",
 		}),
 	),
+	models: Type.Optional(
+		Type.Array(
+			Type.Object({
+				set: Type.Union([Type.Literal("primary"), Type.Literal("secondary")]),
+				tier: Type.Union([
+					Type.Literal("fast"),
+					Type.Literal("normal"),
+					Type.Literal("heavy"),
+				]),
+			}),
+			{
+				description:
+					"Override the model list for every selected lens (models run " +
+					"in parallel per pass). Default: per-lens settings.",
+			},
+		),
+	),
+	passes: Type.Optional(
+		Type.Number({
+			description:
+				"Sequential passes per lens; pass N+1 hunts for issues the " +
+				"prior passes missed. Default: per-lens settings (1).",
+		}),
+	),
 });
 
 interface ReviewerParams {
 	lenses?: string[];
 	scope?: ReviewScope;
 	artifactDir?: string;
+	models?: Array<{
+		set: "primary" | "secondary";
+		tier: "fast" | "normal" | "heavy";
+	}>;
+	passes?: number;
 }
 
 export default defineExtension(
@@ -119,6 +148,8 @@ export default defineExtension(
 						lenses: p.lenses,
 						scope: p.scope,
 						artifactDir: p.artifactDir,
+						models: p.models,
+						passes: p.passes,
 						timeoutMs,
 						signal,
 					},

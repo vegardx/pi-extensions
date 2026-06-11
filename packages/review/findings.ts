@@ -395,3 +395,59 @@ export function recommendationFor(finding: Finding): Recommendation | null {
 		reasons: [...reasons, "no concrete fix yet"],
 	};
 }
+
+// ---- Multi-pass lens support --------------------------------------------
+
+/** Stable fingerprint for dedupe across models/passes. */
+export function findingFingerprint(f: RawFinding): string {
+	return `${f.file}:${f.line ?? 0}:${f.title.toLowerCase().trim()}`;
+}
+
+/**
+ * Merge raw findings from a lens's model × pass fan-out into one
+ * deduped list (fingerprint = file/line/title). Severity promotes to
+ * the highest seen; longer descriptions/fixes win. Order: first-seen.
+ */
+export function mergeLensFindings(
+	bundles: ReadonlyArray<readonly RawFinding[]>,
+): RawFinding[] {
+	const merged = new Map<string, RawFinding>();
+	for (const findings of bundles) {
+		for (const f of findings) {
+			const key = findingFingerprint(f);
+			const existing = merged.get(key);
+			if (!existing) {
+				merged.set(key, { ...f });
+				continue;
+			}
+			if (SEVERITY_RANK[f.severity] < SEVERITY_RANK[existing.severity]) {
+				existing.severity = f.severity;
+			}
+			if (f.description.length > existing.description.length) {
+				existing.description = f.description;
+			}
+			if (
+				f.suggestedAction &&
+				(!existing.suggestedAction ||
+					f.suggestedAction.length > existing.suggestedAction.length)
+			) {
+				existing.suggestedAction = f.suggestedAction;
+			}
+		}
+	}
+	return [...merged.values()];
+}
+
+/**
+ * Compact digest of prior-pass findings, fed to pass N+1 so the lens
+ * hunts for DIFFERENT issues instead of re-reporting these.
+ */
+export function digestFindings(findings: readonly RawFinding[]): string {
+	if (findings.length === 0) return "(no findings so far)";
+	return findings
+		.map((f) => {
+			const loc = f.line ? `${f.file}:${f.line}` : f.file;
+			return `- [${f.severity}] ${loc} — ${f.title}`;
+		})
+		.join("\n");
+}
