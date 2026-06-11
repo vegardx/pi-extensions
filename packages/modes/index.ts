@@ -36,7 +36,7 @@ import { truncateToWidth } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { setActiveMode } from "@vegardx/pi-extensions-shared/active-mode.js";
 import { defineExtension } from "@vegardx/pi-extensions-shared/define-extension.js";
-import { getDelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
+import { getAvailableDelegateTarget } from "@vegardx/pi-extensions-shared/delegate-registry.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { classifyBashCommand } from "./bash-classifier.js";
@@ -2515,7 +2515,7 @@ export default defineExtension(
 			if (installed.has("commit")) options.push("Run /commit");
 			// Review is a delegate target now (no /review command) — offer it
 			// when the registry has it.
-			const reviewerTarget = getDelegateTarget("reviewer");
+			const reviewerTarget = getAvailableDelegateTarget("reviewer", ctx);
 			if (reviewerTarget) options.push("Run review (branch scope)");
 			options.push("Stay here");
 

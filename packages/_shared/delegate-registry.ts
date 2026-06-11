@@ -76,6 +76,23 @@ export function getDelegateTarget(name: string): DelegateTarget | undefined {
 	return getRegistry().get(name);
 }
 
+/**
+ * Like {@link getDelegateTarget} but returns the target only when its
+ * `isAvailable` gate passes for `ctx` (missing gate = available).
+ * TS-side consumers (commit's review offer, modes' post-exec picker)
+ * use this so a target whose provider failed its hard-dep check —
+ * still present in the registry per the module note above — is not
+ * invocable, keeping the `dependsOn` contract honest.
+ */
+export function getAvailableDelegateTarget(
+	name: string,
+	ctx: ExtensionContext,
+): DelegateTarget | undefined {
+	const target = getRegistry().get(name);
+	if (!target) return undefined;
+	return (target.isAvailable?.(ctx) ?? true) ? target : undefined;
+}
+
 /** All registered targets, registration order. */
 export function listDelegateTargets(): DelegateTarget[] {
 	return Array.from(getRegistry().values());
