@@ -43,6 +43,7 @@ const PACKAGES = [
 	"prompt-suggestion",
 	"review",
 	"startup",
+	"subagent",
 	"triage",
 	"webfetch",
 	"wrap-up",

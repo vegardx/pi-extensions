@@ -1,0 +1,26 @@
+{
+  "name": "pi-ext-subagent",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Generic `delegate` tool routing tasks to pluggable specialist targets registered by other extensions.",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "exports": {
+    ".": "./index.ts",
+    "./delegate-tool": "./delegate-tool.ts"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
+    "@sinclair/typebox": "*",
+    "@vegardx/pi-extensions-shared": "*"
+  },
+  "peerDependenciesMeta": {
+    "@mariozechner/pi-coding-agent": { "optional": true },
+    "@mariozechner/pi-tui": { "optional": true },
+    "@sinclair/typebox": { "optional": true },
+    "@vegardx/pi-extensions-shared": { "optional": true }
+  }
+}

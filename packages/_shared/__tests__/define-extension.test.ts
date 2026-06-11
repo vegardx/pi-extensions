@@ -144,6 +144,25 @@ describe("defineExtension — enabled resolution", () => {
 		}
 	});
 
+	it("defaults to ON for subagent so the delegate tool ships with providers", () => {
+		const cwd = mkTempCwd();
+		try {
+			__setDefineExtensionCwd(cwd, agentDir);
+			const factory = vi.fn();
+			defineExtension(
+				{ name: "subagent", path: "/p/subagent/index.ts" },
+				factory,
+			)(makeMockPi().pi);
+			expect(factory).toHaveBeenCalledTimes(1);
+			const meta = getDeclaredExtension("subagent");
+			expect(meta?.enabled).toBe(true);
+			expect(meta?.loadState).toBe("loaded");
+			expect(meta?.enabledSource).toBe("default");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("startup respects an explicit `enabled: false` in project settings", () => {
 		const cwd = mkTempCwd();
 		try {
