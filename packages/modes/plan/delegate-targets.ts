@@ -81,10 +81,10 @@ export function registerModesDelegateTargets(
 		description:
 			"codebase questions answered by the persistent explore agent (plan mode only)",
 		isAvailable: () => deps.isPlanMode(),
-		execute: async ({ message, ctx, timeoutMs }) => {
+		execute: async ({ message, ctx, signal, timeoutMs }) => {
 			const mailbox = deps.getExploreMailbox(ctx);
 			const { id } = await mailbox.ask(message);
-			const task = await mailbox.wait(id, timeoutMs);
+			const task = await mailbox.wait(id, timeoutMs, signal);
 			if (task.status === "error" || task.status === "timeout") {
 				return {
 					text: `[delegate explorer ${task.status}] ${task.error ?? "no answer"}`,
