@@ -101,7 +101,7 @@ function serialisePlan(plan: Plan): string {
 		title: task.title,
 		body:
 			task.body.length > MAX_BODY_CHARS
-				? task.body.slice(0, MAX_BODY_CHARS) + "…"
+				? `${task.body.slice(0, MAX_BODY_CHARS)}…`
 				: task.body,
 		done: task.done,
 		kind: effectiveWorkItemKind(task),

@@ -75,7 +75,7 @@ describe("AsyncJobMailbox", () => {
 		});
 
 		it("drains terminal jobs but keeps running ones across check() calls", async () => {
-			let resolveOne: ((value: { text: string }) => void) | null = null;
+			let resolveOne: (value: { text: string }) => void = () => {};
 			let firstSeen = false;
 			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {
 				handle.setRunning();
@@ -105,7 +105,7 @@ describe("AsyncJobMailbox", () => {
 			expect(second.tasks[0]?.status).toBe("running");
 
 			// Resolve the second so the test can dispose cleanly.
-			resolveOne!({ text: "done: second" });
+			resolveOne({ text: "done: second" });
 			await mb.dispose();
 		});
 
@@ -200,7 +200,7 @@ describe("AsyncJobMailbox", () => {
 
 	describe("wait", () => {
 		it("resolves with the terminal snapshot when the job completes", async () => {
-			let resolveDispatch: ((v: { text: string }) => void) | null = null;
+			let resolveDispatch: (v: { text: string }) => void = () => {};
 			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {
 				handle.setRunning();
 				return new Promise<{ text: string }>((res) => {
@@ -211,7 +211,7 @@ describe("AsyncJobMailbox", () => {
 			const { id } = enqueueTestJob(mb, "q");
 			const waitP = mb.wait(id, 5_000);
 			await new Promise((r) => setImmediate(r));
-			resolveDispatch!({ text: "answer" });
+			resolveDispatch({ text: "answer" });
 			const result = await waitP;
 			expect(result.status).toBe("done");
 			expect(result.text).toBe("answer");
@@ -266,7 +266,7 @@ describe("AsyncJobMailbox", () => {
 		});
 
 		it("resolves every concurrent waiter on the same job", async () => {
-			let resolveDispatch: ((v: { text: string }) => void) | null = null;
+			let resolveDispatch: (v: { text: string }) => void = () => {};
 			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {
 				handle.setRunning();
 				return new Promise<{ text: string }>((res) => {
@@ -281,7 +281,7 @@ describe("AsyncJobMailbox", () => {
 				mb.wait(id, 5_000),
 			];
 			await new Promise((r) => setImmediate(r));
-			resolveDispatch!({ text: "answer" });
+			resolveDispatch({ text: "answer" });
 			const results = await Promise.all(waits);
 			for (const r of results) {
 				expect(r.status).toBe("done");
@@ -306,7 +306,7 @@ describe("AsyncJobMailbox", () => {
 
 	describe("notify", () => {
 		it("surfaces dispatcher notifications via check()", async () => {
-			let resolveDispatch: ((v: { text: string }) => void) | null = null;
+			let resolveDispatch: (v: { text: string }) => void = () => {};
 			const dispatch: Dispatcher<TestJob, TestNote> = async (handle) => {
 				handle.setRunning();
 				handle.notify({ text: "halfway", severity: "info" });
@@ -324,7 +324,7 @@ describe("AsyncJobMailbox", () => {
 			expect(drain.notifications[0]?.jobId).toBe(id);
 			// drained — second check is empty.
 			expect(mb.check().notifications).toHaveLength(0);
-			resolveDispatch!({ text: "done" });
+			resolveDispatch({ text: "done" });
 			await mb.dispose();
 		});
 	});
