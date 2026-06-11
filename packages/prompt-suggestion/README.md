@@ -59,7 +59,7 @@ walking up from cwd.
   provided the input is empty and pi is idle. Never fires while you're
   typing.
 - Only fires after a real interactive submission. Extension-internal turns
-  (e.g. `/commit`, `/review`) bypass the editor's `input` event and are
+  (e.g. `/commit`, `/plan`) bypass the editor's `input` event and are
   skipped — you don't want a ghost text suggestion based on a slash-command
   reply.
 - Renders a dim suffix inside the editor input. Tab accepts the suggestion

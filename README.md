@@ -19,7 +19,7 @@ The agent runs on someone else's GPU; my job is to make every token count. You c
 - **Working slice small enough to stay sharp.** Mid-phase compaction fires *before* the live message tail gets long. Frontier models degrade past a certain point — the goal is to live in the sweet spot, not 80% of `contextWindow`.
 - **Short context, faster turns.** Less context = faster tokens-per-second from most providers. Less wall time, less waiting around.
 - **Small phases, run in parallel.** A plan broken into small independent phases ships faster end-to-end than one giant chain. The plan model is what unlocks parallelism — fanout workers per chain, or peer sessions in separate worktrees.
-- **Cheap models for cheap work.** Tiered backgrounds (`fast` / `normal` / `heavy`) — ghost text isn't running on the frontier and the seven review lenses aren't running on Haiku.
+- **Cheap models for cheap work.** Tiered backgrounds (`fast` / `normal` / `heavy`) — ghost text isn't running on the frontier and the review lenses aren't running on Haiku.
 
 
 ## What's in the box
@@ -32,13 +32,11 @@ Each phase runs in its own pi session, **seeded** deterministically from the pla
 
 → [Mode-transitions diagram](packages/modes/README.md#mode-transitions) · [Plan model](packages/modes/README.md#plan-model)
 
-### `/review` — seven specialist lenses
+### `reviewer` — multi-lens review as a delegate target
 
-Seven reviewers run in parallel against the active model: architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker. Each has its own focus and prompt; you walk findings interactively.
+Four lenses (generic, code-review, security, simplification) run in parallel after deterministic scanners and an indexer pre-pass; a curator dedupes, cross-validates with read-only code access, and assigns confidence. Invoked via `delegate({to: "reviewer"})` — there is no slash command. `/commit` offers it pre-commit and walks the curated findings.
 
-Modes' auto-review pipeline runs the same lenses but gives the orchestrator a `consult_secondary_model` tool — uncertain findings get a second opinion before they reach you.
-
-→ [`packages/review`](packages/review)
+→ [`packages/review`](packages/review) · [`packages/subagent`](packages/subagent)
 
 ### A small library of project-local skills
 
@@ -48,7 +46,7 @@ Reusable agent workflows invoked as `/skill:<name>`: `diagnose` (disciplined bug
 
 ### Tiered background models, provider-agnostic
 
-Side tasks (ghost text, auto-titling, branch slugs, commit messages, the seven review lenses, the explore sub-agent) declare a tier — `fast` / `normal` / `heavy` — and you decide what those mean in `settings.json`. Cheap models for the cheap stuff, frontier for the heavy lifting. Swap providers without touching extension code.
+Side tasks (ghost text, auto-titling, branch slugs, commit messages, the review lenses, the explore sub-agent) declare a tier — `fast` / `normal` / `heavy` — and you decide what those mean in `settings.json`. Cheap models for the cheap stuff, frontier for the heavy lifting. Swap providers without touching extension code.
 
 → [Configuring background models](docs/configuring-models.md)
 
@@ -65,7 +63,7 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 | Skill | What it does |
 | --- | --- |
 | [`commit`](packages/commit/skills/commit/SKILL.md) | End-to-end commit workflow: analyse working tree, propose conventional-commit plan, execute, push, open/update PR. |
-| [`review`](packages/review/skills/review/SKILL.md) | Multi-agent code review — fans out seven specialist lenses (architect, code-reviewer, scope-analyst, security-analyst, code-simplifier, doc-reviewer, dependency-checker). |
+| [`generic` / `code-review` / `security` / `simplification`](packages/review/skills) | Standalone single-lens review passes (the full multi-lens pipeline runs via `delegate({to: "reviewer"})`). |
 | [`triage`](packages/triage/skills/triage/SKILL.md) | GitHub inbox triage — PRs with review comments, open issues, failing CI, stale PRs. |
 | [`gh`](packages/gh/skills/gh/SKILL.md) | GitHub via `gh` CLI: PRs, issues, CI/CD, releases, multi-host auth routing (github.com, GHE, GHES). |
 | [`exa-search`](packages/exa/skills/exa-search/SKILL.md) | Semantic web search via Exa's API — current information, prior art, library comparisons. |
@@ -81,7 +79,8 @@ Project-local skills, invoked with `/skill:<name>` (or auto-loaded by their pare
 | --- | --- | --- |
 | [`modes`](packages/modes) | `/plan` `/implement` `/park` `/ship` `/sync` `/worktree` `/modes-status` | Centrepiece. Phase/task plans, mode cycle, worktree-bound execution, three-tier compaction, async explore/research. |
 | [`commit`](packages/commit) | `/commit` | Drives the `commit` skill end-to-end. |
-| [`review`](packages/review) | `/review` | Drives the `review` skill — seven specialist reviewers fanned out in parallel. |
+| [`review`](packages/review) | `reviewer` delegate target | Multi-lens review pipeline (scanners → indexer → four lenses → curator). Hard-depends on `subagent`. |
+| [`subagent`](packages/subagent) | `delegate` tool | Generic delegation host: routes `delegate({to, message})` to registered targets (researcher, explorer, reviewer, …). Default-ON. |
 | [`wrap-up`](packages/wrap-up) | `/pause` `/continue` | Session handover doc, branch/repo-aware resume. |
 | [`derp`](packages/derp) | `/derp <text>` | Fire-and-forget GitHub bug reporter that doesn't interrupt the session. |
 | [`idea`](packages/idea) | `/idea <text>` | Low-friction GitHub idea capture — files an issue against the current repo's origin without interrupting the active session. |

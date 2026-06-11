@@ -525,28 +525,25 @@ The agent uses three tools to manage the plan:
 
 State persists in `~/.pi/plans/<slug>/plan.json`.
 
-### Delegation (`delegate`)
+### Delegation (`delegate` targets)
 
-Both web research and codebase questions are delegated to specialist
-sub-agents through a single **blocking** tool. The sub-agent's raw
-results (search pages, file dumps) never enter the caller's context —
-only the distilled, size-capped answer comes back.
+The `delegate` tool itself lives in the `subagent` extension
+([`packages/subagent`](../subagent)); modes contributes two targets to
+its registry. The sub-agent's raw results (search pages, file dumps)
+never enter the caller's context — only the distilled, size-capped
+answer comes back.
 
 | Call | Target | Available in |
 |------|--------|--------------|
-| `delegate({ to: "researcher", question, timeoutMs? })` | web research | all modes (plan / ask / auto / hack) |
-| `delegate({ to: "explorer", question })` | codebase questions | plan mode only |
+| `delegate({ to: "researcher", message, timeoutMs? })` | web research | all modes (plan / ask / auto / hack) |
+| `delegate({ to: "explorer", message })` | codebase questions | plan mode only |
 
-`delegate` blocks until the answer returns; correlation is the return
-value, not a polled mailbox. Emit several `delegate` calls in one turn
-to run them concurrently (pi executes a turn's tool calls in parallel).
-The answer is capped at `extensionConfig.modes.delegate.maxAnswerChars`
-(default 6000) so delegation stays context-slimming.
-
-Internally a pool of ephemeral specialists services these calls; when a
-pool is at capacity a `delegate` call simply waits a little longer. The
-queue and scaling are an implementation detail — the caller only ever
-sees a function that returns an answer.
+`delegate` blocks until the answer returns (pass `async: true` for a
+job id + follow-up delivery); correlation is the return value, not a
+polled mailbox. Emit several `delegate` calls in one turn to run them
+concurrently (pi executes a turn's tool calls in parallel). Answer
+capping and concurrency backpressure are the host's job — see
+`extensionConfig.subagent.delegate.{maxAnswerChars,maxConcurrent}`.
 
 ## Plan-mode write protection
 
@@ -628,9 +625,7 @@ watch or steer them.
 | `compaction.phaseTokens` | `10000` | Safety `maxTokens` cap for one phase-boundary summary. `summaryTokens` is the cumulative soft budget; this only catches a runaway single summary. |
 | `park.githubProject` | unset | GitHub Project to assign issues to when `/park` creates them. Leave unset to skip assignment. |
 | `planPanel` | `"auto"` | How the plan is displayed. `auto` (and `overlay`): an always-on floating top-right panel listing every phase with a per-phase `[done/total]` task tally, the active phase expanded, in every mode. `off` hides it. Width is ~33% of the terminal (min 40 columns); auto-hides below 100 columns. |
-| `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. |
-| `delegate.maxAnswerChars` | `6000` | Safety backstop on a delegated answer's size before it crosses back into the caller's context. Subagents are still prompted to be concise and complete. |
-| `delegate.maxConcurrent` | `10` | Cap on concurrent `researcher` subprocesses. Backpressure for a burst of parallel `delegate({ to: "researcher" })` calls — pi runs a turn's tool calls in parallel. Excess calls block until a slot frees. |
+| `research.timeoutMs` | `120000` | Hard timeout (ms) for `delegate({ to: "researcher" })`. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. (Answer-size and concurrency caps moved to `extensionConfig.subagent.delegate.*` with the tool.) |
 | `explore.parallelism` | `2` | Max in-flight `explorer` delegations across the seed worker and clean ephemeral children combined. This is a numeric cap, not a boolean. Set `1` for single-FIFO behavior. |
 | `explore.queueDepthThreshold` | `4` | When the seed FIFO has this many queued jobs, `related: true` asks burst-route to children even when the seed is busy — better to fan out and finish than wait. Only meaningful when `explore.parallelism > 1`. |
 

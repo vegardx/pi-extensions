@@ -44,25 +44,19 @@ generation stay on the main agent via `pi.sendMessage` +
    branch is safe. If you're on the default branch, a confirm dialog
    asks whether to continue (you usually want to branch first via
    `/plan <desc>`).
-2. **Offer `/review`** — picker: run review first, or commit now. If
-   review, the extension calls `runReview(...)` from `pi-ext-review/core`
-   directly (in-process via dynamic `import()`), gated on the extension
-   being installed. When `runReview` returns, `/commit`'s flow
-   continues into the plan step automatically — no need to re-invoke
-   `/commit` manually. (Earlier drafts dispatched `/review` via
-   `pi.sendUserMessage("/review")` and asked the user to re-invoke,
-   but that path was hard-coded to skip slash expansion in
-   pi-coding-agent ≤ 0.73.0; see
-   [badlogic/pi-mono#2549](https://github.com/badlogic/pi-mono/issues/2549),
-   [#2994](https://github.com/badlogic/pi-mono/issues/2994), and
-   [#3673](https://github.com/badlogic/pi-mono/issues/3673).)
+2. **Offer a review** — when the `reviewer` delegate target is
+   registered (`getDelegateTarget("reviewer")` from `_shared`), picker:
+   run review first, or commit now. On accept the extension executes
+   the target in-process, posts the curated summary, walks the
+   actionable findings with Accept / Skip / Explain (recommendations
+   driven by curator confidence — `review-walk.ts`), queues accepted
+   fixes to the agent as a follow-up turn, awaits idle, then continues
+   into the commit-plan step automatically. When the target is absent
+   the picker is skipped entirely.
 
    **Skipping the offer.** Callers of `runCommit({ ..., skipReviewOffer:
    true })` bypass this picker entirely with a one-line breadcrumb
-   notification. Used by `/review`'s `chainToCommit` so the user
-   isn't asked "Run /review before committing?" right after they
-   already walked a /review run — see
-   [`packages/review/README.md`](../review/README.md) step 9.
+   notification (used by modes' post-exec picker).
 3. **Plan** — `pi.sendMessage(..., deliverAs: "followUp", triggerTurn:
    true)` with a prompt asking the agent to analyze the diff and
    propose a conventional-commit plan. `ctx.waitForIdle()` blocks the
@@ -159,5 +153,5 @@ from a fork (by forking the repo and opening a PR upstream) and run
 
 - `/plan` — plans a change; `/park` writes the tracking issue this
   command reads.
-- `/review` — multi-agent code review, recommended before committing.
+- `delegate({to: "reviewer"})` — multi-lens code review, recommended before committing.
 - `/skill:gh` — multi-host routing reference.
