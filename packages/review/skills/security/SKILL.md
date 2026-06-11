@@ -1,6 +1,6 @@
 ---
 name: security
-description: Single-lens security review: OWASP Top 10, injection, auth flaws, secret exposure, and broken crypto in a diff or across the codebase. Use for a focused single-lens pass without the full multi-lens pipeline. For the full pipeline (scanners, indexer, all lenses, curator), use delegate({to: "reviewer"}).
+description: 'Single-lens security review: OWASP Top 10, injection, auth flaws, secret exposure, and broken crypto in a diff or across the codebase. Use for a focused single-lens pass without the full multi-lens pipeline. For the full pipeline (scanners, indexer, all lenses, curator), use delegate({to: "reviewer"}).'
 disable-model-invocation: true
 ---
 
