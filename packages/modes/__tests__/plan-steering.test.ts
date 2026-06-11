@@ -70,7 +70,7 @@ describe("STEERING_CLASSIFIER", () => {
 	it("lists the four routing options", () => {
 		expect(STEERING_CLASSIFIER).toContain("task(update");
 		expect(STEERING_CLASSIFIER).toContain("task(add");
-		expect(STEERING_CLASSIFIER).toContain("phase(add");
+		expect(STEERING_CLASSIFIER).toContain("deliverable(add");
 		expect(STEERING_CLASSIFIER).toContain("course correction");
 	});
 });
