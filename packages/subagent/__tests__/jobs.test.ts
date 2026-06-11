@@ -97,6 +97,25 @@ describe("DelegateJobs", () => {
 		expect(semaphore.activeCount).toBe(0);
 	});
 
+	it("caps the surfaced error text at the job's capChars", async () => {
+		const { jobs, surfaced } = makeJobs();
+		const { id } = jobs.submit({
+			target: target("researcher", async () => {
+				throw new Error("x".repeat(500));
+			}),
+			message: "q",
+			limit: 10,
+			capChars: 100,
+			ctx,
+		});
+		await settle();
+		expect(surfaced).toHaveLength(1);
+		expect(surfaced[0]?.jobId).toBe(id);
+		expect(surfaced[0]?.ok).toBe(false);
+		expect(surfaced[0]?.text.length).toBeLessThanOrEqual(100);
+		expect(surfaced[0]?.text).toContain("truncated at 100 chars");
+	});
+
 	it("passes message/params/timeout through to the target", async () => {
 		const { jobs } = makeJobs();
 		const seen: Record<string, unknown> = {};

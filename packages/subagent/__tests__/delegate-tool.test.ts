@@ -193,6 +193,29 @@ describe("delegate tool", () => {
 		expect(semaphore.activeCount).toBe(0);
 	});
 
+	it("caps the error text from a throwing target at maxAnswerChars", async () => {
+		writeSettings({
+			extensionConfig: { subagent: { delegate: { maxAnswerChars: 100 } } },
+		});
+		registerDelegateTarget(
+			target("researcher", {
+				execute: async () => {
+					throw new Error("x".repeat(500));
+				},
+			}),
+		);
+		const { tool } = makeTool();
+		const out = await tool.execute(
+			"t1",
+			{ to: "researcher", message: "q" },
+			undefined,
+			undefined,
+			makeCtx(),
+		);
+		expect(resultText(out).length).toBeLessThanOrEqual(100);
+		expect(resultText(out)).toContain("truncated at 100 chars");
+	});
+
 	it("respects the configured maxConcurrent via the semaphore", async () => {
 		writeSettings({
 			extensionConfig: { subagent: { delegate: { maxConcurrent: 1 } } },
