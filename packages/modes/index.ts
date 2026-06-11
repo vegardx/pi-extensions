@@ -84,12 +84,10 @@ import {
 	NEW_PLAN_STALE_MESSAGE,
 } from "./plan/completion.js";
 import { findConnectionError } from "./plan/connection-error.js";
+import { registerModesDelegateTargets } from "./plan/delegate-targets.js";
 import {
-	DEFAULT_DELEGATE_MAX_CHARS,
-	DEFAULT_DELEGATE_MAX_CONCURRENT,
 	DEFAULT_RESEARCH_TIMEOUT_MS,
 	DelegateAgents,
-	type ResearchOutcome,
 } from "./plan/delegate-tools.js";
 import {
 	claimPhase,
@@ -366,7 +364,7 @@ export default defineExtension(
 		name: EXT_ID,
 		path: fileURLToPath(import.meta.url),
 		doc: "Permission-mode cycle (plan / ask / auto) with integrated git workflow.",
-		integratesWith: ["commit", "review"],
+		integratesWith: ["commit", "review", "subagent"],
 		configSchema: [
 			{
 				key: "park.githubProject",
@@ -434,18 +432,6 @@ export default defineExtension(
 				type: "number",
 				default: DEFAULT_RESEARCH_TIMEOUT_MS,
 				doc: 'Hard timeout (ms) for `delegate(to: "researcher")` calls. On timeout the tool returns a structured failure shape so the agent can recover. Per-call `timeoutMs` overrides this. Default 120000 (120s).',
-			},
-			{
-				key: "delegate.maxAnswerChars",
-				type: "number",
-				default: DEFAULT_DELEGATE_MAX_CHARS,
-				doc: "Safety backstop (characters) on a delegated answer before it crosses back into the caller's context. Subagents are still prompted to be concise and complete; this only catches runaways. Default 6000.",
-			},
-			{
-				key: "delegate.maxConcurrent",
-				type: "number",
-				default: DEFAULT_DELEGATE_MAX_CONCURRENT,
-				doc: 'Cap on concurrent researcher subprocesses spawned by `delegate(to: "researcher")`. Backpressure for a burst of parallel calls. Must be >= 1; fractional or smaller values fall back to the default. Default 10.',
 			},
 			{
 				key: "explore.parallelism",
@@ -2834,59 +2820,6 @@ export default defineExtension(
 		}
 
 		/**
-		 * Read `extensionConfig.modes.delegate.maxAnswerChars` — the hard cap
-		 * on a delegated answer's size before it crosses back into the
-		 * caller's context. Keeps delegation context-slimming honest.
-		 */
-		function readDelegateMaxChars(ctx: ExtensionContext): number {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const delegateCfg = extCfg?.delegate as
-				| Record<string, unknown>
-				| undefined;
-			const raw = delegateCfg?.maxAnswerChars;
-			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-				return Math.floor(raw);
-			}
-			return DEFAULT_DELEGATE_MAX_CHARS;
-		}
-
-		/** Hard-cap a delegated answer; append a marker when truncated. */
-		function capDelegatedAnswer(text: string, cap: number): string {
-			if (text.length <= cap) return text;
-			const marker = `\n\n[…delegated answer truncated at ${cap} chars]`;
-			// Reserve room for the marker so the FINAL string stays within `cap`
-			// (a tiny cap below the marker length degrades to marker-only).
-			const room = Math.max(0, cap - marker.length);
-			return text.slice(0, room) + marker;
-		}
-
-		/**
-		 * Read `extensionConfig.modes.delegate.maxConcurrent` — the cap on
-		 * concurrent researcher subprocesses. Backpressure for a burst of
-		 * parallel delegate(researcher) calls (the agent loop runs a turn's
-		 * tool calls via Promise.all with no cap of its own).
-		 */
-		function readDelegateMaxConcurrent(ctx: ExtensionContext): number {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const delegateCfg = extCfg?.delegate as
-				| Record<string, unknown>
-				| undefined;
-			const raw = delegateCfg?.maxConcurrent;
-			// Require >= 1: a fractional value like 0.5 would floor to 0, which
-			// cappedResearch treats as uncapped — the opposite of intent.
-			if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
-				return Math.floor(raw);
-			}
-			return DEFAULT_DELEGATE_MAX_CONCURRENT;
-		}
-
-		/**
 		 * Read `extensionConfig.modes.explore.{parallelism,queueDepthThreshold}`.
 		 *
 		 * Both values are sanitised the same way the mailbox itself does
@@ -2944,43 +2877,6 @@ export default defineExtension(
 				);
 			}
 			return sanitised;
-		}
-
-		/**
-		 * Map a `ResearchOutcome` into the `{ content, details }` shape the
-		 * tool runtime expects. Timeout outcomes also fire a one-shot
-		 * warning notify so the user knows a research call was reaped.
-		 *
-		 * The agent-facing text keeps the historical `[research …]`
-		 * bracketed-message convention so existing prompts continue to
-		 * recognise failure shapes; `details` carries the structured
-		 * outcome verbatim for any caller that wants to branch on it.
-		 */
-		function formatResearchOutcome(
-			ctx: ExtensionContext,
-			outcome: ResearchOutcome,
-		): {
-			content: { type: "text"; text: string }[];
-			details: ResearchOutcome;
-		} {
-			let text: string;
-			if (outcome.ok) {
-				text = outcome.text;
-			} else if (outcome.reason === "timeout") {
-				notify(
-					ctx,
-					`research timed out after ${outcome.elapsedMs}ms (limit ${outcome.timeoutMs}ms)`,
-					"warning",
-				);
-				text = `[research timeout: no response after ${outcome.elapsedMs}ms (limit ${outcome.timeoutMs}ms)]`;
-			} else if (outcome.reason === "no-model") {
-				text = `[research: ${outcome.detail}]`;
-			} else if (outcome.reason === "subagent-error") {
-				text = `[research error: ${outcome.detail}]`;
-			} else {
-				text = "[research: no response]";
-			}
-			return { content: [{ type: "text", text }], details: outcome };
 		}
 
 		/**
@@ -4884,134 +4780,18 @@ export default defineExtension(
 			},
 		});
 
-		// ---- Delegate tools: explore + research ----------------------------
+		// ---- Delegate targets: researcher + explorer ------------------------
+		//
+		// The `delegate` tool itself lives in pi-ext-subagent; modes only
+		// contributes targets. Concurrency capping and answer capping happen
+		// in the host, so `researcher` wraps the plain blocking research().
 
-		pi.registerTool({
-			name: "delegate",
-			label: "Delegate",
-			// Show the target + question instead of a bare "Delegate", so a row
-			// of concurrent delegate calls is self-describing in the transcript.
-			renderCall: (args, theme) => {
-				const to =
-					args?.to === "researcher" || args?.to === "explorer" ? args.to : "?";
-				const q =
-					typeof args?.question === "string"
-						? args.question.replace(/\s+/g, " ").trim()
-						: "";
-				const prefix = `Delegate → ${to}`;
-				return {
-					render(width: number): string[] {
-						const styledPrefix = theme.fg("toolTitle", theme.bold(prefix));
-						if (!q) return [truncateToWidth(styledPrefix, width, "…")];
-						const avail = Math.max(8, width - prefix.length - 2);
-						const qShort = q.length > avail ? `${q.slice(0, avail - 1)}…` : q;
-						return [
-							truncateToWidth(
-								styledPrefix + theme.fg("muted", `: ${qShort}`),
-								width,
-								"…",
-							),
-						];
-					},
-					invalidate(): void {},
-				};
-			},
-			description:
-				"Delegate a question to a specialist sub-agent and get back a " +
-				'concise, distilled answer (blocking). to="researcher" for web ' +
-				'research; to="explorer" for codebase questions (plan mode only). ' +
-				"The sub-agent's raw results never enter your context — you only " +
-				"get the answer. Fire several delegate calls in one turn to run " +
-				"them concurrently.",
-			promptSnippet:
-				"Delegate a question to a specialist; returns a distilled answer",
-			promptGuidelines: [
-				"Use delegate to push heavy lookups (web search, codebase " +
-					"exploration) into a sub-agent so its raw output never bloats your " +
-					"context — you receive only the distilled answer.",
-				'to="researcher": web research (plan/auto/ask). to="explorer": ' +
-					"codebase questions (plan mode only).",
-				"delegate blocks until the answer returns. Emit multiple delegate " +
-					"calls in a single turn to run them in parallel.",
-			],
-			parameters: Type.Object({
-				to: Type.Union([Type.Literal("researcher"), Type.Literal("explorer")], {
-					description:
-						'Which specialist: "researcher" (web search) or "explorer" ' +
-						"(codebase questions, plan mode only).",
-				}),
-				question: Type.String({ description: "The question to delegate." }),
-				timeoutMs: Type.Optional(
-					Type.Number({
-						description:
-							"Hard timeout in ms. For researcher, bounds the web subprocess; " +
-							"for explorer, bounds the wait for the codebase answer. Overrides " +
-							"`extensionConfig.modes.research.timeoutMs`.",
-					}),
-				),
-			}),
-			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-				const cap = readDelegateMaxChars(ctx);
-				if (params.to === "researcher") {
-					const rawOverride = params.timeoutMs;
-					const timeoutMs =
-						rawOverride != null &&
-						Number.isFinite(rawOverride) &&
-						rawOverride > 0
-							? rawOverride
-							: readResearchTimeoutMs(ctx);
-					const outcome = await ensureDelegateAgents(ctx).cappedResearch(
-						params.question,
-						{
-							timeoutMs,
-							signal,
-							maxConcurrent: readDelegateMaxConcurrent(ctx),
-						},
-					);
-					if (!outcome.ok) return formatResearchOutcome(ctx, outcome);
-					const text = capDelegatedAnswer(outcome.text, cap);
-					return {
-						content: [{ type: "text", text }],
-						details: { to: "researcher", elapsedMs: outcome.elapsedMs },
-					};
-				}
-				// explorer — plan mode only (where the explore mailbox is wired)
-				if (modeState?.mode !== "plan") {
-					return {
-						content: [
-							{
-								type: "text",
-								text:
-									'[delegate] to:"explorer" is only available in plan mode. ' +
-									'Use to:"researcher" for web research.',
-							},
-						],
-						details: {
-							error: "explorer-not-available",
-							mode: modeState?.mode ?? null,
-						},
-					};
-				}
-				const mailbox = ensureExploreMailbox(ctx);
-				const { id } = await mailbox.ask(params.question);
-				const task = await mailbox.wait(id, params.timeoutMs);
-				if (task.status === "error" || task.status === "timeout") {
-					return {
-						content: [
-							{
-								type: "text",
-								text: `[delegate explorer ${task.status}] ${task.error ?? "no answer"}`,
-							},
-						],
-						details: { to: "explorer", status: task.status, error: task.error },
-					};
-				}
-				const text = capDelegatedAnswer(task.text ?? "", cap);
-				return {
-					content: [{ type: "text", text }],
-					details: { to: "explorer" },
-				};
-			},
+		registerModesDelegateTargets({
+			getDelegateAgents: ensureDelegateAgents,
+			getExploreMailbox: ensureExploreMailbox,
+			readResearchTimeoutMs,
+			isPlanMode: () => modeState?.mode === "plan",
+			notifyWarning: (ctx, message) => notify(ctx, message, "warning"),
 		});
 
 		// ---- Plan tools (phase / task) ---------------------------------------
@@ -5269,8 +5049,8 @@ export default defineExtension(
 							"To keep this context lean, delegate heavy lookups to a specialist",
 							"sub-agent — its raw results never enter your context, you get only",
 							"the distilled answer:",
-							'  delegate({ to: "researcher", question })  → web research',
-							'  delegate({ to: "explorer", question })    → codebase questions (plan mode)',
+							'  delegate({ to: "researcher", message })  → web research',
+							'  delegate({ to: "explorer", message })    → codebase questions (plan mode)',
 							"delegate blocks until the answer returns. Fire several delegate calls",
 							"in one turn to run them concurrently.",
 						].join("\n"),
@@ -5384,7 +5164,7 @@ export default defineExtension(
 					"after completing each one. Do not stop to ask for confirmation unless",
 					"genuinely stuck.",
 					"If you need to look up a library, API, or external reference: " +
-						'delegate({ to: "researcher", question }).',
+						'delegate({ to: "researcher", message }).',
 				);
 				if (includeClassifier) {
 					lines.push("", STEERING_CLASSIFIER);

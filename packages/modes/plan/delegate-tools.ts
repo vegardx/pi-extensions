@@ -4,7 +4,9 @@
  * Kept narrow on purpose: the codebase-exploration sub-agent moved
  * to `ExploreMailbox` so the main agent never blocks on it. Research
  * stays request/response — each call spawns a fresh process and they
- * already run in parallel without main-context bloat.
+ * already run in parallel without main-context bloat. Concurrency
+ * capping and answer capping live in pi-ext-subagent's delegate host,
+ * which calls `research()` via the registered `researcher` target.
  *
  * Errors are returned as a structured discriminated outcome — never
  * thrown — so the main agent can decide how to proceed and the host
@@ -14,14 +16,6 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import {
-	AsyncJobMailbox,
-	type BaseJob,
-	type BaseNotification,
-	type CheckOptions,
-	type CheckResult,
-	type MailboxState,
-} from "@vegardx/pi-extensions-shared/async-job-mailbox.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
 import { runSubagent } from "@vegardx/pi-extensions-shared/parallel-subagent.js";
 
@@ -42,18 +36,6 @@ const RESEARCH_TOOLS: readonly string[] = ["websearch", "webfetch"];
  */
 export const DEFAULT_RESEARCH_TIMEOUT_MS = 120_000;
 
-/**
- * Hard cap (characters) on a delegated answer before it crosses back
- * into the caller's context. Keeps delegation context-slimming honest.
- */
-export const DEFAULT_DELEGATE_MAX_CHARS = 6000;
-
-/**
- * Cap on concurrent researcher subprocesses — backpressure for a burst
- * of parallel `delegate(researcher)` calls.
- */
-export const DEFAULT_DELEGATE_MAX_CONCURRENT = 10;
-
 export interface ResearchOptions {
 	/**
 	 * Hard timeout in milliseconds. When unset, falls back to
@@ -63,11 +45,6 @@ export interface ResearchOptions {
 	timeoutMs?: number;
 	/** Host abort signal — propagated into `runSubagent`. */
 	signal?: AbortSignal;
-	/**
-	 * Concurrency cap for {@link DelegateAgents.cappedResearch}. Unset /
-	 * non-finite / <= 0 means uncapped.
-	 */
-	maxConcurrent?: number;
 }
 
 /**
@@ -104,16 +81,9 @@ export type ResearchOutcome =
 
 export class DelegateAgents {
 	private readonly ctx: ExtensionContext;
-	private readonly pendingResearchListeners: Array<
-		(state: MailboxState<ResearchTask, ResearchNotification>) => void
-	> = [];
-	private readonly pendingResearchUnsubscribes = new Map<
-		(state: MailboxState<ResearchTask, ResearchNotification>) => void,
-		() => void
-	>();
 	private readonly activeResearch = new Map<number, string>();
 	private nextResearchId = 0;
-	/** Optional host hook fired whenever the blocking-path research set changes. */
+	/** Optional host hook fired whenever the active research set changes. */
 	private activeResearchChangeHook: (() => void) | null = null;
 	/**
 	 * Predicate the host sets to suppress the below-editor research widget when
@@ -121,178 +91,9 @@ export class DelegateAgents {
 	 * rendering when the sidebar is toggled on).
 	 */
 	private widgetSuppressed: () => boolean = () => false;
-	/**
-	 * Non-blocking research mailbox (#159a). `research_ask` enqueues
-	 * a job here; `research_check` / `research_wait` drain it.
-	 * `maxConcurrent: Infinity` because each research call spawns a
-	 * fresh subprocess and they're already parallel-safe.
-	 *
-	 * Lazily created so the legacy blocking `research()` path doesn't
-	 * pay any setup cost.
-	 */
-	private researchMailboxInstance: AsyncJobMailbox<
-		ResearchTask,
-		ResearchNotification
-	> | null = null;
 
 	constructor(ctx: ExtensionContext) {
 		this.ctx = ctx;
-	}
-
-	// ---- non-blocking research mailbox (#159a) -------------------------
-
-	private get researchMailbox(): AsyncJobMailbox<
-		ResearchTask,
-		ResearchNotification
-	> {
-		if (this.researchMailboxInstance) return this.researchMailboxInstance;
-		this.researchMailboxInstance = new AsyncJobMailbox<
-			ResearchTask,
-			ResearchNotification
-		>({
-			kind: "research",
-			// Each research job spawns its own subprocess — they're already
-			// parallel-safe, no FIFO needed. Infinity matches today's
-			// blocking-research semantics where N concurrent calls fan out
-			// to N subprocesses.
-			maxConcurrent: Number.POSITIVE_INFINITY,
-			defaultWaitTimeoutMs: DEFAULT_RESEARCH_TIMEOUT_MS,
-			synthesizeUnknown: () => ({
-				question: "",
-				timeoutMs: DEFAULT_RESEARCH_TIMEOUT_MS,
-			}),
-			dispatch: async (handle) => {
-				handle.setRunning();
-				const outcome = await this.research(handle.job.question, {
-					timeoutMs: handle.job.timeoutMs,
-					signal: handle.signal,
-				});
-				// Pack outcome into the job so callers can read structured
-				// failure reasons via `check`/`wait`. `text` is the agent-
-				// facing summary; on failure we synthesise a one-liner so
-				// the bare `text` field still tells the story.
-				const text = outcome.ok ? outcome.text : formatOutcomeFailure(outcome);
-				return {
-					text,
-					jobPatch: { outcome } satisfies Partial<ResearchTask>,
-				};
-			},
-		});
-		// Flush any listeners that subscribed before the mailbox was lazily
-		// created — keeps `onResearchChange` from forcing setup just by
-		// being observed.
-		for (const l of this.pendingResearchListeners) {
-			const unsubscribe = this.researchMailboxInstance.onChange(l);
-			this.pendingResearchUnsubscribes.set(l, unsubscribe);
-		}
-		this.pendingResearchListeners.length = 0;
-		return this.researchMailboxInstance;
-	}
-
-	async researchAsk(
-		question: string,
-		opts: ResearchOptions = {},
-	): Promise<{ id: string }> {
-		const timeoutMs = opts.timeoutMs ?? DEFAULT_RESEARCH_TIMEOUT_MS;
-		return this.researchMailbox.enqueue((id, enqueuedAt) => ({
-			id,
-			status: "queued",
-			enqueuedAt,
-			question,
-			timeoutMs,
-		}));
-	}
-
-	researchCheck(
-		opts: CheckOptions = {},
-	): CheckResult<ResearchTask, ResearchNotification> {
-		if (!this.researchMailboxInstance) return { tasks: [], notifications: [] };
-		return this.researchMailboxInstance.check(opts);
-	}
-
-	async researchWait(id: string, timeoutMs?: number): Promise<ResearchTask> {
-		return this.researchMailbox.wait(id, timeoutMs);
-	}
-
-	onResearchChange(
-		listener: (state: MailboxState<ResearchTask, ResearchNotification>) => void,
-	): () => void {
-		// Don't force lazy mailbox creation just because someone wants to
-		// observe state. If the mailbox isn't built yet, buffer the
-		// listener; the getter flushes pending listeners on first access.
-		if (this.researchMailboxInstance) {
-			return this.researchMailboxInstance.onChange(listener);
-		}
-		this.pendingResearchListeners.push(listener);
-		return () => {
-			const i = this.pendingResearchListeners.indexOf(listener);
-			if (i >= 0) this.pendingResearchListeners.splice(i, 1);
-			const attached = this.pendingResearchUnsubscribes.get(listener);
-			if (attached) {
-				attached();
-				this.pendingResearchUnsubscribes.delete(listener);
-			}
-		};
-	}
-
-	get hasResearchInFlight(): boolean {
-		return this.researchMailboxInstance?.hasInFlight ?? false;
-	}
-
-	private activeResearchRuns = 0;
-	private readonly researchWaiters: Array<() => void> = [];
-
-	/**
-	 * Run {@link research} under a concurrency cap. A burst of parallel
-	 * `delegate({ to: "researcher" })` calls (pi runs a turn's tool calls
-	 * via Promise.all) would otherwise spawn one subprocess each; the cap
-	 * is the backpressure. Excess calls block here until a slot frees — or
-	 * return promptly with an aborted outcome if the caller's signal fires
-	 * while queued. `maxConcurrent` unset / non-finite / <= 0 means uncapped.
-	 */
-	async cappedResearch(
-		question: string,
-		opts: ResearchOptions = {},
-	): Promise<ResearchOutcome> {
-		const cap = opts.maxConcurrent;
-		if (cap == null || !Number.isFinite(cap) || cap <= 0) {
-			return this.research(question, opts);
-		}
-		while (this.activeResearchRuns >= cap) {
-			if (opts.signal?.aborted) {
-				return {
-					ok: false,
-					reason: "subagent-error",
-					detail: "aborted while queued for a research slot",
-					elapsedMs: 0,
-				};
-			}
-			await new Promise<void>((resolve) => {
-				const signal = opts.signal;
-				const cleanup = () => {
-					const i = this.researchWaiters.indexOf(waiter);
-					if (i >= 0) this.researchWaiters.splice(i, 1);
-					signal?.removeEventListener("abort", onAbort);
-				};
-				const waiter = () => {
-					cleanup();
-					resolve();
-				};
-				const onAbort = () => {
-					cleanup();
-					resolve();
-				};
-				this.researchWaiters.push(waiter);
-				signal?.addEventListener("abort", onAbort);
-			});
-		}
-		this.activeResearchRuns++;
-		try {
-			return await this.research(question, opts);
-		} finally {
-			this.activeResearchRuns--;
-			this.researchWaiters.shift()?.();
-		}
 	}
 
 	/**
@@ -395,7 +196,7 @@ export class DelegateAgents {
 		this.updateResearchWidget();
 	}
 
-	/** Topics of the currently-running research delegates (blocking path). */
+	/** Topics of the currently-running research delegates. */
 	getActiveResearch(): string[] {
 		return Array.from(this.activeResearch.values());
 	}
@@ -420,41 +221,5 @@ export class DelegateAgents {
 
 	/** No persistent state — present as a no-op for symmetry with the
 	 *  prior API; future additions can hook teardown here. */
-	async dispose(): Promise<void> {
-		await this.researchMailboxInstance?.dispose();
-		this.researchMailboxInstance = null;
-	}
-}
-
-// ---- Research mailbox types (#159a) ----------------------------------------
-
-export interface ResearchTask extends BaseJob {
-	question: string;
-	timeoutMs: number;
-	/**
-	 * Structured outcome of the underlying `research()` call — set
-	 * once the dispatcher resolves. Even on `ok: false` the task's
-	 * `status` is `"done"`: the run finished, the result just isn't
-	 * useful. Callers branch on `outcome.ok` rather than `status`.
-	 */
-	outcome?: ResearchOutcome;
-}
-
-export interface ResearchNotification extends BaseNotification {
-	/* room to extend: severity, source, etc. */
-}
-
-function formatOutcomeFailure(
-	outcome: ResearchOutcome & { ok: false },
-): string {
-	switch (outcome.reason) {
-		case "no-model":
-			return `[research no-model] ${outcome.detail}`;
-		case "timeout":
-			return `[research timeout] ${outcome.elapsedMs}ms (limit ${outcome.timeoutMs}ms)`;
-		case "subagent-error":
-			return `[research error] ${outcome.detail}`;
-		case "empty":
-			return `[research empty] ${outcome.detail}`;
-	}
+	async dispose(): Promise<void> {}
 }
