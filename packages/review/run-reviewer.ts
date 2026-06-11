@@ -36,13 +36,19 @@ import {
 import { acquireKeepAwake } from "@vegardx/pi-extensions-shared/caffeinate.js";
 import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-settings.js";
 import { resolveModel } from "@vegardx/pi-extensions-shared/model-resolver.js";
+import { runConsult } from "./consult.js";
 import {
 	type CuratorInput,
 	type CuratorResult,
 	type RunCuratorOpts,
 	runCurator,
 } from "./curator.js";
-import type { OrchestratedFinding, RawFinding } from "./findings.js";
+import {
+	digestFindings,
+	mergeLensFindings,
+	type OrchestratedFinding,
+	type RawFinding,
+} from "./findings.js";
 import {
 	detectDefaultBranch,
 	diffStat,
@@ -68,9 +74,12 @@ import {
 import {
 	type AgentModelSpec,
 	ALL_LENSES,
+	consultEnabled,
 	isLensId,
 	type LensId,
+	type LensSpec,
 	resolveAllAgentModels,
+	resolveLensSpec,
 } from "./models.js";
 import {
 	runStaticAnalysisFromSettings,
@@ -118,6 +127,14 @@ export interface RunReviewerOptions {
 	signal?: AbortSignal;
 	/** Extension name for model-resolver overrides. Default "review". */
 	extensionName?: string;
+	/**
+	 * Per-call lens fan-out overrides (the delegate target passes these
+	 * through): `models` replaces every selected lens's model list,
+	 * `passes` its pass count. Settings (`review.models.<lens>`) apply
+	 * when unset.
+	 */
+	models?: AgentModelSpec[];
+	passes?: number;
 	/** Test seam — replace the stage runners without subprocesses. */
 	deps?: Partial<RunReviewerDeps>;
 }
@@ -130,6 +147,7 @@ export interface RunReviewerDeps {
 	runIndexer(input: IndexerInvocation): Promise<IndexerOutcome>;
 	runLens(input: LensInvocation): Promise<LensOutcome>;
 	runCurator(opts: RunCuratorOpts): Promise<CuratorResult>;
+	runConsult: typeof runConsult;
 	resolveModel: typeof resolveModel;
 }
 
@@ -163,6 +181,8 @@ export interface RunReviewerResult {
 	agentModels: Record<string, string>;
 	staticToolsRan: number;
 	indexError?: string;
+	/** Consult stage stats (present when review.consult.enabled). */
+	consult?: { consulted: number; errors: number };
 }
 
 function notify(
@@ -502,6 +522,7 @@ const DEFAULT_DEPS: RunReviewerDeps = {
 	runIndexer,
 	runLens,
 	runCurator,
+	runConsult,
 	resolveModel,
 };
 
@@ -584,18 +605,46 @@ export async function runReviewer(
 		);
 	}
 
-	const lensModels = new Map<LensId, { provider: string; id: string }>();
+	// Per-lens fan-out spec: settings-resolved, with per-call overrides
+	// from the delegate params winning.
+	const lensSpecs = new Map<LensId, LensSpec>();
 	for (const lens of lenses) {
-		const model = await resolveAgent(lens, agentSpecs[lens]);
-		if (!model) {
-			notify(
-				ctx,
-				`no usable model for ${lens} (${agentSpecs[lens].set}.${agentSpecs[lens].tier}) — skipping`,
-				"warning",
-			);
+		const base = resolveLensSpec(settings, lens);
+		lensSpecs.set(lens, {
+			models: opts.models?.length ? opts.models : base.models,
+			passes:
+				opts.passes && Number.isFinite(opts.passes) && opts.passes >= 1
+					? Math.floor(opts.passes)
+					: base.passes,
+		});
+	}
+
+	const lensModels = new Map<LensId, Array<{ provider: string; id: string }>>();
+	for (const lens of lenses) {
+		const spec = lensSpecs.get(lens);
+		if (!spec) continue;
+		const resolvedModels: Array<{ provider: string; id: string }> = [];
+		for (const [i, modelSpec] of spec.models.entries()) {
+			const label = spec.models.length > 1 ? `${lens}#${i + 1}` : lens;
+			const model = await resolveAgent(label, modelSpec);
+			if (model) {
+				resolvedModels.push({ provider: model.provider, id: model.id });
+			}
+		}
+		// Dedupe models that resolved identically (e.g. secondary falls
+		// back to primary) — a second identical run adds cost, not signal.
+		const seen = new Set<string>();
+		const unique = resolvedModels.filter((m) => {
+			const key = `${m.provider}/${m.id}`;
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+		if (unique.length === 0) {
+			notify(ctx, `no usable model for ${lens} — skipping`, "warning");
 			continue;
 		}
-		lensModels.set(lens, { provider: model.provider, id: model.id });
+		lensModels.set(lens, unique);
 	}
 	if (lensModels.size === 0) {
 		return empty(
@@ -658,17 +707,54 @@ export async function runReviewer(
 		}
 		const outcomes = await Promise.all(
 			activeLenses.map(async (lens) => {
-				const model = lensModels.get(lens);
-				if (!model) throw new Error("unreachable: lens without model");
-				const result = await deps.runLens({
+				const models = lensModels.get(lens);
+				const spec = lensSpecs.get(lens);
+				if (!models || !spec) {
+					throw new Error("unreachable: lens without models");
+				}
+				const baseTask = buildLensTask(
 					lens,
-					task: buildLensTask(lens, rc, indexSketch, staticByLens.get(lens)),
-					provider: model.provider,
-					model: model.id,
-					cwd: ctx.cwd,
-					signal: opts.signal,
-					timeoutMs: budgets.lensMs,
-				});
+					rc,
+					indexSketch,
+					staticByLens.get(lens),
+				);
+				// Pass 1: every model in parallel. Passes 2..N: sequential,
+				// each seeded with a digest of everything found so far and an
+				// instruction to hunt for DIFFERENT issues.
+				const collected: RawFinding[][] = [];
+				const lensErrors: string[] = [];
+				for (let pass = 1; pass <= spec.passes; pass++) {
+					const task =
+						pass === 1
+							? baseTask
+							: [
+									baseTask,
+									"",
+									"## Prior passes already found",
+									"",
+									digestFindings(mergeLensFindings(collected)),
+									"",
+									"Do NOT re-report the issues above. Hunt for DIFFERENT",
+									"issues this pass; reply `[]` if nothing new exists.",
+								].join("\n");
+					const passResults = await Promise.all(
+						models.map((model) =>
+							deps.runLens({
+								lens,
+								task,
+								provider: model.provider,
+								model: model.id,
+								cwd: ctx.cwd,
+								signal: opts.signal,
+								timeoutMs: budgets.lensMs,
+							}),
+						),
+					);
+					for (const r of passResults) {
+						if (r.error) lensErrors.push(r.error);
+						else collected.push(r.findings);
+					}
+				}
 				completed++;
 				status.set(lens, "done");
 				if (ctx.hasUI) {
@@ -678,7 +764,14 @@ export async function runReviewer(
 					);
 					ctx.ui.setWidget(REVIEW_WIDGET, renderProgress(status));
 				}
-				return result;
+				// A lens only counts as errored when EVERY invocation failed;
+				// partial results still feed the curator.
+				const totalRuns = spec.passes * models.length;
+				return {
+					lens,
+					findings: mergeLensFindings(collected),
+					...(lensErrors.length === totalRuns ? { error: lensErrors[0] } : {}),
+				};
 			}),
 		);
 		if (ctx.hasUI) {
@@ -739,6 +832,44 @@ export async function runReviewer(
 			}
 		}
 
+		// ---- Stage 2.5: consult (opt-in) -------------------------------------
+		// Second opinion on findings the curator couldn't confidently
+		// confirm, from a model in the opposite set. Adjusts confidence
+		// before the split.
+		let consultStats: { consulted: number; errors: number } | undefined;
+		if (consultEnabled(settings) && curatorResult.findings.length > 0) {
+			const consultModel = await resolveAgent("consult", agentSpecs.consult);
+			if (consultModel) {
+				if (ctx.hasUI) {
+					ctx.ui.setStatus(extensionName, "consulting");
+					ctx.ui.setWidget(REVIEW_WIDGET, [
+						"🤝 consult: second opinion on contested findings…",
+					]);
+				}
+				const consultOut = await deps.runConsult({
+					provider: consultModel.provider,
+					model: consultModel.id,
+					findings: curatorResult.findings,
+					diff: rc.diff,
+					scopeLabel: rc.scopeLabel,
+					cwd: ctx.cwd,
+					signal: opts.signal,
+					timeoutMs: budgets.lensMs,
+				});
+				curatorResult = { ...curatorResult, findings: consultOut.findings };
+				consultStats = {
+					consulted: consultOut.consulted,
+					errors: consultOut.errors,
+				};
+				if (ctx.hasUI) {
+					ctx.ui.setStatus(extensionName, undefined);
+					ctx.ui.setWidget(REVIEW_WIDGET, undefined);
+				}
+			} else {
+				notify(ctx, "consult enabled but no usable consult model", "info");
+			}
+		}
+
 		// ---- Stage 3: confidence split --------------------------------------
 		const { autoApplied, surfaced } = partitionCuratedFindings(
 			curatorResult.findings,
@@ -793,6 +924,7 @@ export async function runReviewer(
 			agentModels,
 			staticToolsRan,
 			...(indexError ? { indexError } : {}),
+			...(consultStats ? { consult: consultStats } : {}),
 		};
 	} finally {
 		keepAwake.release();
