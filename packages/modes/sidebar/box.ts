@@ -103,7 +103,7 @@ function bottomEdge(theme: Theme, innerW: number, footer?: BoxFooter): string {
 }
 
 /** Pad (or truncate) a possibly-styled line to exactly `width` cells. */
-export function padTo(line: string, width: number): string {
+function padTo(line: string, width: number): string {
 	const w = visibleWidth(line);
 	if (w > width) return truncateToWidth(line, width);
 	return line + " ".repeat(width - w);

@@ -26,7 +26,7 @@ const CONSULT_PROMPT_PATH = join(
 );
 
 /** Bound the second-opinion fan-out so consult can't dominate cost. */
-export const MAX_CONSULTS = 5;
+const MAX_CONSULTS = 5;
 
 export interface ConsultVerdict {
 	agree: boolean;

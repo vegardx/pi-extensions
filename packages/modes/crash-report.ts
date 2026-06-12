@@ -118,7 +118,7 @@ const PER_ENTRY_CHAR_BUDGET = 800;
  * Cross-repo crash reports land in one place; `/derp` filters to
  * the active session by `sessionId` rather than by directory.
  */
-export const CRASH_REPORT_SUBDIR = join("modes", "crash-reports");
+const CRASH_REPORT_SUBDIR = join("modes", "crash-reports");
 
 export function crashReportDir(agentDir: string = getAgentDir()): string {
 	return join(agentDir, CRASH_REPORT_SUBDIR);

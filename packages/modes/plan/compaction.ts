@@ -148,14 +148,6 @@ export const DEFAULT_WORKING_TOKENS = 150000;
 export const DEFAULT_SUMMARY_TOKENS = 100000;
 
 /**
- * Legacy plan-mode footer cap sentinel. Runtime readers now treat an
- * unset or non-positive `compaction.planMaxContextTokens` as "use the
- * active model's contextWindow"; this constant remains for callers that
- * need the historical numeric sentinel.
- */
-export const DEFAULT_PLAN_MAX_CONTEXT_TOKENS = 0;
-
-/**
  * Default deadline (ms) for a single mid-phase compaction to complete.
  *
  * `compactPhaseSlice` awaits pi's fire-and-forget `ctx.compact()` via a

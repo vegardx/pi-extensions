@@ -129,7 +129,7 @@ const WORKER_AGENT_PROMPT = join(PROMPTS_DIR, "worker-agent.md");
  */
 const AGENT_END_DEFERRAL_MS = 250;
 
-export function defaultWorkerDeps(): WorkerMailboxDeps {
+function defaultWorkerDeps(): WorkerMailboxDeps {
 	return {
 		async spawnAgent(ctx, opts) {
 			const resolved = await resolveModel(ctx, {

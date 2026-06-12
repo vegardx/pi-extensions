@@ -20,7 +20,7 @@ const MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
  * (network stall, held `index.lock`) would freeze the TUI — including Esc.
  * 60s is generous for network ops while still guaranteeing the loop frees.
  */
-export const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
+const DEFAULT_COMMAND_TIMEOUT_MS = 60_000;
 
 /**
  * Build a non-interactive environment for git/gh. A credential helper or
@@ -258,10 +258,6 @@ export function checkoutBranch(cwd: string, branch: string): ShellResult {
 	return runCommand("git", ["checkout", branch], { cwd });
 }
 
-export function pullFastForward(cwd: string, branch: string): ShellResult {
-	return runCommand("git", ["pull", "--ff-only", "origin", branch], { cwd });
-}
-
 /**
  * Abortable `git pull --ff-only`. Network op — runs on the async runner
  * so a stalled fetch can't freeze the TUI and Esc can cancel it.
@@ -294,16 +290,4 @@ export function pushBranchAsync(
 
 export function createBranch(cwd: string, branch: string): ShellResult {
 	return runCommand("git", ["checkout", "-b", branch], { cwd });
-}
-
-/** Wrapper around `git config` setting a branch-scoped key. */
-export function setBranchConfig(
-	cwd: string,
-	branch: string,
-	key: string,
-	value: string,
-): ShellResult {
-	return runCommand("git", ["config", `branch.${branch}.${key}`, value], {
-		cwd,
-	});
 }

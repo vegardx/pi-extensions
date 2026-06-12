@@ -48,7 +48,7 @@ export type WorkerNotification =
 	| { kind: "chain-complete"; chainId: string };
 
 /** Marker `kind` value used on the wire (in the notify tool call). */
-export const WORKER_EVENT_KIND = "worker-event";
+const WORKER_EVENT_KIND = "worker-event";
 
 /** Env var that flags a pi process as a worker subagent. */
 export const WORKER_ENV_FLAG = "PI_PLAN_WORKER";
@@ -59,15 +59,6 @@ export const WORKER_CHAIN_ENV = "PI_PLAN_WORKER_CHAIN_ID";
 /** True when the current process was spawned as a fleet worker. */
 export function isWorker(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env[WORKER_ENV_FLAG] === "1";
-}
-
-/** The chain id assigned to this worker, if running as one. */
-export function workerChainId(
-	env: NodeJS.ProcessEnv = process.env,
-): string | null {
-	if (!isWorker(env)) return null;
-	const id = env[WORKER_CHAIN_ENV];
-	return id && id.length > 0 ? id : null;
 }
 
 /**

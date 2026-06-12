@@ -57,11 +57,6 @@ export function getWorkingDiff(cwd: string): string {
 	return r.ok ? r.stdout : "";
 }
 
-export function getStagedDiff(cwd: string): string {
-	const r = run("git", ["diff", "--cached"], cwd);
-	return r.ok ? r.stdout : "";
-}
-
 /**
  * `git diff <default>...HEAD` — all commits on the current branch that
  * aren't on the default. Empty when there are none.
@@ -69,25 +64,6 @@ export function getStagedDiff(cwd: string): string {
 export function getBranchDiff(cwd: string, defaultBranch: string): string {
 	const r = run("git", ["diff", `${defaultBranch}...HEAD`], cwd);
 	return r.ok ? r.stdout : "";
-}
-
-/**
- * `git diff -- <path>` for each path, concatenated. Pure convenience —
- * callers pass already-validated paths.
- */
-export function getFileDiff(cwd: string, paths: readonly string[]): string {
-	const r = run("git", ["diff", "HEAD", "--", ...paths], cwd);
-	return r.ok ? r.stdout : "";
-}
-
-/** Lines of `git ls-files`, filtered to non-empty. */
-export function listTrackedFiles(cwd: string): string[] {
-	const r = run("git", ["ls-files"], cwd);
-	if (!r.ok) return [];
-	return r.stdout
-		.split("\n")
-		.map((l) => l.trim())
-		.filter((l) => l.length > 0);
 }
 
 /** Unique file paths touched by a unified diff. */
