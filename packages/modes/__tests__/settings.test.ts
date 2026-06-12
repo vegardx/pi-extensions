@@ -21,8 +21,10 @@ import { readRelevantSettings } from "@vegardx/pi-extensions-shared/extension-se
 
 const mockSettings = readRelevantSettings as ReturnType<typeof vi.fn>;
 
-function ctx(cwd = "/test"): { cwd: string; hasUI: boolean } {
-	return { cwd, hasUI: true } as any;
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+
+function ctx(cwd = "/test"): ExtensionContext {
+	return { cwd, hasUI: true } as unknown as ExtensionContext;
 }
 
 describe("readCompactionNumber", () => {
