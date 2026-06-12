@@ -59,8 +59,9 @@ export function readDelegateMaxConcurrent(cwd: string): number {
 export function capDelegatedAnswer(text: string, cap: number): string {
 	if (text.length <= cap) return text;
 	const marker = `\n\n[…delegated answer truncated at ${cap} chars]`;
-	// Reserve room for the marker so the FINAL string stays within `cap`
-	// (a tiny cap below the marker length degrades to marker-only).
-	const room = Math.max(0, cap - marker.length);
-	return text.slice(0, room) + marker;
+	// When `cap` is too small to also hold the marker, drop the marker and
+	// hard-truncate to `cap` — the cap is a hard ceiling, so the marker must
+	// never push the result back over it.
+	if (cap <= marker.length) return text.slice(0, Math.max(0, cap));
+	return text.slice(0, cap - marker.length) + marker;
 }
