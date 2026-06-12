@@ -238,9 +238,10 @@ export function diffWorkerEvents(
 ): WorkerNotification[] {
 	const events: WorkerNotification[] = [];
 	if (beforeQuestions) {
+		const afterQuestions = snapshotQuestionIds(after);
 		for (const phase of deliverables(after)) {
 			const prev = new Set(beforeQuestions[phase.id] ?? []);
-			const fresh = (snapshotQuestionIds(after)[phase.id] ?? []).filter(
+			const fresh = (afterQuestions[phase.id] ?? []).filter(
 				(id) => !prev.has(id),
 			);
 			if (fresh.length > 0) {
@@ -304,7 +305,10 @@ export class WorkerMailbox {
 
 	private state: WorkerState;
 	private lastSnapshot: StatusSnapshot = {};
-	private lastQuestionSnapshot: QuestionSnapshot = {};
+	// `null` until the first plan read establishes a baseline; a `{}`
+	// baseline would make the first agent_end spuriously emit
+	// findings-surfaced for every pre-existing question item.
+	private lastQuestionSnapshot: QuestionSnapshot | null = null;
 	private listeners = new Set<(event: WorkerNotification) => void>();
 	private endHandlers = new Set<() => void>();
 	private disposed = false;
@@ -445,7 +449,7 @@ export class WorkerMailbox {
 						plan,
 						this.opts.chainId,
 						this.opts.chainHeadId,
-						this.lastQuestionSnapshot,
+						this.lastQuestionSnapshot ?? undefined,
 					);
 					this.lastSnapshot = snapshotStatuses(plan);
 					this.lastQuestionSnapshot = snapshotQuestionIds(plan);
