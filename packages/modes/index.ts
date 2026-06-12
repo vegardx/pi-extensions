@@ -3695,7 +3695,7 @@ export default defineExtension(
 			);
 		}
 
-		// ---- Park path --------------------------------------------------------
+		// ---- Ship path --------------------------------------------------------
 
 		async function doShip(
 			args: string | undefined,
