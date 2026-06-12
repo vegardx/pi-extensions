@@ -31,15 +31,16 @@ import { topLevelLeaves } from "./tree.js";
 /**
  * Quote untrusted text so it cannot be interpreted as live
  * instructions by an LLM consuming the issue body. Replaces internal
- * triple backticks with zero-width-joined backticks so the wrapping
- * fenced block can't be terminated from inside.
+ * triple backticks with zero-width-space-separated backticks so the
+ * wrapping fenced block can't be terminated from inside.
  *
  * Does NOT prevent prompt injection on its own — callers should also
  * include a non-instruction preamble. Exported for the same callers
  * that previously used the closure-scoped helper in index.ts.
  */
 export function quoteUntrusted(text: string): string {
-	const safe = text.replace(/```/g, "`​`​`");
+	const ZWSP = "\u200B";
+	const safe = text.replace(/```/g, `\`${ZWSP}\`${ZWSP}\``);
 	return ["```text", safe, "```"].join("\n");
 }
 
@@ -80,10 +81,12 @@ function splitItemsByKind(items: readonly WorkItem[]): {
 
 /**
  * Order the plan's deliverables so every `dependsOn` target precedes
- * its dependents (Kahn). Within the same rank, preorder position
- * breaks ties, so the result is stable for plans without deps. Cycles
- * (hand-edited plans; write-time validation normally rejects them)
- * degrade gracefully: remaining nodes are appended in preorder.
+ * its dependents AND every child precedes its parent grouping (so a
+ * grouping's body can reference its children as `#N` — they're created
+ * first). Within the same rank, preorder position breaks ties, so the
+ * result is stable for plans without deps. Cycles (hand-edited plans;
+ * write-time validation normally rejects them) degrade gracefully:
+ * remaining nodes are appended in preorder.
  */
 export function topologicalDeliverables(
 	plan: Pick<Plan, "nodes">,
@@ -97,7 +100,10 @@ export function topologicalDeliverables(
 		progressed = false;
 		for (const d of flat) {
 			if (placed.has(d.id)) continue;
-			const deps = (d.dependsOn ?? []).filter((id) => byId.has(id));
+			const deps = [
+				...(d.dependsOn ?? []).filter((id) => byId.has(id)),
+				...childDeliverables(d).map((c) => c.id),
+			];
 			if (deps.every((id) => placed.has(id))) {
 				out.push(d);
 				placed.add(d.id);

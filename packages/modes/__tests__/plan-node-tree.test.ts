@@ -360,6 +360,19 @@ describe("topologicalDeliverables", () => {
 		expect(order.indexOf("a")).toBeLessThan(order.indexOf("b"));
 	});
 
+	it("orders children before their parent grouping", () => {
+		const plan: Pick<Plan, "nodes"> = {
+			nodes: [
+				deliv("g", {
+					children: [deliv("c1"), deliv("c2")],
+				}),
+			] as PlanNode[],
+		};
+		const order = topologicalDeliverables(plan).map((d) => d.id);
+		expect(order.indexOf("c1")).toBeLessThan(order.indexOf("g"));
+		expect(order.indexOf("c2")).toBeLessThan(order.indexOf("g"));
+	});
+
 	it("degrades gracefully on cycles", () => {
 		const plan: Pick<Plan, "nodes"> = {
 			nodes: [
