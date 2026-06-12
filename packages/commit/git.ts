@@ -1,37 +1,18 @@
-import { spawnSync } from "node:child_process";
-
-export interface ShellResult {
-	ok: boolean;
-	stdout: string;
-	stderr: string;
-	exitCode: number;
-}
-
 /**
- * Run a command without a shell, never throws. Callers inspect `ok` /
- * `exitCode` and handle non-zero paths themselves. Used for every git
- * and gh invocation in this package.
+ * Git helpers for the commit extension. Domain-specific operations
+ * (branch detection, tracking issues, push helpers) that build on
+ * the shared shell runner.
  */
-export function runCommand(
-	command: string,
-	args: readonly string[],
-	opts: { cwd?: string; stdin?: string } = {},
-): ShellResult {
-	const result = spawnSync(command, args, {
-		cwd: opts.cwd,
-		input: opts.stdin,
-		encoding: "utf8",
-		shell: false,
-		env: process.env,
-	});
-	const exitCode = typeof result.status === "number" ? result.status : -1;
-	return {
-		ok: exitCode === 0,
-		stdout: (result.stdout ?? "").toString(),
-		stderr: (result.stderr ?? "").toString(),
-		exitCode,
-	};
-}
+
+export {
+	runCommand,
+	type ShellResult,
+} from "@vegardx/pi-extensions-shared/shell.js";
+
+import {
+	runCommand,
+	type ShellResult,
+} from "@vegardx/pi-extensions-shared/shell.js";
 
 // ---- Repo + branch introspection -----------------------------------
 
@@ -181,8 +162,6 @@ export function addRemoteIdempotent(
 	url: string,
 ): void {
 	runCommand("git", ["remote", "add", name, url], { cwd });
-	// `git remote add` errors with exit 128 when the remote already exists;
-	// the caller doesn't care. Ignore.
 }
 
 export function fetchRef(
