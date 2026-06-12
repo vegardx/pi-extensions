@@ -103,8 +103,6 @@ import {
 	type ExploreNotification,
 	type ExploreTask,
 	exploreWidgetShouldHide,
-	sanitiseParallelism,
-	sanitiseQueueDepthThreshold,
 } from "./plan/explore-mailbox.js";
 import { FleetManager, fleetWouldBeTrivial } from "./plan/fleet-manager.js";
 import type { PhaseDriverBadge } from "./plan/panel.js";
@@ -231,6 +229,19 @@ export {
 	resolveImplementModeForCurrentMode,
 	type Stage,
 } from "./types.js";
+
+import {
+	readCompactionNumber,
+	readCompactionTimeoutMs,
+	readDefaultModeSetting,
+	readExploreSettings,
+	readImplementDefaultSetting,
+	readPhaseTokensSetting,
+	readPlanMaxContextTokensSetting,
+	readResearchTimeoutMs,
+	readSummaryTokensSetting,
+	readWorkingTokensSetting,
+} from "./settings.js";
 
 const EXT_ID = "modes";
 const STATE_ENTRY = "modes-state";
@@ -444,7 +455,7 @@ export default defineExtension(
 
 		function ensureExploreMailbox(ctx: ExtensionContext): ExploreMailbox {
 			if (!exploreMailbox) {
-				const opts = readExploreSettings(ctx);
+				const opts = readExploreSettings(ctx, notify);
 				exploreMailbox = new ExploreMailbox(
 					ctx,
 					{
@@ -2715,160 +2726,6 @@ export default defineExtension(
 				signal: ctx.signal,
 				timeoutMs,
 			});
-		}
-
-		function readCompactionNumber(
-			ctx: ExtensionContext,
-			key: string,
-			fallback: number,
-		): number {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const compactionCfg = extCfg?.compaction as
-				| Record<string, unknown>
-				| undefined;
-			const raw = compactionCfg?.[key];
-			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-				return Math.floor(raw);
-			}
-			return fallback;
-		}
-
-		function readPhaseTokensSetting(ctx: ExtensionContext): number {
-			return readCompactionNumber(ctx, "phaseTokens", DEFAULT_PHASE_TOKENS);
-		}
-
-		function readDefaultModeSetting(ctx: ExtensionContext): {
-			mode: Mode;
-			valid: boolean;
-		} {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const modeCfg = extCfg?.mode as Record<string, unknown> | undefined;
-			return resolveDefaultMode(modeCfg?.default);
-		}
-
-		function readImplementDefaultSetting(ctx: ExtensionContext): {
-			mode: ImplementMode;
-			valid: boolean;
-		} {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const implementCfg = extCfg?.implement as
-				| Record<string, unknown>
-				| undefined;
-			return resolveImplementDefault(implementCfg?.default);
-		}
-
-		function readWorkingTokensSetting(ctx: ExtensionContext): number {
-			return readCompactionNumber(ctx, "workingTokens", DEFAULT_WORKING_TOKENS);
-		}
-
-		function readSummaryTokensSetting(ctx: ExtensionContext): number {
-			return readCompactionNumber(ctx, "summaryTokens", DEFAULT_SUMMARY_TOKENS);
-		}
-
-		/**
-		 * Plan-mode footer cap. Returns null when the user hasn't set a
-		 * positive override — the footer then falls back to the model's
-		 * contextWindow. Pure display: nothing in the runtime enforces this.
-		 */
-		function readPlanMaxContextTokensSetting(
-			ctx: ExtensionContext,
-		): number | null {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const compactionCfg = extCfg?.compaction as
-				| Record<string, unknown>
-				| undefined;
-			const raw = compactionCfg?.planMaxContextTokens;
-			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-				return Math.floor(raw);
-			}
-			return null;
-		}
-
-		function readResearchTimeoutMs(ctx: ExtensionContext): number {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const researchCfg = extCfg?.research as
-				| Record<string, unknown>
-				| undefined;
-			const raw = researchCfg?.timeoutMs;
-			if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-				return Math.floor(raw);
-			}
-			return DEFAULT_RESEARCH_TIMEOUT_MS;
-		}
-
-		/**
-		 * Read `extensionConfig.modes.explore.{parallelism,queueDepthThreshold}`.
-		 *
-		 * Both values are sanitised the same way the mailbox itself does
-		 * (positive numbers floored to integer; everything else falls back
-		 * to the default). When the user supplied something that fell back
-		 * we emit a one-line warning so they know the setting was ignored.
-		 */
-		function readExploreSettings(ctx: ExtensionContext): {
-			parallelism: number;
-			queueDepthThreshold: number;
-		} {
-			const settings = readRelevantSettings(ctx.cwd);
-			const extCfg = settings.extensionConfig?.[EXT_ID] as
-				| Record<string, unknown>
-				| undefined;
-			const explore = extCfg?.explore as Record<string, unknown> | undefined;
-			const parallelism = readSanitisedNumber(
-				ctx,
-				explore?.parallelism,
-				"extensionConfig.modes.explore.parallelism",
-				DEFAULT_PARALLELISM,
-				sanitiseParallelism,
-			);
-			const queueDepthThreshold = readSanitisedNumber(
-				ctx,
-				explore?.queueDepthThreshold,
-				"extensionConfig.modes.explore.queueDepthThreshold",
-				DEFAULT_QUEUE_DEPTH_THRESHOLD,
-				sanitiseQueueDepthThreshold,
-			);
-			return { parallelism, queueDepthThreshold };
-		}
-
-		/**
-		 * Read a numeric setting via the same sanitiser the mailbox uses, and
-		 * warn only when the user supplied something that fell back to the
-		 * default. Keeps settings-path behaviour consistent with the
-		 * constructor-path behaviour for things like `2.7` (floored to 2,
-		 * not silently rejected).
-		 */
-		function readSanitisedNumber(
-			ctx: ExtensionContext,
-			raw: unknown,
-			key: string,
-			fallback: number,
-			sanitise: (raw: unknown) => number,
-		): number {
-			if (raw === undefined) return fallback;
-			const sanitised = sanitise(raw);
-			if (sanitised === fallback && raw !== fallback) {
-				notify(
-					ctx,
-					`${key}: ${JSON.stringify(raw)} is not a valid positive number; using default ${fallback}`,
-					"warning",
-				);
-			}
-			return sanitised;
 		}
 
 		/**
