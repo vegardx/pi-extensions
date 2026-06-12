@@ -34,7 +34,7 @@ import {
 import { withPlanLock } from "./storage.js";
 
 /** Local copy of the finding fingerprint (value imports are forbidden). */
-export function findingFingerprint(f: {
+function findingFingerprint(f: {
 	file: string;
 	line?: number;
 	title: string;

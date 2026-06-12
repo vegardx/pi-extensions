@@ -712,11 +712,6 @@ export function rebuildIndex(): void {
 	);
 }
 
-/** Path to the plan dir — exposed for tests / debug. */
-export function planDirPath(slug: string): string {
-	return planDir(slug);
-}
-
 /** Override the plans root for tests. */
 export function _setPlansRootForTests(root: string): void {
 	plansRoot = root;

@@ -239,7 +239,7 @@ export type PickerView =
  * `runPicker` can dispatch by identity. Replaces the old always-on
  * `scrutinize.enable` gate: scrutiny now runs only when the user picks it.
  */
-export const SCRUTINIZE_LABEL = "🔍 Scrutinize plan — find gaps & risks";
+const SCRUTINIZE_LABEL = "🔍 Scrutinize plan — find gaps & risks";
 
 export function planPickerView(
 	plan: Plan | null,
