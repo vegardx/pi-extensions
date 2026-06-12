@@ -3476,6 +3476,10 @@ export default defineExtension(
 				};
 
 				if (branchPlan.kind === "create") {
+					// Capture the resolved branch as a non-null const: `branchPlan`
+					// is a `let` whose narrowing doesn't survive into the async
+					// claim closure below, which must persist it onto the phase.
+					const createBranch = branchPlan.branch;
 					// First-time activation. Hop to the picked base before creating
 					// the phase branch so it forks from the right ancestor; for the
 					// linear case the base IS the default branch we're already on,
@@ -3521,6 +3525,7 @@ export default defineExtension(
 					if (
 						!(await claimAtomically((p) => {
 							p.status = "active";
+							p.branch = createBranch;
 							p.worktreePath = ctx.cwd;
 							p.updatedAt = claimNow;
 							claimPhase(p, selfSessionId, sessionFile, claimNow);
