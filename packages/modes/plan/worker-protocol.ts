@@ -128,6 +128,19 @@ export function decodeWorkerEvent(args: {
 				return { kind, phaseId: obj.phaseId, error: obj.error };
 			}
 			return null;
+		case "findings-surfaced":
+			if (
+				typeof obj.phaseId === "string" &&
+				Array.isArray(obj.questionIds) &&
+				obj.questionIds.every((id) => typeof id === "string")
+			) {
+				return {
+					kind,
+					phaseId: obj.phaseId,
+					questionIds: obj.questionIds as string[],
+				};
+			}
+			return null;
 		case "chain-complete":
 			if (typeof obj.chainId === "string") {
 				return { kind, chainId: obj.chainId };
