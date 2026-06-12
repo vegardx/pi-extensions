@@ -109,13 +109,15 @@ export function runCommand(
 	const timedOut =
 		(result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT" ||
 		result.signal === "SIGKILL";
+	const spawnError =
+		result.error && !timedOut ? (result.error as Error).message : undefined;
 	const exitCode = typeof result.status === "number" ? result.status : -1;
 	return {
 		ok: exitCode === 0 && !timedOut,
 		stdout: (result.stdout ?? "").toString(),
 		stderr: timedOut
 			? `timed out after ${timeoutMs}ms`
-			: (result.stderr ?? "").toString(),
+			: (spawnError ?? (result.stderr ?? "").toString()),
 		exitCode,
 		timedOut,
 	};
@@ -171,10 +173,12 @@ export function runCommandAsync(
 
 		const onAbort = () => {
 			aborted = true;
+			clearTimeout(timer);
 			child.kill("SIGKILL");
 		};
 		const timer = setTimeout(() => {
 			timedOut = true;
+			opts.signal?.removeEventListener("abort", onAbort);
 			child.kill("SIGKILL");
 		}, timeoutMs);
 		opts.signal?.addEventListener("abort", onAbort, { once: true });

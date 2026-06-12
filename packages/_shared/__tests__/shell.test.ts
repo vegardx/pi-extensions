@@ -25,6 +25,7 @@ describe("runCommand", () => {
 	it("handles non-existent command gracefully", () => {
 		const result = runCommand("nonexistent-binary-xyz", []);
 		expect(result.ok).toBe(false);
+		expect(result.stderr).toContain("ENOENT");
 	});
 
 	it("passes stdin to command", () => {
